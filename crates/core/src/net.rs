@@ -26,6 +26,39 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(8);
 /// Bulk data is sent in pieces this big so input can slip in between.
 pub const CHUNK: usize = 256 * 1024;
 
+/// Sent in the clear before the handshake: tells the server which secret
+/// this connection will prove knowledge of. It reveals nothing secret.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Auth {
+    /// The shared passphrase.
+    Passphrase,
+    /// The key saved when this device was paired.
+    Key { device: String },
+    /// First-time pairing with the 6-digit code shown on the server.
+    Pair { device: String, name: String },
+}
+
+pub fn write_auth(s: &mut TcpStream, auth: &Auth) -> Result<()> {
+    write_frame(s, &bincode::serialize(auth)?)?;
+    Ok(())
+}
+
+pub fn read_auth(s: &mut TcpStream) -> Result<Auth> {
+    s.set_read_timeout(Some(Duration::from_secs(10)))?;
+    let mut buf = Vec::new();
+    read_frame(s, &mut buf)?;
+    if buf.len() > 1024 {
+        bail!("bad hello");
+    }
+    Ok(bincode::deserialize(&buf)?)
+}
+
+/// Pre-shared key for a pairing attempt with `code`.
+pub fn pairing_psk(code: &str) -> [u8; 32] {
+    let digits: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
+    derive_psk(&format!("openhop-pairing-code:{digits}"))
+}
+
 pub fn derive_psk(passphrase: &str) -> [u8; 32] {
     let mut h = Blake2s256::new();
     h.update(b"openhop-psk-v1\0");

@@ -37,15 +37,31 @@
       </div>
       <p class="footer" id="roleHint"></p>
 
+      <div class="server-only">
+        <h2 class="section">Pair a Computer</h2>
+        <div class="group">
+          <div class="row code-row">
+            <span class="label">Pairing Code</span>
+            <span id="pairCode" class="code">––– –––</span>
+          </div>
+        </div>
+        <p class="footer">On the other computer, open OpenHop, choose <b>Be Controlled</b>, then pick this computer under On Your Network and type this code.</p>
+      </div>
+
+      <div id="pairedBlock" hidden>
+        <h2 class="section">Paired Computers</h2>
+        <div class="group" id="pairedList"></div>
+      </div>
+
       <h2 class="section">Security</h2>
       <div class="group">
         <label class="row">
           <span class="label">Passphrase</span>
-          <input id="passphrase" class="value" type="password" autocomplete="off" spellcheck="false" placeholder="Required">
+          <input id="passphrase" class="value" type="password" autocomplete="off" spellcheck="false" placeholder="Optional">
           <button id="reveal" class="link" type="button">Show</button>
         </label>
       </div>
-      <p class="footer">Use the same passphrase on every computer. Connections are end-to-end encrypted with it.</p>
+      <p class="footer">Not needed when computers are paired with a code. If you set one, use the same on every computer. Everything is end-to-end encrypted either way.</p>
 
       <div class="client-only">
         <h2 class="section">Connection</h2>
@@ -76,6 +92,17 @@
           <span class="label">Wake Sleeping Computers</span>
           <span class="switch"><input type="checkbox" id="wol"><span class="track"><span class="thumb"></span></span></span>
         </label>
+        <label class="row">
+          <span class="label">Transfer Speed Limit</span>
+          <select id="speed" class="value">
+            <option value="0">None</option>
+            <option value="200">200 Mbps</option>
+            <option value="100">100 Mbps</option>
+            <option value="50">50 Mbps</option>
+            <option value="20">20 Mbps</option>
+            <option value="10">10 Mbps</option>
+          </select>
+        </label>
         <label class="row server-only">
           <span class="label">Port</span>
           <input id="port" class="value" type="number" min="1024" max="65535">
@@ -84,6 +111,19 @@
 
       <button id="save" class="filled" disabled>Save Changes</button>
       <p id="saveNote" class="footer center"></p>
+
+      <h2 class="section">Software Update</h2>
+      <div class="group">
+        <div class="row">
+          <span class="label">OpenHop <span id="version"></span></span>
+          <button id="updateBtn" class="link" type="button">Check for Updates</button>
+        </div>
+        <div class="row" id="updateRow" hidden>
+          <span class="label" id="updateText"></span>
+          <button id="installBtn" class="pill" type="button">Update</button>
+        </div>
+      </div>
+      <p class="footer" id="updateNote"></p>
     </section>
 
     <section class="col stage">
@@ -107,6 +147,19 @@
       <div class="group" id="nearby"></div>
     </section>
   </main>
+
+  <div id="pairSheet" class="sheet" hidden>
+    <div class="alert" role="dialog" aria-modal="true" aria-labelledby="pairTitle">
+      <h3 id="pairTitle">Pair</h3>
+      <p id="pairText"></p>
+      <input id="pairInput" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="000 000">
+      <p id="pairError" class="alert-error"></p>
+      <div class="alert-buttons">
+        <button id="pairCancel" type="button">Cancel</button>
+        <button id="pairGo" type="button" class="bold">Pair</button>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

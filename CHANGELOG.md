@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.3.0
+
+**Update every computer.** v0.3 uses protocol 3, so it can't connect to v0.2 or earlier.
+
+### Added
+- **AirDrop-style pairing.** The host shows a 6-digit code; on the other computer, click **Pair** next to it and type the code. A per-device 256-bit key is saved on both sides, so no shared passphrase is needed (it still works if you prefer one). The code changes after use, and five wrong codes pause pairing for a minute.
+- **No router needed.** Discovery and connections work on every network interface over IPv4 and IPv6 link-local, so two computers joined by an Ethernet, USB-C or Thunderbolt cable connect directly while each keeps its own Wi-Fi. They're shown with a **Cable** badge.
+- **Transfer speed limit** for file and image transfers.
+- **Check for Updates**: automatic daily check, plus one-click download and install of the right installer (.exe, .dmg, .deb, .rpm or AppImage).
+- CLI: `openhop client --pair CODE`, `openhop paired [--forget NAME]`; the server prints its pairing code.
+
+### Fixed
+- **The on/off switch could fail with "port 24850 is busy".** Restarting (toggling, saving settings) now waits for the old listener to close, reuses the port immediately, and retries briefly.
+- Only one copy of the app can run; opening it again brings the existing window forward.
+- Saving settings in the window no longer overwrites things the engine saved meanwhile (pairings, arrangement, Wake-on-LAN details).
+
+
 ## v0.2.0
 
 **Update every computer.** v0.2 uses a new protocol, so v0.1 and v0.2 computers can't connect to each other.

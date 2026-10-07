@@ -20,6 +20,35 @@ use std::time::Instant;
 pub const MAX_OFFER_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_FILES: usize = 20_000;
 
+/// Transfer speed limit in bytes per second, shared by every outgoing
+/// transfer (0 = unlimited). Keeps big copies from saturating the Wi-Fi.
+static RATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static NEXT_SLOT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Set the limit in megabits per second (0 = unlimited).
+pub fn set_speed_limit_mbps(mbps: u32) {
+    RATE.store(mbps as u64 * 1_000_000 / 8, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Wait until `len` more bytes may be sent under the speed limit.
+pub fn pace(len: usize) {
+    let rate = RATE.load(std::sync::atomic::Ordering::Relaxed);
+    if rate == 0 {
+        return;
+    }
+    let cost = std::time::Duration::from_secs_f64(len as f64 / rate as f64);
+    let wait = {
+        let mut next = NEXT_SLOT.lock();
+        let now = Instant::now();
+        let start = next.map(|n| n.max(now)).unwrap_or(now);
+        *next = Some(start + cost);
+        start.saturating_duration_since(now)
+    };
+    if !wait.is_zero() {
+        std::thread::sleep(wait);
+    }
+}
+
 pub fn new_id() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
@@ -126,6 +155,7 @@ impl Outbox {
                         break;
                     }
                     sent += n as u64;
+                    pace(n);
                     let msg = Msg::FileData { offer, dest: dest.clone(), index: i as u32, data: buf[..n].to_vec() };
                     if !link.send_bulk_wait(msg) {
                         log::warn!("transfer to {dest} interrupted");
@@ -372,6 +402,18 @@ pub fn total_size(files: &[FileMeta]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speed_limit_paces_sends() {
+        set_speed_limit_mbps(80); // 10 MB/s
+        let t = Instant::now();
+        for _ in 0..20 {
+            pace(256 * 1024); // 5 MB total
+        }
+        let secs = t.elapsed().as_secs_f64();
+        set_speed_limit_mbps(0);
+        assert!(secs > 0.4 && secs < 0.8, "took {secs}s, expected ~0.5s");
+    }
 
     #[test]
     fn rejects_escapes() {

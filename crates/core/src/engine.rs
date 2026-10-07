@@ -59,6 +59,23 @@ pub struct Status {
     pub transfers: Vec<TransferInfo>,
     /// Server: computers that can be woken with Wake-on-LAN.
     pub wakeable: Vec<String>,
+    /// This computer's stable id (matches `device` in discovered entries).
+    pub device: String,
+    /// Server: the 6-digit code other computers enter to pair.
+    pub pairing_code: Option<String>,
+    /// Computers paired with this one.
+    pub paired: Vec<PairedInfo>,
+    /// Client: not paired and no passphrase set; choose a server to pair with.
+    pub needs_pairing: bool,
+    /// Client: device id of a pairing attempt in progress.
+    pub pairing_with: Option<String>,
+    pub pair_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PairedInfo {
+    pub device: String,
+    pub name: String,
 }
 
 /// A small notification for the user, with optional actions.
@@ -97,6 +114,27 @@ pub fn run_action(kind: &str, target: &str) -> Result<()> {
 enum Control {
     Stop,
     SetLayout(Layout),
+    /// Client: pair with the server whose device id is given, using its code.
+    Pair { device: String, code: String },
+    /// Forget a paired computer.
+    Forget(String),
+}
+
+/// Server-side pairing state: the current code and brute-force protection.
+struct PairState {
+    code: String,
+    failures: u32,
+    locked_until: Option<Instant>,
+}
+
+fn new_code() -> String {
+    let mut b = [0u8; 4];
+    getrandom::fill(&mut b).expect("random");
+    format!("{:06}", u32::from_le_bytes(b) % 1_000_000)
+}
+
+fn paired_list(t: &std::collections::BTreeMap<String, crate::config::Trusted>) -> Vec<PairedInfo> {
+    t.iter().map(|(d, v)| PairedInfo { device: d.clone(), name: v.name.clone() }).collect()
 }
 
 pub struct Engine {
@@ -111,8 +149,12 @@ pub struct Engine {
 
 impl Engine {
     pub fn start(cfg: Config, config_path: Option<PathBuf>) -> Result<Engine> {
-        if cfg.passphrase.trim().len() < 4 {
-            bail!("Set a passphrase of at least 4 characters (use the same one on every computer).");
+        if !cfg.passphrase.trim().is_empty() && cfg.passphrase.trim().len() < 4 {
+            bail!("The passphrase must be at least 4 characters (or leave it empty and pair with a code).");
+        }
+        let mut cfg = cfg;
+        if cfg.device_id.is_empty() {
+            cfg.device_id = crate::config::random_hex(8);
         }
         let status = Arc::new(Mutex::new(Status {
             running: true,
@@ -128,13 +170,22 @@ impl Engine {
             screen: None,
             transfers: vec![],
             wakeable: vec![],
+            device: cfg.device_id.clone(),
+            pairing_code: None,
+            paired: paired_list(&cfg.trusted),
+            needs_pairing: false,
+            pairing_with: None,
+            pair_error: None,
         }));
-        let discovery = Arc::new(Discovery::start(cfg.name.clone(), cfg.role, cfg.port).context("starting LAN discovery")?);
+        let discovery = Arc::new(
+            Discovery::start(cfg.device_id.clone(), cfg.name.clone(), cfg.role, cfg.port).context("starting network discovery")?,
+        );
         let stop = Arc::new(AtomicBool::new(false));
         let (ctl_tx, ctl_rx) = crossbeam_channel::unbounded();
         let notes: Arc<Mutex<Vec<Note>>> = Default::default();
         let root = cfg.download_dir.as_ref().map(PathBuf::from).unwrap_or_else(files::download_root);
         let inbox = Inbox::new(root);
+        files::set_speed_limit_mbps(cfg.transfer_limit_mbps);
         dnd::init();
 
         let ctx = Ctx {
@@ -146,15 +197,18 @@ impl Engine {
             notes: notes.clone(),
             inbox: inbox.clone(),
             outbox: Outbox::default(),
+            trust: Arc::new(Mutex::new(cfg.trusted.clone())),
+            pair: Arc::new(Mutex::new(PairState { code: new_code(), failures: 0, locked_until: None })),
         };
         let main = match cfg.role {
             Role::Server => {
                 let capture = shared_capture(cfg.screen)?;
                 status.lock().screen = Some(capture.0.screen());
-                let listener = TcpListener::bind(("0.0.0.0", cfg.port))
-                    .with_context(|| format!("port {} is busy (is OpenHop already running?)", cfg.port))?;
+                let listener = bind_v4_listener(cfg.port)?;
+                // Also listen on IPv6 so direct-cable (link-local) connections work.
+                let listener6 = bind_v6_listener(cfg.port);
                 std::thread::Builder::new().name("server".into()).spawn(move || {
-                    if let Err(e) = Server::run(ctx.clone(), capture, listener, ctl_rx) {
+                    if let Err(e) = Server::run(ctx.clone(), capture, listener, listener6, ctl_rx) {
                         log::error!("server stopped: {e:#}");
                         ctx.set_error(Some(format!("{e:#}")));
                     }
@@ -193,6 +247,16 @@ impl Engine {
         let _ = self.ctl.send(Control::SetLayout(layout));
     }
 
+    /// Client: pair with a discovered server using the code it shows.
+    pub fn pair(&self, device: String, code: String) {
+        let _ = self.ctl.send(Control::Pair { device, code });
+    }
+
+    /// Forget a paired computer (it will need the code again).
+    pub fn forget(&self, device: String) {
+        let _ = self.ctl.send(Control::Forget(device));
+    }
+
     pub fn stop(mut self) {
         self.shutdown();
     }
@@ -214,6 +278,44 @@ impl Drop for Engine {
 
 /// Input hooks are process-wide, so the capture backend is created once and
 /// reused if the engine is restarted.
+/// Bind the server port. Reuses it straight after a restart (on Linux/macOS
+/// recently closed connections otherwise block it for a minute) and waits a
+/// moment for a previous run to release it.
+fn bind_v4_listener(port: u16) -> Result<TcpListener> {
+    let try_bind = || -> std::io::Result<TcpListener> {
+        let s = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+        // On Windows SO_REUSEADDR would let two programs share the port; there
+        // the default already ignores old connections.
+        #[cfg(unix)]
+        s.set_reuse_address(true)?;
+        s.bind(&SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, port)).into())?;
+        s.listen(16)?;
+        Ok(s.into())
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match try_bind() {
+            Ok(l) => return Ok(l),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                bail!("port {port} is in use by another program (is another copy of OpenHop running? Quit it from its tray icon)")
+            }
+            Err(e) => return Err(e).with_context(|| format!("can't open port {port}")),
+        }
+    }
+}
+
+fn bind_v6_listener(port: u16) -> Option<TcpListener> {
+    let s = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::STREAM, Some(socket2::Protocol::TCP)).ok()?;
+    s.set_only_v6(true).ok()?;
+    s.set_reuse_address(true).ok()?;
+    s.bind(&SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into()).ok()?;
+    s.listen(16).ok()?;
+    Some(s.into())
+}
+
 fn shared_capture(screen: Option<Rect>) -> Result<(Arc<dyn Capture>, Receiver<InputEvent>)> {
     static CAPTURE: OnceLock<(Arc<dyn Capture>, Receiver<InputEvent>)> = OnceLock::new();
     static INIT: Mutex<()> = Mutex::new(());
@@ -238,6 +340,9 @@ struct Ctx {
     notes: Arc<Mutex<Vec<Note>>>,
     inbox: Inbox,
     outbox: Outbox,
+    /// Paired computers, readable from connection threads.
+    trust: Arc<Mutex<std::collections::BTreeMap<String, crate::config::Trusted>>>,
+    pair: Arc<Mutex<PairState>>,
 }
 
 impl Ctx {
@@ -309,6 +414,9 @@ fn clip_messages(origin: &str, data: ClipData) -> Vec<Msg> {
 fn send_bulk_async(link: Link, msgs: Vec<Msg>) {
     let _ = std::thread::Builder::new().name("bulk-send".into()).spawn(move || {
         for m in msgs {
+            if let Msg::ClipPart { data, .. } = &m {
+                files::pace(data.len());
+            }
             if !link.send_bulk_wait(m) {
                 return;
             }
@@ -459,7 +567,9 @@ impl Common {
 // ---------------------------------------------------------------- server
 
 enum NetEvent {
-    Connected { id: u64, name: String, os: Os, screen: Rect, addr: SocketAddr, link: Link },
+    Connected { id: u64, name: String, os: Os, screen: Rect, addr: SocketAddr, link: Link, device: Option<String> },
+    /// A computer just paired with the code; remember its key.
+    Paired { device: String, name: String, key: String },
     Msg(u64, Msg),
     Disconnected(u64),
     Finished(Finished),
@@ -469,6 +579,8 @@ type Routes = Arc<Mutex<HashMap<String, Link>>>;
 
 struct Peer {
     name: String,
+    /// Device id, if it connected with a paired key (not the passphrase).
+    device: Option<String>,
     os: Os,
     screen: Rect,
     addr: SocketAddr,
@@ -500,11 +612,19 @@ struct Server {
 }
 
 impl Server {
-    fn run(ctx: Ctx, (capture, input_rx): (Arc<dyn Capture>, Receiver<InputEvent>), listener: TcpListener, ctl_rx: Receiver<Control>) -> Result<()> {
+    fn run(
+        ctx: Ctx,
+        (capture, input_rx): (Arc<dyn Capture>, Receiver<InputEvent>),
+        listener: TcpListener,
+        listener6: Option<TcpListener>,
+        ctl_rx: Receiver<Control>,
+    ) -> Result<()> {
         let (net_tx, net_rx) = crossbeam_channel::unbounded();
-        let psk = derive_psk(&ctx.cfg.passphrase);
         let routes: Routes = Default::default();
-        spawn_acceptor(listener, psk, ctx.clone(), routes.clone(), net_tx, ctx.stop.clone())?;
+        let mut acceptors = vec![spawn_acceptor(listener, ctx.clone(), routes.clone(), net_tx.clone(), ctx.stop.clone())?];
+        if let Some(l6) = listener6 {
+            acceptors.push(spawn_acceptor(l6, ctx.clone(), routes.clone(), net_tx, ctx.stop.clone())?);
+        }
         let (clip_set, clip_rx) = if ctx.cfg.clipboard_sync {
             let (s, r) = clipboard::start();
             (Some(s), r)
@@ -534,9 +654,14 @@ impl Server {
                 recv(clip_rx) -> c => if let Ok(c) = c { s.on_local_clip(c) },
                 recv(ctl_rx) -> c => match c {
                     Ok(Control::SetLayout(l)) => s.set_layout(l),
+                    Ok(Control::Forget(d)) => s.forget(&d),
+                    Ok(Control::Pair { .. }) => {}
                     Ok(Control::Stop) | Err(_) => break,
                 },
-                recv(pinger) -> _ => s.broadcast(&Msg::Ping, None),
+                recv(pinger) -> _ => {
+                    s.broadcast(&Msg::Ping, None);
+                    s.update_status();
+                }
                 recv(fast) -> _ => s.check_local_drop(),
             }
         }
@@ -545,6 +670,10 @@ impl Server {
         }
         for p in s.peers.values() {
             p.link.close();
+        }
+        // Make sure the port is released before a restart tries to bind it again.
+        for a in acceptors {
+            let _ = a.join();
         }
         Ok(())
     }
@@ -562,6 +691,8 @@ impl Server {
             .collect();
         st.peers.sort_by(|a, b| a.name.cmp(&b.name));
         st.active = self.active.and_then(|(id, _, _)| self.peers.get(&id)).map(|p| p.name.clone()).unwrap_or_default();
+        st.pairing_code = Some(self.ctx.pair.lock().code.clone());
+        st.paired = paired_list(&self.ctx.cfg.trusted);
         st.layout = self.ctx.cfg.layout.clone();
         st.wakeable = if self.ctx.cfg.wake_on_lan { self.ctx.cfg.macs.keys().cloned().collect() } else { vec![] };
         st.message = if self.peers.is_empty() {
@@ -574,6 +705,19 @@ impl Server {
     fn set_layout(&mut self, l: Layout) {
         self.ctx.cfg.layout = l;
         self.ctx.save_config();
+        self.update_status();
+    }
+
+    fn forget(&mut self, device: &str) {
+        if let Some(t) = self.ctx.cfg.trusted.remove(device) {
+            log::info!("forgot {}", t.name);
+            *self.ctx.trust.lock() = self.ctx.cfg.trusted.clone();
+            self.ctx.save_config();
+        }
+        let ids: Vec<u64> = self.peers.iter().filter(|(_, p)| p.device.as_deref() == Some(device)).map(|(&i, _)| i).collect();
+        for id in ids {
+            self.drop_peer(id);
+        }
         self.update_status();
     }
 
@@ -629,7 +773,15 @@ impl Server {
 
     fn on_net(&mut self, ev: NetEvent) {
         match ev {
-            NetEvent::Connected { id, mut name, os, screen, addr, link } => {
+            NetEvent::Paired { device, name, key } => {
+                log::info!("paired with {name}");
+                self.ctx.cfg.trusted.insert(device, crate::config::Trusted { name: name.clone(), key });
+                *self.ctx.trust.lock() = self.ctx.cfg.trusted.clone();
+                self.ctx.save_config();
+                self.ctx.note(note(format!("Paired with {name}"), "It will connect automatically from now on.", vec![]));
+                self.update_status();
+            }
+            NetEvent::Connected { id, mut name, os, screen, addr, link, device } => {
                 // A reconnect from the same computer replaces the stale session
                 // (keeps its place in the arrangement).
                 if let Some(old) = self.peer_by_name(&name) {
@@ -654,7 +806,7 @@ impl Server {
                 self.ctx.cfg.last_ips.insert(name.clone(), addr.ip().to_string());
                 self.ctx.save_config();
                 self.routes.lock().insert(name.clone(), link.clone());
-                self.peers.insert(id, Peer { name, os, screen, addr, link });
+                self.peers.insert(id, Peer { name, device, os, screen, addr, link });
                 self.update_status();
             }
             NetEvent::Disconnected(id) => self.drop_peer(id),
@@ -968,10 +1120,16 @@ impl Server {
     }
 }
 
-fn spawn_acceptor(listener: TcpListener, psk: [u8; 32], ctx: Ctx, routes: Routes, net_tx: Sender<NetEvent>, stop: Arc<AtomicBool>) -> Result<()> {
+fn spawn_acceptor(
+    listener: TcpListener,
+    ctx: Ctx,
+    routes: Routes,
+    net_tx: Sender<NetEvent>,
+    stop: Arc<AtomicBool>,
+) -> Result<std::thread::JoinHandle<()>> {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
     listener.set_nonblocking(true)?;
-    std::thread::Builder::new().name("acceptor".into()).spawn(move || {
+    Ok(std::thread::Builder::new().name("acceptor".into()).spawn(move || {
         while !stop.load(Ordering::Relaxed) {
             let (stream, addr) = match listener.accept() {
                 Ok(c) => c,
@@ -991,14 +1149,14 @@ fn spawn_acceptor(listener: TcpListener, psk: [u8; 32], ctx: Ctx, routes: Routes
                 let _ = stream.set_nonblocking(false);
                 let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
                 let me = ctx.cfg.name.clone();
-                let (link, mut rx, name, os, screen) = match server_handshake(stream, &psk, &me, id, net_tx.clone()) {
+                let (link, mut rx, name, os, screen, device) = match accept_peer(stream, &ctx, id, net_tx.clone()) {
                     Ok(v) => v,
                     Err(e) => {
                         log::warn!("rejected connection from {addr}: {e:#}");
                         return;
                     }
                 };
-                if net_tx.send(NetEvent::Connected { id, name, os, screen, addr, link }).is_err() {
+                if net_tx.send(NetEvent::Connected { id, name, os, screen, addr, link, device }).is_err() {
                     return;
                 }
                 loop {
@@ -1017,8 +1175,69 @@ fn spawn_acceptor(listener: TcpListener, psk: [u8; 32], ctx: Ctx, routes: Routes
                 }
             });
         }
-    })?;
-    Ok(())
+    })?)
+}
+
+/// Work out which secret the connecting computer must prove, run the
+/// handshake, and (for a pairing) hand it a key of its own.
+#[allow(clippy::type_complexity)]
+fn accept_peer(
+    mut stream: TcpStream,
+    ctx: &Ctx,
+    id: u64,
+    net_tx: Sender<NetEvent>,
+) -> Result<(Link, SecureReceiver, String, Os, Rect, Option<String>)> {
+    let auth = crate::net::read_auth(&mut stream)?;
+    let me = ctx.cfg.name.clone();
+    match auth {
+        crate::net::Auth::Passphrase => {
+            if ctx.cfg.passphrase.trim().is_empty() {
+                bail!("this computer uses pairing codes, not a passphrase");
+            }
+            let (link, rx, name, os, screen) = server_handshake(stream, &derive_psk(&ctx.cfg.passphrase), &me, id, net_tx)?;
+            Ok((link, rx, name, os, screen, None))
+        }
+        crate::net::Auth::Key { device } => {
+            let key = ctx.trust.lock().get(&device).and_then(|t| crate::config::hex_key(&t.key));
+            let Some(key) = key else { bail!("unknown computer {device}: pair it again with the code") };
+            let (link, rx, name, os, screen) = server_handshake(stream, &key, &me, id, net_tx)?;
+            Ok((link, rx, name, os, screen, Some(device)))
+        }
+        crate::net::Auth::Pair { device, .. } => {
+            let code = {
+                let p = ctx.pair.lock();
+                if p.locked_until.map(|t| Instant::now() < t).unwrap_or(false) {
+                    bail!("too many wrong pairing codes; try again in a minute");
+                }
+                p.code.clone()
+            };
+            match server_handshake(stream, &crate::net::pairing_psk(&code), &me, id, net_tx.clone()) {
+                Ok((link, rx, name, os, screen)) => {
+                    let key = crate::config::random_hex(32);
+                    link.send(Msg::Paired { server_device: ctx.cfg.device_id.clone(), key: key.clone() });
+                    ctx.trust.lock().insert(device.clone(), crate::config::Trusted { name: name.clone(), key: key.clone() });
+                    {
+                        let mut p = ctx.pair.lock();
+                        p.code = new_code();
+                        p.failures = 0;
+                    }
+                    let _ = net_tx.send(NetEvent::Paired { device: device.clone(), name: name.clone(), key });
+                    Ok((link, rx, name, os, screen, Some(device)))
+                }
+                Err(e) => {
+                    let mut p = ctx.pair.lock();
+                    p.failures += 1;
+                    if p.failures >= 5 {
+                        p.locked_until = Some(Instant::now() + Duration::from_secs(60));
+                        p.failures = 0;
+                        p.code = new_code();
+                        log::warn!("five wrong pairing codes: pairing paused for a minute");
+                    }
+                    Err(e.context("wrong pairing code"))
+                }
+            }
+        }
+    }
 }
 
 /// Runs on a connection's reader thread. File data is written (or relayed)
@@ -1098,6 +1317,24 @@ struct Client {
     here: bool,
 }
 
+/// Where and how the client connects.
+struct Target {
+    addr: SocketAddr,
+    label: String,
+    auth: crate::net::Auth,
+    psk: [u8; 32],
+    /// Device id being paired with (first connection with a code).
+    pairing: Option<String>,
+}
+
+enum SessionEnd {
+    Stop,
+    /// The user asked to pair (with another server, or again).
+    Pair(String, String),
+    /// The server was forgotten.
+    Forgot,
+}
+
 impl Client {
     fn run(ctx: Ctx, injector: Box<dyn Injector>, ctl_rx: Receiver<Control>) -> Result<()> {
         let (clip_set, clip_rx) = if ctx.cfg.clipboard_sync {
@@ -1114,22 +1351,54 @@ impl Client {
             held_buttons: HashSet::new(),
             here: false,
         };
-        let psk = derive_psk(&c.ctx.cfg.passphrase);
         let mut last_failed: HashMap<SocketAddr, Instant> = HashMap::new();
+        let mut pending_pair: Option<(String, String)> = None;
         while !c.ctx.stopped() {
-            let Some((addr, label)) = c.pick_server(&last_failed) else {
-                c.ctx.set_message("Looking for a server on your network…");
-                if let Ok(Control::Stop) = ctl_rx.recv_timeout(Duration::from_secs(1)) {
-                    break;
+            let target = match pending_pair.take() {
+                Some((dev, code)) => c.pair_target(&dev, &code),
+                None => c.pick_server(&last_failed),
+            };
+            let Some(t) = target else {
+                let needs = c.needs_pairing();
+                {
+                    let mut st = c.ctx.status.lock();
+                    st.needs_pairing = needs;
+                    st.paired = paired_list(&c.ctx.cfg.trusted);
+                    st.message = if needs {
+                        "Not paired yet: choose the computer to pair with below".into()
+                    } else {
+                        "Looking for the sharing computer…".into()
+                    };
+                }
+                match ctl_rx.recv_timeout(Duration::from_secs(1)) {
+                    Ok(Control::Stop) => break,
+                    Ok(Control::Pair { device, code }) => pending_pair = Some((device, code)),
+                    Ok(Control::Forget(d)) => c.forget(&d),
+                    _ => {}
                 }
                 continue;
             };
-            c.ctx.set_message(format!("Connecting to {label}…"));
-            match c.session(addr, &label, &psk, &ctl_rx, &clip_rx) {
-                Ok(()) => break, // asked to stop
+            let (label, addr, pairing) = (t.label.clone(), t.addr, t.pairing.clone());
+            {
+                let mut st = c.ctx.status.lock();
+                st.needs_pairing = false;
+                st.pairing_with = pairing.clone();
+                st.pair_error = None;
+                st.message = if pairing.is_some() { format!("Pairing with {label}…") } else { format!("Connecting to {label}…") };
+            }
+            match c.session(t, &ctl_rx, &clip_rx) {
+                Ok(SessionEnd::Stop) => break,
+                Ok(SessionEnd::Pair(d, code)) => pending_pair = Some((d, code)),
+                Ok(SessionEnd::Forgot) => {}
                 Err(e) => {
                     log::warn!("{label}: {e:#}");
-                    c.ctx.set_error(Some(format!("{label}: {e:#}")));
+                    if pairing.is_some() {
+                        let mut st = c.ctx.status.lock();
+                        st.pairing_with = None;
+                        st.pair_error = Some(format!("That code didn't work. Check the code shown on {label} and try again."));
+                    } else {
+                        c.ctx.set_error(Some(format!("{label}: {e:#}")));
+                    }
                     last_failed.insert(addr, Instant::now());
                     c.release_all();
                     c.here = false;
@@ -1138,8 +1407,11 @@ impl Client {
                         st.peers.clear();
                         st.active.clear();
                     }
-                    if let Ok(Control::Stop) = ctl_rx.recv_timeout(Duration::from_secs(2)) {
-                        break;
+                    match ctl_rx.recv_timeout(Duration::from_secs(2)) {
+                        Ok(Control::Stop) => break,
+                        Ok(Control::Pair { device, code }) => pending_pair = Some((device, code)),
+                        Ok(Control::Forget(d)) => c.forget(&d),
+                        _ => {}
                     }
                 }
             }
@@ -1148,10 +1420,54 @@ impl Client {
         Ok(())
     }
 
-    fn pick_server(&self, failed: &HashMap<SocketAddr, Instant>) -> Option<(SocketAddr, String)> {
-        if let Some(a) = &self.ctx.cfg.server_addr {
-            let with_port = if a.contains(':') { a.clone() } else { format!("{a}:{DEFAULT_PORT}") };
-            return with_port.to_socket_addrs().ok()?.next().map(|s| (s, a.clone()));
+    /// Not paired with any server and no passphrase to fall back on.
+    fn needs_pairing(&self) -> bool {
+        let paired = self.ctx.cfg.server_device.as_ref().map(|d| self.ctx.cfg.trusted.contains_key(d)).unwrap_or(false);
+        !paired && self.ctx.cfg.passphrase.trim().is_empty()
+    }
+
+    fn forget(&mut self, device: &str) {
+        self.ctx.cfg.trusted.remove(device);
+        if self.ctx.cfg.server_device.as_deref() == Some(device) {
+            self.ctx.cfg.server_device = None;
+        }
+        *self.ctx.trust.lock() = self.ctx.cfg.trusted.clone();
+        self.ctx.save_config();
+        self.ctx.status.lock().paired = paired_list(&self.ctx.cfg.trusted);
+    }
+
+    fn manual_addr(&self) -> Option<(SocketAddr, String)> {
+        let a = self.ctx.cfg.server_addr.as_ref()?.trim().to_string();
+        if let Ok(sa) = a.parse::<SocketAddr>() {
+            return Some((sa, a));
+        }
+        if let Ok(ip) = a.parse::<IpAddr>() {
+            return Some((SocketAddr::new(ip, DEFAULT_PORT), a));
+        }
+        let with_port = if a.contains(':') { a.clone() } else { format!("{a}:{DEFAULT_PORT}") };
+        with_port.to_socket_addrs().ok()?.next().map(|s| (s, a))
+    }
+
+    fn pick_server(&self, failed: &HashMap<SocketAddr, Instant>) -> Option<Target> {
+        let me = self.ctx.cfg.device_id.clone();
+        // 1. The server we're paired with (by its device id).
+        if let Some(dev) = self.ctx.cfg.server_device.clone() {
+            if let Some(key) = self.ctx.cfg.trusted.get(&dev).and_then(|t| crate::config::hex_key(&t.key)) {
+                let name = self.ctx.cfg.trusted[&dev].name.clone();
+                let found = match self.manual_addr() {
+                    Some((addr, _)) => Some(addr),
+                    None => self.ctx.discovery.servers().into_iter().find(|s| s.device == dev).map(|s| s.addr),
+                };
+                return found.map(|addr| Target { addr, label: name, auth: crate::net::Auth::Key { device: me }, psk: key, pairing: None });
+            }
+        }
+        // 2. A shared passphrase: any server on the network.
+        if self.ctx.cfg.passphrase.trim().is_empty() {
+            return None;
+        }
+        let psk = derive_psk(&self.ctx.cfg.passphrase);
+        if let Some((addr, label)) = self.manual_addr() {
+            return Some(Target { addr, label, auth: crate::net::Auth::Passphrase, psk, pairing: None });
         }
         let recently_failed = |a: &SocketAddr| failed.get(a).map(|t| t.elapsed() < Duration::from_secs(5)).unwrap_or(false);
         self.ctx
@@ -1160,17 +1476,38 @@ impl Client {
             .into_iter()
             .filter(|s| self.ctx.cfg.server_name.as_ref().map(|n| n == &s.name).unwrap_or(true))
             .find(|s| !recently_failed(&s.addr))
-            .map(|s| (s.addr, s.name))
+            .map(|s| Target { addr: s.addr, label: s.name, auth: crate::net::Auth::Passphrase, psk, pairing: None })
     }
 
-    fn session(&mut self, addr: SocketAddr, label: &str, psk: &[u8; 32], ctl_rx: &Receiver<Control>, clip_rx: &Receiver<ClipData>) -> Result<()> {
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(4)).context("could not connect")?;
+    fn pair_target(&self, device: &str, code: &str) -> Option<Target> {
+        let Some(s) = self.ctx.discovery.servers().into_iter().find(|s| s.device == device) else {
+            self.ctx.status.lock().pair_error = Some("That computer isn't visible any more. Is OpenHop running on it?".into());
+            return None;
+        };
+        Some(Target {
+            addr: s.addr,
+            label: s.name,
+            auth: crate::net::Auth::Pair { device: self.ctx.cfg.device_id.clone(), name: self.ctx.cfg.name.clone() },
+            psk: crate::net::pairing_psk(code),
+            pairing: Some(device.to_string()),
+        })
+    }
+
+    fn session(&mut self, t: Target, ctl_rx: &Receiver<Control>, clip_rx: &Receiver<ClipData>) -> Result<SessionEnd> {
+        let (addr, label) = (t.addr, t.label.as_str());
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(4)).context("could not connect")?;
         let local_ip = stream.local_addr().ok().map(|a| a.ip());
-        let (tx, mut rx) = handshake(stream, psk, true)?;
+        crate::net::write_auth(&mut stream, &t.auth)?;
+        let (tx, mut rx) = handshake(stream, &t.psk, true)?;
         let mut screen = self.injector.screen();
         tx.send(&Msg::Hello { version: PROTOCOL_VERSION, name: self.ctx.cfg.name.clone(), os: Os::current(), screen })?;
         rx.set_timeout(Some(Duration::from_secs(10)))?;
-        let (server_name, server_os) = match rx.recv().map_err(|_| anyhow!("server closed the connection: is the passphrase the same on both computers?"))? {
+        let refused = match t.auth {
+            crate::net::Auth::Passphrase => "the server refused: is the passphrase the same on both computers?",
+            crate::net::Auth::Key { .. } => "the server doesn't recognise this computer any more: pair again with its code",
+            crate::net::Auth::Pair { .. } => "wrong pairing code",
+        };
+        let (server_name, server_os) = match rx.recv().map_err(|_| anyhow!(refused))? {
             Msg::Welcome { version, name, os } if version == PROTOCOL_VERSION => (name, os),
             Msg::Welcome { version, .. } => bail!("the server runs OpenHop protocol v{version}, this computer runs v{PROTOCOL_VERSION}: update both to the same version"),
             _ => bail!("unexpected reply"),
@@ -1181,6 +1518,7 @@ impl Client {
         {
             let mut st = self.ctx.status.lock();
             st.message = format!("Connected to {label}");
+            st.pairing_with = None;
             st.peers = vec![PeerStatus { name: server_name.clone(), os: server_os, addr: addr.ip().to_string(), screen: Rect { x: 0, y: 0, w: 0, h: 0 } }];
         }
 
@@ -1244,7 +1582,15 @@ impl Client {
                     }
                 },
                 recv(ctl_rx) -> c => match c {
-                    Ok(Control::Stop) | Err(_) => break Ok(()),
+                    Ok(Control::Stop) | Err(_) => break Ok(SessionEnd::Stop),
+                    Ok(Control::Pair { device, code }) => break Ok(SessionEnd::Pair(device, code)),
+                    Ok(Control::Forget(d)) => {
+                        let current = self.ctx.cfg.server_device.as_deref() == Some(d.as_str());
+                        self.forget(&d);
+                        if current {
+                            break Ok(SessionEnd::Forgot);
+                        }
+                    }
                     Ok(Control::SetLayout(_)) => {}
                 },
                 recv(ticker) -> _ => {
@@ -1324,6 +1670,16 @@ impl Client {
             Msg::FileRequest { offer, requester, .. } => {
                 // The server relays our data to the requester.
                 self.ctx.outbox.serve(offer, requester, link.clone());
+                Ok(())
+            }
+            Msg::Paired { server_device, key } => {
+                log::info!("paired with {server}");
+                self.ctx.cfg.trusted.insert(server_device.clone(), crate::config::Trusted { name: server.to_string(), key });
+                self.ctx.cfg.server_device = Some(server_device);
+                *self.ctx.trust.lock() = self.ctx.cfg.trusted.clone();
+                self.ctx.save_config();
+                self.ctx.status.lock().paired = paired_list(&self.ctx.cfg.trusted);
+                self.ctx.note(note(format!("Paired with {server}"), "It will connect automatically from now on.", vec![]));
                 Ok(())
             }
             Msg::DragQuery { id } => {

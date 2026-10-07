@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -137,6 +137,8 @@ pub enum Msg {
 
     /// Client -> server: details used for Wake-on-LAN.
     Mac(String),
+    /// Server -> client after pairing with a code: the key to use from now on.
+    Paired { server_device: String, key: String },
 }
 
 impl Msg {

@@ -21,7 +21,7 @@ Free, open-source and encrypted. Works across Windows, macOS and Linux.
 
 OpenHop is a **software KVM**. Put a few computers on your desk, run OpenHop on each of them, and move your mouse off the edge of one screen: the pointer appears on the next computer, and your keyboard follows it. Copy text, screenshots, files and videos on one machine and paste them on another, or drag files straight across the screen edge. You don't need a hardware switch or any extra cables, only your local network.
 
-> **Updating from v0.1?** v0.2 speaks a new protocol, so **update every computer**. A v0.1 computer and a v0.2 computer can't connect to each other. Rerun the one-line installer on each machine.
+> **Updating?** Use **Check for Updates** in the app (v0.3+) or rerun the one-line installer. Keep **every computer on the same version**, because different protocol versions can't connect to each other. See [Updating](#updating).
 
 It was built as a free, cross-platform alternative to paid tools such as CursorHop, Synergy or ShareMouse, with Linux supported as a first-class platform.
 
@@ -62,7 +62,9 @@ Then follow [Set up your computers](#set-up-your-computers).
 - [Install](#install)
   - [Windows](#windows) · [macOS](#macos) · [Linux (Ubuntu, Debian, Fedora…)](#linux)
 - [Set up your computers (5 minutes)](#set-up-your-computers)
+  - [Connecting without a router](#connecting-without-a-router) · [Updating](#updating)
 - [Everyday use](#everyday-use)
+- [FAQ](#faq)
 - [Command line](#command-line)
 - [Configuration file](#configuration-file)
 - [Security](#security)
@@ -88,6 +90,10 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 💤 **Wake-on-LAN** | Move the pointer toward a computer that's asleep and OpenHop sends it a wake-up packet. |
 | 🔒 **End-to-end encryption** | Every keystroke, mouse movement and clipboard item is encrypted with the [Noise protocol](https://noiseprotocol.org) (X25519, ChaCha20-Poly1305, BLAKE2s). There is no plaintext mode. |
 | 📡 **Zero-config discovery** | Computers on the same network find each other automatically. You don't type any IP addresses. |
+| 🤝 **AirDrop-style pairing** | Pick the computer from a list and type the 6-digit code it shows. No passwords to agree on, and it reconnects by itself from then on. |
+| 🔌 **No router needed** | Join two computers with an Ethernet, USB-C or Thunderbolt cable and they connect directly, while each keeps its own Wi-Fi. |
+| 🐢 **Bandwidth friendly** | Mouse and keyboard use under 0.1 Mbps. Big file transfers can be capped with **Transfer Speed Limit** so they never hog your Wi-Fi. |
+| ⬆️ **One-click updates** | **Check for Updates** downloads and installs the new version for you. |
 | 🗺 **Drag-and-drop arrangement** | Arrange screens the way they sit on your desk: left, right, above, below, or chained (A → B → C). |
 | 🖥 **Multi-monitor aware** | Each computer's full desktop (all of its monitors) counts as one screen. |
 | 🌗 **Native-feeling app** | An Apple-inspired settings window and iOS-style notifications, in light and dark mode. It keeps running in the system tray. |
@@ -198,27 +204,40 @@ sudo ufw allow 24850/tcp && sudo ufw allow 24851/udp
 
 ## Set up your computers
 
-You'll need all computers on the **same network** (Wi-Fi or Ethernet, same router).
+It works like AirDrop: no accounts, no IP addresses, no passwords to agree on.
 
-**1. Install OpenHop on every computer** (see [Install](#install)).
+**1. Install OpenHop on every computer** (see [Quick install](#quick-install)). Open it and leave it running in the tray.
 
-**2. On the computer whose keyboard and mouse you want to use:**
-- Set **Role** to **Control Others**.
-- Type a **passphrase**. Make it something long and memorable, like `purple-river-lamp-42`.
-- Turn on the switch at the top right.
+**2. On the computer whose keyboard and mouse you want to use**, keep **Role** on **Control Others**. Under **Pair a Computer** it shows a 6-digit **Pairing Code**.
 
-**3. On each of the other computers:**
-- Set **Role** to **Be Controlled**.
-- Enter the **same passphrase**.
-- Turn on the switch. Within a few seconds it finds the server and shows **Connected to …**
+**3. On each of the other computers**, set **Role** to **Be Controlled**. The first computer appears under **On Your Network**. Click **Pair**, type its code, and you're connected. From then on they reconnect automatically, even after restarts.
 
 <p align="center">
-  <img src="docs/screenshots/client-light.png" width="70%" alt="A controlled computer showing 'Controlled by desk-pc right now'">
+  <img src="docs/screenshots/pair-light.png" width="70%" alt="Pairing: typing the 6-digit code shown on the host">
 </p>
 
-**4. Arrange your screens.** Back on the server, every connected computer appears under **Arrangement**. Drag each screen tile to where that computer physically sits relative to your main one, for example the MacBook to the right and the Ubuntu box to the left. The arrangement saves automatically.
+**4. Arrange your screens.** Back on the first computer, every connected computer appears under **Arrangement**. Drag each tile to where that computer sits on your desk, for example the MacBook to the right and the Ubuntu box to the left. The arrangement saves automatically.
 
 **5. Hop!** Move your pointer off the edge of your screen toward another computer. A blue ring in the app shows which computer has the cursor.
+
+> **Prefer a shared passphrase?** That still works. Type the same **Passphrase** on every computer and they'll connect without pairing. You might want this for scripted setups or a large office.
+
+### Connecting without a router
+
+The computers don't need to be on the same Wi-Fi.
+
+- **A cable between them (recommended).** Connect two computers with an Ethernet cable, a USB-C/Thunderbolt cable (Thunderbolt Bridge on Macs), or a USB Ethernet adapter. OpenHop finds the other computer over the cable automatically: it shows up with a **Cable** badge. Each computer keeps its own Wi-Fi or internet connection; OpenHop's traffic simply uses the cable. This uses link-local addressing, which every OS sets up by itself with no configuration.
+- **A phone hotspot.** Join both computers to the same hotspot.
+- **Bluetooth networking (PAN).** Pair the computers in your OS's Bluetooth settings and join a Bluetooth network between them. OpenHop treats it like any other network. It's slower than Wi-Fi but fine for mouse and keyboard.
+
+A built-in Bluetooth or Wi-Fi Direct link inside the app is on the [roadmap](#roadmap).
+
+### Updating
+
+- **OpenHop 0.3 and later:** the app checks for updates by itself and shows a notification when a new version is out. You can also open **Software Update › Check for Updates**, then click **Update**. It downloads the right installer, installs it and reopens. On Linux you'll be asked for your password.
+- **Any version:** run the same [one-line install command](#quick-install) again. It installs the latest version over the old one and keeps your settings and pairings.
+
+Update **every computer** to the same version: computers only connect to others running the same protocol version.
 
 ---
 
@@ -245,25 +264,49 @@ You'll need all computers on the **same network** (Wi-Fi or Ethernet, same route
 
 ---
 
+## FAQ
+
+**Can I drag an app window from one computer onto another?**
+Not yet. Moving a live window between different operating systems means streaming it as video, which is planned for phase 2 (see the [roadmap](#roadmap)). Today, if you drag a window to the edge, the window stays on its own screen and only the pointer hops. Files you drag *do* carry across.
+
+**Will it slow down my Wi-Fi?**
+Mouse and keyboard traffic is tiny, under 0.1 Mbps even while you move the mouse constantly. Only copying big files or images uses real bandwidth. To cap that, choose a **Transfer Speed Limit** under Options (for example 20 Mbps). Your pointer stays smooth during transfers either way, because input always goes first.
+
+**Do I need a router or the same Wi-Fi?**
+No. A cable between the two computers works with zero setup, and each keeps its own internet connection. A phone hotspot or Bluetooth networking also work. See [Connecting without a router](#connecting-without-a-router).
+
+**What happens if a computer goes to sleep or drops off Wi-Fi?**
+OpenHop notices within about 10 seconds and gives you the pointer back. The computer reconnects by itself when it's back, in the same place in your arrangement. With **Wake Sleeping Computers** on, moving toward it tries to wake it.
+
+**Is it safe on public or office networks?**
+Everything is end-to-end encrypted, and a computer must be paired (or know the passphrase) to connect. See [Security](#security).
+
 ## Command line
 
 The `openhop` command-line tool runs the same engine without a window. It's useful for servers, scripting or troubleshooting.
 
 ```bash
-# On the computer with the keyboard and mouse
-openhop server --passphrase "purple-river-lamp-42" --name desk-pc
+# On the computer with the keyboard and mouse (prints its pairing code)
+openhop server --name desk-pc
 
-# On each controlled computer (auto-discovers the server)
-openhop client --passphrase "purple-river-lamp-42" --name macbook
+# On each controlled computer: pair once with the code, then just `openhop client`
+openhop client --pair 485632 --name macbook
+openhop client                       # reconnects with the saved pairing
+openhop paired                       # list paired computers
+openhop paired --forget macbook      # unpair
 
-# ...or connect to a known address
-openhop client --server 192.168.1.20 --passphrase "purple-river-lamp-42"
+# Or use a shared passphrase instead of pairing
+openhop server --passphrase "purple-river-lamp-42"
+openhop client --passphrase "purple-river-lamp-42"
+
+# ...or connect to a known address (IPv4, IPv6 or hostname)
+openhop client --server 192.168.1.20
 
 # Arrange screens: the server is at 0,0. 1,0 = right, -1,0 = left, 0,-1 = above, 0,1 = below
 openhop place macbook 1 0
 openhop place ubuntu-box -1 0
 
-# See which OpenHop computers are on the network
+# See which OpenHop computers are around (network or direct cable)
 openhop devices
 
 # Show the config file location and contents (passphrase hidden)
@@ -290,6 +333,11 @@ port = 24850                 # server TCP port
 swap_cmd_ctrl = true         # translate Cmd <-> Ctrl between Mac and PC
 clipboard_sync = true
 linux_backend = "auto"       # Linux client: "auto", "x11" or "uinput"
+transfer_limit_mbps = 0      # cap file/image transfers (0 = no limit)
+wake_on_lan = true
+notifications = true
+# download_dir = "/home/me/Downloads/OpenHop"
+# device_id, [trusted.*] and server_device are written by pairing; don't edit by hand
 # server_addr = "192.168.1.20"  # client: skip discovery
 # server_name = "desk-pc"       # client: only join this server
 # screen = { x = 0, y = 0, w = 2560, h = 1440 }  # override detected desktop size
@@ -305,12 +353,11 @@ y = 0
 ## Security
 
 - **Encrypted from the first byte.** Each connection runs a Noise `NNpsk2` handshake (X25519 key exchange, ChaCha20-Poly1305 encryption, BLAKE2s hashing). There is no unencrypted mode.
-- **Passphrase-gated.** The pre-shared key is derived from your passphrase. A computer without it can't connect, and it can't read or inject anything.
-- **No offline guessing.** The passphrase is mixed in *after* a fresh key exchange, so someone recording your network traffic can't brute-force it offline.
-- **Local only.** OpenHop never talks to the internet. There's no account, telemetry or cloud relay.
-- **Discovery beacons** broadcast only a computer name, OS and port. They contain nothing secret.
-
-Use a passphrase of four or more words on networks you don't fully trust.
+- **Pairing codes.** The first connection is keyed from the 6-digit code shown on the host. Inside that encrypted session the host hands the new computer a random 256-bit key, which both sides store and use from then on. The code changes after every pairing.
+- **No guessing.** The code (or passphrase) is mixed in *after* a fresh key exchange, so someone recording your network can't brute-force it offline. Online guesses are limited too: after five wrong codes, pairing pauses for a minute and the code changes.
+- **Forget a computer** under **Paired Computers** at any time. Its key stops working immediately.
+- **Local only.** OpenHop never sends your input, clipboard or files over the internet. There's no account, telemetry or cloud relay. The one exception is **Check for Updates**, which reads the public GitHub releases page.
+- **Discovery beacons** broadcast only a computer name, a random device ID, the OS and a port. They contain nothing secret.
 
 ## Troubleshooting
 
@@ -320,6 +367,25 @@ Use a passphrase of four or more words on networks you don't fully trust.
 - Make sure they're on the same network. Guest Wi-Fi and "client isolation" often block device-to-device traffic.
 - Allow OpenHop through the firewall: **TCP 24850** and **UDP 24851**.
 - Some routers block broadcast discovery. On the client, enter the server's IP in **Server** (or use `--server 192.168.x.x`).
+- Using a cable on Linux? Make sure the wired connection is **up**, even without an IPv4 address (in Ubuntu: Settings › Network › Wired, and choose *Link-Local Only* for IPv4 if it keeps retrying DHCP).
+</details>
+
+<details>
+<summary><b>The on/off switch won't stay on: "port 24850 is in use"</b></summary>
+
+Another copy of OpenHop is already running, probably in the tray. Quit it from its tray icon (or run `pkill -f openhop` on Linux/macOS), then open OpenHop once. From v0.3, opening OpenHop a second time just brings up the existing window, and restarting reuses the port immediately.
+</details>
+
+<details>
+<summary><b>"That code didn't work"</b></summary>
+
+Type the code currently shown on the host. It changes after each successful pairing, and after five wrong tries pairing pauses for a minute. Make sure the host is set to **Control Others** and its switch is on.
+</details>
+
+<details>
+<summary><b>A computer says "doesn't recognise this computer any more"</b></summary>
+
+It was forgotten on the host, or the host was reinstalled. Pair again: click **Pair** and enter the code.
 </details>
 
 <details>
@@ -415,11 +481,14 @@ open-hop/
 
 ## Roadmap
 
+**Done in v0.3:** AirDrop-style pairing with a 6-digit code, direct-cable connections (no router), transfer speed limit, Check for Updates, single-instance app and the restart fix.
+
 **Done in v0.2:** file copy & paste (files, folders, videos), drag & drop across screens, smart link prompts, open-received-file prompts, Wake-on-LAN, resilient connections.
 
 **Next up** (pure software, achievable on all three OSes):
 
 - [ ] **Wayland as server** via the XDG InputCapture portal (GNOME 45+, KDE 6+), plus drag-out from Wayland apps
+- [ ] **Built-in wireless link** without any network: Wi-Fi Direct (Windows and Linux have APIs, macOS doesn't) or a Bluetooth RFCOMM/L2CAP transport (needs a separate implementation for each OS's Bluetooth stack)
 - [ ] **Hotkeys**: jump to a screen, or lock the pointer to the current one
 - [ ] **Keep awake / smart sleep**: keep controlled computers awake while connected, and let an idle one sleep while the others stay up
 - [ ] **Do Not Disturb sync**: silence notifications on the other computers while one is presenting or in a full-screen meeting. This works on GNOME and KDE. macOS and Windows have no public API for Focus or Do Not Disturb, so it would rely on a Shortcuts automation (macOS) and is best-effort on Windows.

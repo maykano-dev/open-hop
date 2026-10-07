@@ -46,6 +46,38 @@ pub struct Config {
     pub download_dir: Option<String>,
     /// Show small notifications (received files, links copied on another computer).
     pub notifications: bool,
+    /// Cap file and image transfers at this many megabits per second (0 = no limit).
+    pub transfer_limit_mbps: u32,
+    /// Stable random id for this installation (used for pairing).
+    pub device_id: String,
+    /// Computers paired with a code: device id -> name and shared key.
+    pub trusted: std::collections::BTreeMap<String, Trusted>,
+    /// Client: the paired server to connect to.
+    pub server_device: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trusted {
+    pub name: String,
+    /// 32-byte key, hex.
+    pub key: String,
+}
+
+pub fn random_hex(bytes: usize) -> String {
+    let mut b = vec![0u8; bytes];
+    getrandom::fill(&mut b).expect("OS random number generator");
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+pub fn hex_key(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 impl Default for Config {
@@ -67,6 +99,10 @@ impl Default for Config {
             wake_on_lan: true,
             download_dir: None,
             notifications: true,
+            transfer_limit_mbps: 0,
+            device_id: String::new(),
+            trusted: Default::default(),
+            server_device: None,
         }
     }
 }
@@ -99,11 +135,17 @@ impl Config {
     }
 
     pub fn load(path: &PathBuf) -> Result<Config> {
-        if !path.exists() {
-            return Ok(Config::default());
+        let mut cfg: Config = if path.exists() {
+            let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?
+        } else {
+            Config::default()
+        };
+        if cfg.device_id.is_empty() {
+            cfg.device_id = random_hex(8);
+            let _ = cfg.save(path);
         }
-        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        Ok(cfg)
     }
 
     pub fn save(&self, path: &PathBuf) -> Result<()> {
@@ -130,6 +172,9 @@ mod tests {
         let partial: Config = toml::from_str("role = \"client\"\npassphrase = \"abc\"").unwrap();
         assert_eq!(partial.role, Role::Client);
         assert!(partial.swap_cmd_ctrl);
+        let k = random_hex(32);
+        assert_eq!(hex_key(&k).map(|b| b.len()), Some(32));
+        assert!(hex_key("zz").is_none());
     }
 }
 

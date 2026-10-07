@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use openhop_core::engine::Note;
+mod updater;
+
+use openhop_core::engine::{Note, NoteAction};
 use openhop_core::layout::Layout;
 use openhop_core::protocol::Os;
 use openhop_core::{Config, Engine, Status};
@@ -30,6 +32,8 @@ struct Snapshot {
     error: Option<String>,
     permission: Option<String>,
     wayland: bool,
+    version: &'static str,
+    update: updater::UpdateState,
 }
 
 fn wayland() -> bool {
@@ -59,6 +63,8 @@ fn snapshot(app: State<App>) -> Snapshot {
         error: app.last_error.lock().clone(),
         permission: openhop_core::platform::check_permissions(false),
         wayland: wayland(),
+        version: env!("CARGO_PKG_VERSION"),
+        update: updater::state(),
     }
 }
 
@@ -67,7 +73,8 @@ fn start_engine(app: &App) -> Result<(), String> {
     if let Some(e) = engine.take() {
         e.stop();
     }
-    let cfg = app.config.lock().clone();
+    let cfg = merge_engine_fields(app.config.lock().clone(), &app.path);
+    *app.config.lock() = cfg.clone();
     match Engine::start(cfg, Some(app.path.clone())) {
         Ok(e) => {
             *engine = Some(e);
@@ -82,8 +89,23 @@ fn start_engine(app: &App) -> Result<(), String> {
     }
 }
 
+/// Fields the engine writes while running (pairing keys, arrangement, Wake-on-LAN
+/// details). Take them from disk so saving the settings form never undoes them.
+fn merge_engine_fields(mut config: Config, path: &PathBuf) -> Config {
+    if let Ok(disk) = Config::load(path) {
+        config.device_id = disk.device_id;
+        config.trusted = disk.trusted;
+        config.server_device = disk.server_device;
+        config.layout = disk.layout;
+        config.macs = disk.macs;
+        config.last_ips = disk.last_ips;
+    }
+    config
+}
+
 #[tauri::command]
 fn save_config(app: State<App>, config: Config, restart: bool) -> Result<(), String> {
+    let config = merge_engine_fields(config, &app.path);
     config.save(&app.path).map_err(|e| e.to_string())?;
     let running = app.engine.lock().is_some();
     *app.config.lock() = config;
@@ -109,8 +131,10 @@ fn stop(app: State<App>) {
 fn set_layout(app: State<App>, layout: Layout) -> Result<(), String> {
     {
         let mut cfg = app.config.lock();
-        cfg.layout = layout.clone();
-        cfg.save(&app.path).map_err(|e| e.to_string())?;
+        let mut merged = merge_engine_fields(cfg.clone(), &app.path);
+        merged.layout = layout.clone();
+        merged.save(&app.path).map_err(|e| e.to_string())?;
+        *cfg = merged;
     }
     if let Some(e) = app.engine.lock().as_ref() {
         e.set_layout(layout);
@@ -160,8 +184,68 @@ fn toast_layout(handle: AppHandle, height: f64) {
 }
 
 #[tauri::command]
-fn note_action(kind: String, target: String) -> Result<(), String> {
+fn note_action(handle: AppHandle, kind: String, target: String) -> Result<(), String> {
+    if kind == "install_update" {
+        return update_install(handle);
+    }
     openhop_core::engine::run_action(&kind, &target).map_err(|e| e.to_string())
+}
+
+/// Client: pair with a server using the code it shows.
+#[tauri::command]
+fn pair(app: State<App>, device: String, code: String) -> Result<(), String> {
+    if app.engine.lock().is_none() {
+        start_engine(&app)?;
+    }
+    match app.engine.lock().as_ref() {
+        Some(e) => {
+            e.pair(device, code);
+            Ok(())
+        }
+        None => Err("OpenHop isn't running".into()),
+    }
+}
+
+#[tauri::command]
+fn forget(app: State<App>, device: String) -> Result<(), String> {
+    match app.engine.lock().as_ref() {
+        Some(e) => e.forget(device.clone()),
+        None => {
+            let mut cfg = merge_engine_fields(app.config.lock().clone(), &app.path);
+            cfg.trusted.remove(&device);
+            if cfg.server_device.as_deref() == Some(device.as_str()) {
+                cfg.server_device = None;
+            }
+            cfg.save(&app.path).map_err(|e| e.to_string())?;
+            *app.config.lock() = cfg;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn update_state() -> updater::UpdateState {
+    updater::state()
+}
+
+#[tauri::command]
+fn update_check() {
+    std::thread::spawn(updater::check);
+}
+
+#[tauri::command]
+fn update_install(handle: AppHandle) -> Result<(), String> {
+    std::thread::spawn(move || {
+        if updater::install().is_ok() {
+            // The installer takes over; stop sharing and quit so files can be replaced.
+            if let Some(e) = handle.state::<App>().engine.lock().take() {
+                e.stop();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            handle.exit(0);
+        }
+    });
+    Ok(())
 }
 
 fn main() {
@@ -171,7 +255,8 @@ fn main() {
         log::warn!("{e:#}; using defaults");
         Config::default()
     });
-    let autostart = !config.passphrase.trim().is_empty();
+    // Always start: the host shows its pairing code and others appear right away.
+    let autostart = true;
     let state = App {
         path,
         config: Mutex::new(config),
@@ -181,6 +266,15 @@ fn main() {
     };
 
     tauri::Builder::default()
+        // Only one copy may run (it owns the network port); opening OpenHop
+        // again just brings the existing window forward.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             snapshot,
@@ -191,7 +285,12 @@ fn main() {
             request_permission,
             toast_queue,
             toast_layout,
-            note_action
+            note_action,
+            pair,
+            forget,
+            update_state,
+            update_check,
+            update_install
         ])
         .setup(move |app| {
             // Keep sharing in the background: closing the window hides it to the tray.
@@ -243,6 +342,24 @@ fn main() {
                     while q.len() > 5 {
                         q.pop_front();
                     }
+                }
+            });
+            // Check for a new version shortly after launch, then once a day.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(20));
+                loop {
+                    let st = updater::check();
+                    if st.phase == "available" {
+                        let latest = st.latest.clone().unwrap_or_default();
+                        handle.state::<App>().toasts.lock().push_back(Note {
+                            id: u64::MAX - 1,
+                            title: format!("OpenHop {latest} is available"),
+                            body: format!("You have {}. Update every computer to the same version.", st.current),
+                            actions: vec![NoteAction { label: "Update Now".into(), kind: "install_update".into(), target: String::new() }],
+                        });
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(24 * 3600));
                 }
             });
             if autostart {

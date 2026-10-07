@@ -182,3 +182,34 @@ body.role-server .client-only, body.role-client .server-only { display: none; }
 .bar span { display: block; height: 100%; background: var(--blue); border-radius: 2px; transition: width .3s; }
 .bar.ok span { background: var(--green); }
 .bar.err span { background: var(--orange); }
+
+/* pairing code */
+.code-row { min-height: 58px; }
+.code { font: 600 26px/1 ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace; letter-spacing: 0.08em; color: var(--label); }
+.pill { border: 0; border-radius: 999px; background: var(--blue); color: #fff; font-weight: 600; font-size: 14px; padding: 6px 16px; cursor: pointer; }
+.pill:disabled { opacity: .5; cursor: default; }
+.item > .pill { margin-left: auto; }
+.item .link { margin-left: 8px; font-size: 14px; }
+select.value { appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 18px; text-align: right; text-align-last: right;
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='14' viewBox='0 0 10 14'%3E%3Cpath d='M1 5l4-4 4 4M1 9l4 4 4-4' fill='none' stroke='%238e8e93' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right center; }
+select.value option { color: #000; }
+.badge-direct { font-size: 11px; color: var(--blue); border: 1px solid color-mix(in srgb, var(--blue) 40%, transparent); border-radius: 99px; padding: 0 6px; margin-left: 6px; }
+.hint-row { padding: 12px 16px; font-size: 14px; color: var(--secondary); background: color-mix(in srgb, var(--blue) 8%, var(--card)); }
+
+/* iOS-style alert for the pairing code */
+.sheet { position: fixed; inset: 0; background: rgba(0,0,0,.32); display: grid; place-items: center; z-index: 50; animation: fade .2s; }
+@keyframes fade { from { opacity: 0; } }
+.alert { width: 300px; background: color-mix(in srgb, var(--card) 96%, transparent); border-radius: 16px; text-align: center; overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,.3); animation: pop .25s cubic-bezier(.2,.9,.3,1.2); backdrop-filter: blur(30px); }
+@keyframes pop { from { transform: scale(1.1); opacity: 0; } }
+.alert h3 { margin: 20px 16px 4px; font-size: 17px; font-weight: 600; }
+.alert p { margin: 0 16px 12px; font-size: 13px; color: var(--secondary); }
+.alert input { width: calc(100% - 32px); margin: 4px 16px 6px; border: 0.5px solid var(--separator); border-radius: 8px; background: var(--bg); padding: 10px; text-align: center;
+  font: 600 24px ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 0.15em; outline: none; color: var(--label); }
+.alert input:focus { border-color: var(--blue); }
+.alert .alert-error { color: #ff3b30; min-height: 1em; margin-bottom: 8px; }
+.alert-buttons { display: grid; grid-template-columns: 1fr 1fr; border-top: 0.5px solid var(--separator); }
+.alert-buttons button { border: 0; background: transparent; padding: 12px; font-size: 17px; color: var(--blue); cursor: pointer; }
+.alert-buttons button + button { border-left: 0.5px solid var(--separator); }
+.alert-buttons .bold { font-weight: 600; }
+.alert-buttons button:disabled { color: var(--tertiary); }
