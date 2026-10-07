@@ -53,6 +53,13 @@ download() {
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
+# Close any running OpenHop so the new version can start cleanly.
+if pgrep -x openhop-app >/dev/null 2>&1; then
+  info "Closing the running OpenHop…"
+  pkill -x openhop-app 2>/dev/null || true
+  sleep 1
+fi
+
 if [ "$OS" = "Darwin" ]; then
   URL="$(asset_url '\.dmg$')"
   [ -n "$URL" ] || die "No macOS build in release $TAG."
@@ -127,7 +134,7 @@ echo "  Open OpenHop from your applications menu, set the same passphrase on eve
 echo "  and pick 'Control Others' on the one whose keyboard and mouse you use."
 echo "  If this is the first install, log out and back in once so input permissions apply."
 command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -q "Status: active" && {
-  info "ufw firewall is active: opening OpenHop's ports (24850/tcp, 24851/udp)"
-  $SUDO ufw allow 24850/tcp >/dev/null && $SUDO ufw allow 24851/udp >/dev/null
+  info "ufw firewall is active: opening OpenHop's ports"
+  $SUDO ufw allow 24850:24890/tcp >/dev/null && $SUDO ufw allow 24851/udp >/dev/null
 }
 exit 0

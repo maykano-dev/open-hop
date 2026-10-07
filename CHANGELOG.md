@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.3.1
+
+Compatible with v0.3.0 (same protocol), but update every computer to get the fixes.
+
+### Fixed
+- **"Port 24850 is in use" on the host.** Starting OpenHop now closes any older copy still running in the background (single-instance protection can't see copies from earlier versions). If another program holds the port, the host falls back to the next free port and announces it, so clients still find it.
+- **Hosts and clients didn't show up for pairing.** This followed from the host failing to start. The Linux installers now also open the firewall (ufw/firewalld) for discovery and connections.
+- The window layout: the settings column on the left scrolls on its own, and the right side (status, radar, arrangement) stays put.
+
+### Added
+- **Nearby radar.** Computers running OpenHop appear on an animated radar, Xender/AirDrop style. Tap one to pair.
+- **Connect by address.** If discovery is blocked, pair by typing the host's address (shown on the host under *Pair a Computer*) and code. CLI: `openhop client --server ADDR --pair CODE`.
+
 ## v0.3.0
 
 **Update every computer.** v0.3 uses protocol 3, so it can't connect to v0.2 or earlier.

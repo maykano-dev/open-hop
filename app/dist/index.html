@@ -44,8 +44,12 @@
             <span class="label">Pairing Code</span>
             <span id="pairCode" class="code">––– –––</span>
           </div>
+          <div class="row addr-row">
+            <span class="label">Address</span>
+            <span id="myAddr" class="value">–</span>
+          </div>
         </div>
-        <p class="footer">On the other computer, open OpenHop, choose <b>Be Controlled</b>, then pick this computer under On Your Network and type this code.</p>
+        <p class="footer">On the other computer, open OpenHop, choose <b>Be Controlled</b>, then tap this computer in the Nearby radar and type this code.</p>
       </div>
 
       <div id="pairedBlock" hidden>
@@ -93,7 +97,7 @@
           <span class="switch"><input type="checkbox" id="wol"><span class="track"><span class="thumb"></span></span></span>
         </label>
         <label class="row">
-          <span class="label">Transfer Speed Limit</span>
+          <span class="label">Speed Limit</span>
           <select id="speed" class="value">
             <option value="0">None</option>
             <option value="200">200 Mbps</option>
@@ -137,6 +141,16 @@
       </div>
       <p class="footer" id="stageHint"></p>
 
+      <h2 class="section">Nearby</h2>
+      <div class="group">
+        <div id="radar" class="radar" aria-label="Computers nearby">
+          <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+        </div>
+        <div class="below-radar client-only">
+          <button id="byAddr" class="link" type="button">Don't see it? Connect by address</button>
+        </div>
+      </div>
+
       <div id="transfersBlock" hidden>
         <h2 class="section">Transfers</h2>
         <div class="group" id="transfers"></div>
@@ -152,6 +166,9 @@
     <div class="alert" role="dialog" aria-modal="true" aria-labelledby="pairTitle">
       <h3 id="pairTitle">Pair</h3>
       <p id="pairText"></p>
+      <label class="field-label" id="addrLabel" for="addrInput" hidden>Address shown on the other computer</label>
+      <input id="addrInput" class="addr" autocomplete="off" spellcheck="false" placeholder="192.168.1.20" hidden>
+      <label class="field-label" id="codeLabel" for="pairInput" hidden>Pairing code</label>
       <input id="pairInput" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="000 000">
       <p id="pairError" class="alert-error"></p>
       <div class="alert-buttons">

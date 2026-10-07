@@ -92,7 +92,7 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 📡 **Zero-config discovery** | Computers on the same network find each other automatically. You don't type any IP addresses. |
 | 🤝 **AirDrop-style pairing** | Pick the computer from a list and type the 6-digit code it shows. No passwords to agree on, and it reconnects by itself from then on. |
 | 🔌 **No router needed** | Join two computers with an Ethernet, USB-C or Thunderbolt cable and they connect directly, while each keeps its own Wi-Fi. |
-| 🐢 **Bandwidth friendly** | Mouse and keyboard use under 0.1 Mbps. Big file transfers can be capped with **Transfer Speed Limit** so they never hog your Wi-Fi. |
+| 🐢 **Bandwidth friendly** | Mouse and keyboard use under 0.1 Mbps. Big file transfers can be capped with **Speed Limit** so they never hog your Wi-Fi. |
 | ⬆️ **One-click updates** | **Check for Updates** downloads and installs the new version for you. |
 | 🗺 **Drag-and-drop arrangement** | Arrange screens the way they sit on your desk: left, right, above, below, or chained (A → B → C). |
 | 🖥 **Multi-monitor aware** | Each computer's full desktop (all of its monitors) counts as one screen. |
@@ -210,7 +210,9 @@ It works like AirDrop: no accounts, no IP addresses, no passwords to agree on.
 
 **2. On the computer whose keyboard and mouse you want to use**, keep **Role** on **Control Others**. Under **Pair a Computer** it shows a 6-digit **Pairing Code**.
 
-**3. On each of the other computers**, set **Role** to **Be Controlled**. The first computer appears under **On Your Network**. Click **Pair**, type its code, and you're connected. From then on they reconnect automatically, even after restarts.
+**3. On each of the other computers**, set **Role** to **Be Controlled**. The host pops up in the **Nearby** radar on the right, like Xender or AirDrop. Tap it (**Tap to pair**), type its code, and you're connected. From then on they reconnect automatically, even after restarts.
+
+> **Host not showing up?** Click **Don't see it? Connect by address** under the radar and type the address shown on the host under **Pair a Computer › Address** (for example `192.168.1.20` or `192.168.1.20:24852`), plus the code. This works even when your network or firewall blocks discovery.
 
 <p align="center">
   <img src="docs/screenshots/pair-light.png" width="70%" alt="Pairing: typing the 6-digit code shown on the host">
@@ -270,7 +272,7 @@ Update **every computer** to the same version: computers only connect to others 
 Not yet. Moving a live window between different operating systems means streaming it as video, which is planned for phase 2 (see the [roadmap](#roadmap)). Today, if you drag a window to the edge, the window stays on its own screen and only the pointer hops. Files you drag *do* carry across.
 
 **Will it slow down my Wi-Fi?**
-Mouse and keyboard traffic is tiny, under 0.1 Mbps even while you move the mouse constantly. Only copying big files or images uses real bandwidth. To cap that, choose a **Transfer Speed Limit** under Options (for example 20 Mbps). Your pointer stays smooth during transfers either way, because input always goes first.
+Mouse and keyboard traffic is tiny, under 0.1 Mbps even while you move the mouse constantly. Only copying big files or images uses real bandwidth. To cap that, choose a **Speed Limit** under Options (for example 20 Mbps). Your pointer stays smooth during transfers either way, because input always goes first.
 
 **Do I need a router or the same Wi-Fi?**
 No. A cable between the two computers works with zero setup, and each keeps its own internet connection. A phone hotspot or Bluetooth networking also work. See [Connecting without a router](#connecting-without-a-router).
@@ -365,15 +367,17 @@ y = 0
 <summary><b>The computers don't see each other</b></summary>
 
 - Make sure they're on the same network. Guest Wi-Fi and "client isolation" often block device-to-device traffic.
-- Allow OpenHop through the firewall: **TCP 24850** and **UDP 24851**.
-- Some routers block broadcast discovery. On the client, enter the server's IP in **Server** (or use `--server 192.168.x.x`).
+- Allow OpenHop through the firewall: **TCP 24850–24890** and **UDP 24851** (the Linux installers add these rules for ufw and firewalld).
+- Some routers block broadcast discovery. Use **Connect by address** under the Nearby radar with the address the host shows under **Pair a Computer** (or on the command line: `openhop client --server 192.168.x.x --pair CODE`).
 - Using a cable on Linux? Make sure the wired connection is **up**, even without an IPv4 address (in Ubuntu: Settings › Network › Wired, and choose *Link-Local Only* for IPv4 if it keeps retrying DHCP).
 </details>
 
 <details>
 <summary><b>The on/off switch won't stay on: "port 24850 is in use"</b></summary>
 
-Another copy of OpenHop is already running, probably in the tray. Quit it from its tray icon (or run `pkill -f openhop` on Linux/macOS), then open OpenHop once. From v0.3, opening OpenHop a second time just brings up the existing window, and restarting reuses the port immediately.
+Fixed in v0.3.1. The usual cause was an **older version** of OpenHop still running in the background after an update. v0.3.1 closes older copies automatically when it starts, and if something else entirely is using port 24850 it picks the next free port (24852, 24854, ...) and announces it, so other computers still find it. The address shown under **Pair a Computer** always includes the port in use.
+
+If you're still on an older version, quit OpenHop from its tray icon (or run `pkill -f openhop-app` on Linux/macOS, or end *openhop-app.exe* in Task Manager), then install the latest version.
 </details>
 
 <details>

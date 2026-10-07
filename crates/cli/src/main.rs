@@ -158,9 +158,19 @@ fn main() -> Result<()> {
         let s = engine.status();
         if let Some(code) = &s.pairing_code {
             if *code != last_code {
-                log::info!("Pairing code: {} {}  (enter it on the other computer)", &code[..3], &code[3..]);
+                log::info!(
+                    "Pairing code: {} {}  (enter it on the other computer; this computer's address: {})",
+                    &code[..3],
+                    &code[3..],
+                    if s.addresses.is_empty() { "unknown".to_string() } else { s.addresses.join(", ") }
+                );
                 last_code = code.clone();
             }
+        }
+        if let (Some((code, _)), Some(addr)) = (&pair_request, &cfg.server_addr) {
+            log::info!("pairing with {addr}…");
+            engine.pair_addr(addr.clone(), code.clone());
+            pair_request = None;
         }
         if let Some((code, name)) = &pair_request {
             let server = s.discovered.iter().find(|d| {

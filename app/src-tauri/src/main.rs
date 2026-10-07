@@ -36,6 +36,62 @@ struct Snapshot {
     update: updater::UpdateState,
 }
 
+/// Close other OpenHop app processes. The single-instance check only knows
+/// about this version, so an older copy left running in the tray (e.g. after
+/// installing an update over it) would otherwise keep the network port.
+fn close_older_copies() {
+    let me = std::process::id();
+    let name = if cfg!(windows) { "openhop-app.exe" } else { "openhop-app" };
+    let mut others: Vec<u32> = Vec::new();
+    #[cfg(target_os = "linux")]
+    if let Ok(dir) = std::fs::read_dir("/proc") {
+        let uid = std::fs::metadata("/proc/self").map(|m| std::os::unix::fs::MetadataExt::uid(&m)).ok();
+        for e in dir.flatten() {
+            let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
+            let comm = std::fs::read_to_string(e.path().join("comm")).unwrap_or_default();
+            let same_user = std::fs::metadata(e.path()).map(|m| Some(std::os::unix::fs::MetadataExt::uid(&m)) == uid).unwrap_or(false);
+            if pid != me && comm.trim() == name && same_user {
+                others.push(pid);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if let Ok(out) = std::process::Command::new("pgrep").args(["-x", "-U", &std::env::var("USER").unwrap_or_default(), name]).output() {
+        others.extend(String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse::<u32>().ok()).filter(|&p| p != me));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        if let Ok(out) = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("IMAGENAME eq {name}"), "/FO", "CSV", "/NH"])
+            .creation_flags(0x08000000)
+            .output()
+        {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                if let Some(pid) = line.split(',').nth(1).and_then(|p| p.trim_matches('"').parse::<u32>().ok()) {
+                    if pid != me {
+                        others.push(pid);
+                    }
+                }
+            }
+        }
+    }
+    for pid in &others {
+        log::info!("closing an older copy of OpenHop (pid {pid})");
+        #[cfg(unix)]
+        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).creation_flags(0x08000000).status();
+        }
+    }
+    if !others.is_empty() {
+        // Give them a moment to release the port.
+        std::thread::sleep(std::time::Duration::from_millis(800));
+    }
+}
+
 fn wayland() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -206,6 +262,21 @@ fn pair(app: State<App>, device: String, code: String) -> Result<(), String> {
     }
 }
 
+/// Client: pair with a server by its address (when it doesn't show up nearby).
+#[tauri::command]
+fn pair_addr(app: State<App>, addr: String, code: String) -> Result<(), String> {
+    if app.engine.lock().is_none() {
+        start_engine(&app)?;
+    }
+    match app.engine.lock().as_ref() {
+        Some(e) => {
+            e.pair_addr(addr, code);
+            Ok(())
+        }
+        None => Err("OpenHop isn't running".into()),
+    }
+}
+
 #[tauri::command]
 fn forget(app: State<App>, device: String) -> Result<(), String> {
     match app.engine.lock().as_ref() {
@@ -287,6 +358,7 @@ fn main() {
             toast_layout,
             note_action,
             pair,
+            pair_addr,
             forget,
             update_state,
             update_check,
@@ -362,6 +434,8 @@ fn main() {
                     std::thread::sleep(std::time::Duration::from_secs(24 * 3600));
                 }
             });
+            // We're the one running copy now (single-instance passed); clear out older versions.
+            close_older_copies();
             if autostart {
                 let _ = start_engine(&app.state::<App>());
             }

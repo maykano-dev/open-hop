@@ -70,6 +70,10 @@ pub struct Status {
     /// Client: device id of a pairing attempt in progress.
     pub pairing_with: Option<String>,
     pub pair_error: Option<String>,
+    /// Server: the TCP port actually in use.
+    pub port: u16,
+    /// This computer's addresses (shown so others can connect by address).
+    pub addresses: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,6 +120,8 @@ enum Control {
     SetLayout(Layout),
     /// Client: pair with the server whose device id is given, using its code.
     Pair { device: String, code: String },
+    /// Client: pair with the server at this address (when it isn't discovered).
+    PairAddr { addr: String, code: String },
     /// Forget a paired computer.
     Forget(String),
 }
@@ -125,6 +131,22 @@ struct PairState {
     code: String,
     failures: u32,
     locked_until: Option<Instant>,
+}
+
+/// "192.168.1.20", "192.168.1.20:24852", "[fe80::1%3]:24850", "fe80::1", "desk.local".
+fn parse_addr(a: &str) -> Option<SocketAddr> {
+    let a = a.trim();
+    if a.is_empty() {
+        return None;
+    }
+    if let Ok(sa) = a.parse::<SocketAddr>() {
+        return Some(sa);
+    }
+    if let Ok(ip) = a.parse::<IpAddr>() {
+        return Some(SocketAddr::new(ip, DEFAULT_PORT));
+    }
+    let with_port = if a.contains(':') { a.to_string() } else { format!("{a}:{DEFAULT_PORT}") };
+    with_port.to_socket_addrs().ok()?.next()
 }
 
 fn new_code() -> String {
@@ -176,9 +198,24 @@ impl Engine {
             needs_pairing: false,
             pairing_with: None,
             pair_error: None,
+            port: cfg.port,
+            addresses: local_addresses(),
         }));
+        // The server binds first so discovery can announce the port it really got.
+        let listeners = match cfg.role {
+            Role::Server => {
+                let (l4, port) = bind_v4_listener(cfg.port)?;
+                if port != cfg.port {
+                    log::warn!("port {} is taken by another program; using port {port} instead", cfg.port);
+                }
+                status.lock().port = port;
+                Some((l4, bind_v6_listener(port), port))
+            }
+            Role::Client => None,
+        };
+        let announce_port = listeners.as_ref().map(|l| l.2).unwrap_or(cfg.port);
         let discovery = Arc::new(
-            Discovery::start(cfg.device_id.clone(), cfg.name.clone(), cfg.role, cfg.port).context("starting network discovery")?,
+            Discovery::start(cfg.device_id.clone(), cfg.name.clone(), cfg.role, announce_port).context("starting network discovery")?,
         );
         let stop = Arc::new(AtomicBool::new(false));
         let (ctl_tx, ctl_rx) = crossbeam_channel::unbounded();
@@ -204,9 +241,8 @@ impl Engine {
             Role::Server => {
                 let capture = shared_capture(cfg.screen)?;
                 status.lock().screen = Some(capture.0.screen());
-                let listener = bind_v4_listener(cfg.port)?;
-                // Also listen on IPv6 so direct-cable (link-local) connections work.
-                let listener6 = bind_v6_listener(cfg.port);
+                // Also listening on IPv6 so direct-cable (link-local) connections work.
+                let (listener, listener6, _) = listeners.expect("server listeners");
                 std::thread::Builder::new().name("server".into()).spawn(move || {
                     if let Err(e) = Server::run(ctx.clone(), capture, listener, listener6, ctl_rx) {
                         log::error!("server stopped: {e:#}");
@@ -252,6 +288,11 @@ impl Engine {
         let _ = self.ctl.send(Control::Pair { device, code });
     }
 
+    /// Client: pair with a server by its address (e.g. "192.168.1.20").
+    pub fn pair_addr(&self, addr: String, code: String) {
+        let _ = self.ctl.send(Control::PairAddr { addr, code });
+    }
+
     /// Forget a paired computer (it will need the code again).
     pub fn forget(&self, device: String) {
         let _ = self.ctl.send(Control::Forget(device));
@@ -281,8 +322,8 @@ impl Drop for Engine {
 /// Bind the server port. Reuses it straight after a restart (on Linux/macOS
 /// recently closed connections otherwise block it for a minute) and waits a
 /// moment for a previous run to release it.
-fn bind_v4_listener(port: u16) -> Result<TcpListener> {
-    let try_bind = || -> std::io::Result<TcpListener> {
+fn bind_v4_listener(port: u16) -> Result<(TcpListener, u16)> {
+    let try_bind = |port: u16| -> std::io::Result<TcpListener> {
         let s = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
         // On Windows SO_REUSEADDR would let two programs share the port; there
         // the default already ignores old connections.
@@ -292,19 +333,41 @@ fn bind_v4_listener(port: u16) -> Result<TcpListener> {
         s.listen(16)?;
         Ok(s.into())
     };
-    let deadline = Instant::now() + Duration::from_secs(3);
+    // Give a previous run a moment to let go of the port...
+    let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        match try_bind() {
-            Ok(l) => return Ok(l),
+        match try_bind(port) {
+            Ok(l) => return Ok((l, port)),
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(200));
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                bail!("port {port} is in use by another program (is another copy of OpenHop running? Quit it from its tray icon)")
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => break,
             Err(e) => return Err(e).with_context(|| format!("can't open port {port}")),
         }
     }
+    // ...then use the next free one. Other computers learn the real port from discovery.
+    for p in (port + 2..port + 40).step_by(2) {
+        if let Ok(l) = try_bind(p) {
+            return Ok((l, p));
+        }
+    }
+    let l = try_bind(0).context("can't open any network port")?;
+    let p = l.local_addr()?.port();
+    Ok((l, p))
+}
+
+/// IP addresses of this computer's network interfaces (for "connect by address").
+pub fn local_addresses() -> Vec<String> {
+    let mut v: Vec<String> = netdev::get_interfaces()
+        .into_iter()
+        .filter(|i| i.is_up() && !i.is_loopback())
+        .flat_map(|i| i.ipv4.into_iter().map(|n| n.addr()))
+        .filter(|a| !a.is_loopback() && !a.is_link_local())
+        .map(|a| a.to_string())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
 }
 
 fn bind_v6_listener(port: u16) -> Option<TcpListener> {
@@ -631,7 +694,8 @@ impl Server {
         } else {
             (None, crossbeam_channel::never())
         };
-        ctx.set_message(format!("Waiting for other computers… (port {})", ctx.cfg.port));
+        let port = ctx.status.lock().port;
+        ctx.set_message(format!("Waiting for other computers… (port {port})"));
         let mut s = Server {
             common: Common::new(ctx.clone(), clip_set),
             ctx,
@@ -655,7 +719,7 @@ impl Server {
                 recv(ctl_rx) -> c => match c {
                     Ok(Control::SetLayout(l)) => s.set_layout(l),
                     Ok(Control::Forget(d)) => s.forget(&d),
-                    Ok(Control::Pair { .. }) => {}
+                    Ok(Control::Pair { .. }) | Ok(Control::PairAddr { .. }) => {}
                     Ok(Control::Stop) | Err(_) => break,
                 },
                 recv(pinger) -> _ => {
@@ -696,7 +760,7 @@ impl Server {
         st.layout = self.ctx.cfg.layout.clone();
         st.wakeable = if self.ctx.cfg.wake_on_lan { self.ctx.cfg.macs.keys().cloned().collect() } else { vec![] };
         st.message = if self.peers.is_empty() {
-            format!("Waiting for other computers… (port {})", self.ctx.cfg.port)
+            format!("Waiting for other computers… (port {})", st.port)
         } else {
             format!("Sharing with {} computer(s)", self.peers.len())
         };
@@ -1327,10 +1391,17 @@ struct Target {
     pairing: Option<String>,
 }
 
+/// Who to pair with: a discovered computer, or one typed in by address.
+#[derive(Clone)]
+enum PairWith {
+    Device(String),
+    Addr(String),
+}
+
 enum SessionEnd {
     Stop,
     /// The user asked to pair (with another server, or again).
-    Pair(String, String),
+    Pair(PairWith, String),
     /// The server was forgotten.
     Forgot,
 }
@@ -1352,10 +1423,10 @@ impl Client {
             here: false,
         };
         let mut last_failed: HashMap<SocketAddr, Instant> = HashMap::new();
-        let mut pending_pair: Option<(String, String)> = None;
+        let mut pending_pair: Option<(PairWith, String)> = None;
         while !c.ctx.stopped() {
             let target = match pending_pair.take() {
-                Some((dev, code)) => c.pair_target(&dev, &code),
+                Some((with, code)) => c.pair_target(&with, &code),
                 None => c.pick_server(&last_failed),
             };
             let Some(t) = target else {
@@ -1372,7 +1443,8 @@ impl Client {
                 }
                 match ctl_rx.recv_timeout(Duration::from_secs(1)) {
                     Ok(Control::Stop) => break,
-                    Ok(Control::Pair { device, code }) => pending_pair = Some((device, code)),
+                    Ok(Control::Pair { device, code }) => pending_pair = Some((PairWith::Device(device), code)),
+                    Ok(Control::PairAddr { addr, code }) => pending_pair = Some((PairWith::Addr(addr), code)),
                     Ok(Control::Forget(d)) => c.forget(&d),
                     _ => {}
                 }
@@ -1409,7 +1481,8 @@ impl Client {
                     }
                     match ctl_rx.recv_timeout(Duration::from_secs(2)) {
                         Ok(Control::Stop) => break,
-                        Ok(Control::Pair { device, code }) => pending_pair = Some((device, code)),
+                        Ok(Control::Pair { device, code }) => pending_pair = Some((PairWith::Device(device), code)),
+                    Ok(Control::PairAddr { addr, code }) => pending_pair = Some((PairWith::Addr(addr), code)),
                         Ok(Control::Forget(d)) => c.forget(&d),
                         _ => {}
                     }
@@ -1438,14 +1511,7 @@ impl Client {
 
     fn manual_addr(&self) -> Option<(SocketAddr, String)> {
         let a = self.ctx.cfg.server_addr.as_ref()?.trim().to_string();
-        if let Ok(sa) = a.parse::<SocketAddr>() {
-            return Some((sa, a));
-        }
-        if let Ok(ip) = a.parse::<IpAddr>() {
-            return Some((SocketAddr::new(ip, DEFAULT_PORT), a));
-        }
-        let with_port = if a.contains(':') { a.clone() } else { format!("{a}:{DEFAULT_PORT}") };
-        with_port.to_socket_addrs().ok()?.next().map(|s| (s, a))
+        parse_addr(&a).map(|sa| (sa, a))
     }
 
     fn pick_server(&self, failed: &HashMap<SocketAddr, Instant>) -> Option<Target> {
@@ -1479,18 +1545,28 @@ impl Client {
             .map(|s| Target { addr: s.addr, label: s.name, auth: crate::net::Auth::Passphrase, psk, pairing: None })
     }
 
-    fn pair_target(&self, device: &str, code: &str) -> Option<Target> {
-        let Some(s) = self.ctx.discovery.servers().into_iter().find(|s| s.device == device) else {
-            self.ctx.status.lock().pair_error = Some("That computer isn't visible any more. Is OpenHop running on it?".into());
-            return None;
-        };
-        Some(Target {
-            addr: s.addr,
-            label: s.name,
-            auth: crate::net::Auth::Pair { device: self.ctx.cfg.device_id.clone(), name: self.ctx.cfg.name.clone() },
-            psk: crate::net::pairing_psk(code),
-            pairing: Some(device.to_string()),
-        })
+    fn pair_target(&mut self, with: &PairWith, code: &str) -> Option<Target> {
+        let auth = crate::net::Auth::Pair { device: self.ctx.cfg.device_id.clone(), name: self.ctx.cfg.name.clone() };
+        let psk = crate::net::pairing_psk(code);
+        match with {
+            PairWith::Device(device) => {
+                let Some(s) = self.ctx.discovery.servers().into_iter().find(|s| &s.device == device) else {
+                    self.ctx.status.lock().pair_error = Some("That computer isn't visible any more. Is OpenHop running on it?".into());
+                    return None;
+                };
+                Some(Target { addr: s.addr, label: s.name, auth, psk, pairing: Some(device.clone()) })
+            }
+            PairWith::Addr(a) => {
+                let resolved = parse_addr(a);
+                let Some(addr) = resolved else {
+                    self.ctx.status.lock().pair_error = Some(format!("\"{a}\" isn't a valid address. Use the address shown on the other computer, like 192.168.1.20."));
+                    return None;
+                };
+                // Remember it: on this network discovery may not work, so reconnect by address.
+                self.ctx.cfg.server_addr = Some(a.trim().to_string());
+                Some(Target { addr, label: a.trim().to_string(), auth, psk, pairing: Some(a.trim().to_string()) })
+            }
+        }
     }
 
     fn session(&mut self, t: Target, ctl_rx: &Receiver<Control>, clip_rx: &Receiver<ClipData>) -> Result<SessionEnd> {
@@ -1583,7 +1659,8 @@ impl Client {
                 },
                 recv(ctl_rx) -> c => match c {
                     Ok(Control::Stop) | Err(_) => break Ok(SessionEnd::Stop),
-                    Ok(Control::Pair { device, code }) => break Ok(SessionEnd::Pair(device, code)),
+                    Ok(Control::Pair { device, code }) => break Ok(SessionEnd::Pair(PairWith::Device(device), code)),
+                    Ok(Control::PairAddr { addr, code }) => break Ok(SessionEnd::Pair(PairWith::Addr(addr), code)),
                     Ok(Control::Forget(d)) => {
                         let current = self.ctx.cfg.server_device.as_deref() == Some(d.as_str());
                         self.forget(&d);
@@ -1725,6 +1802,15 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn addresses_parse() {
+        assert_eq!(parse_addr("192.168.1.20"), Some("192.168.1.20:24850".parse().unwrap()));
+        assert_eq!(parse_addr(" 10.0.0.2:24852 "), Some("10.0.0.2:24852".parse().unwrap()));
+        assert_eq!(parse_addr("fe80::1"), Some("[fe80::1]:24850".parse().unwrap()));
+        assert!(parse_addr("").is_none());
+        assert!(parse_addr("not an address !").is_none());
+    }
 
     #[test]
     fn links_are_detected() {

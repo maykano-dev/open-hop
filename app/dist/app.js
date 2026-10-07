@@ -299,20 +299,76 @@ function renderNearby() {
   }
 }
 
+// ------------------------------------------------------------------ nearby radar
+
+let radarKey = "";
+
+function renderRadar() {
+  const st = snap.status;
+  const radar = $("radar");
+  const running = !!st?.running;
+  const items = (st?.discovered || []).slice().sort((a, b) => (a.device || a.name).localeCompare(b.device || b.name));
+  const connected = new Set((st?.peers || []).map((p) => p.name));
+  const paired = new Set((st?.paired || []).map((p) => p.device));
+  const isClient = form.role === "client";
+  const state = (d) => connected.has(d.name) ? "live" : paired.has(d.device) ? "paired" : (isClient && d.role === "server") ? "pair" : "seen";
+  const key = JSON.stringify([running, isClient, form.name, snap.os, items.map((d) => [d.device, d.name, d.os, d.role, state(d)])]);
+  if (key === radarKey) return;
+  radarKey = key;
+  radar.classList.toggle("idle", !running);
+  radar.querySelectorAll(".peer, .me, .guide, .caption").forEach((n) => n.remove());
+  const initials = { MacOs: "MAC", Windows: "WIN", Linux: "LNX", Other: "PC" };
+  const w = radar.clientWidth || 600, h = 300, cx = w / 2, cy = 140;
+  for (const r of [92, 128]) {
+    radar.append(el("span", { class: "guide", style: `width:${r * 2}px;height:${r * 2}px;top:${cy}px` }));
+  }
+  radar.append(el("div", { class: "me", style: `top:${cy}px` },
+    el("div", { class: "avatar" }, initials[snap.os] || "PC"),
+    el("span", {}, form.name || "This computer")));
+  const n = items.length;
+  items.forEach((d, i) => {
+    const orbit = n > 6 && i % 2 ? 128 : (n > 6 ? 92 : 112);
+    const angle = (-90 + 35 + (360 / Math.max(n, 1)) * i) * Math.PI / 180;
+    const x = cx + Math.cos(angle) * orbit * 1.55, y = cy + Math.sin(angle) * orbit * 0.95;
+    const s = state(d);
+    const label = s === "live" ? "Connected" : s === "paired" ? "Paired" : s === "pair" ? "Tap to pair" : d.role === "server" ? "Sharing" : "Waiting";
+    const node = el(s === "pair" ? "button" : "div", {
+      class: `peer os-${d.os} ${s}${s === "pair" ? " can-pair" : ""}`,
+      style: `left:${Math.round(x)}px;top:${Math.round(y)}px`,
+      title: `${d.name} · ${OS_LABEL[d.os] || ""}`,
+    },
+      el("div", { class: "avatar" }, initials[d.os] || "PC"),
+      el("span", { class: "nm" }, d.name),
+      el("span", { class: "st" + (s === "pair" ? " cta" : "") }, label));
+    if (s === "pair") node.addEventListener("click", () => openPair(d));
+    radar.append(node);
+  });
+  const caption = !running ? "Turn on OpenHop to look for computers nearby."
+    : n === 0 ? "Looking for computers nearby… Open OpenHop on your other computers."
+    : isClient && st.needs_pairing ? "Tap the computer whose keyboard and mouse you want to use."
+    : "";
+  if (caption) radar.append(el("div", { class: "caption" }, caption));
+}
+window.addEventListener("resize", () => { radarKey = ""; if (snap) renderRadar(); });
+
 // ------------------------------------------------------------------ pairing
 
 let pairing = null; // the discovered server being paired with
 
 function openPair(d) {
-  pairing = { device: d.device, name: d.name, sent: false };
-  $("pairTitle").textContent = `Pair with ${d.name}`;
-  $("pairText").textContent = `Enter the 6-digit code shown in OpenHop on ${d.name}.`;
+  pairing = { device: d ? d.device : null, name: d ? d.name : null, byAddr: !d, sent: false, peers0: (snap.status?.peers || []).length };
+  $("pairTitle").textContent = d ? `Pair with ${d.name}` : "Connect by Address";
+  $("pairText").textContent = d
+    ? `Enter the 6-digit code shown in OpenHop on ${d.name}.`
+    : "On the other computer, OpenHop shows its address and a 6-digit code under Pair a Computer.";
+  for (const id of ["addrInput", "addrLabel", "codeLabel"]) $(id).hidden = !!d;
+  $("addrInput").value = snap.config?.server_addr || "";
   $("pairInput").value = "";
   $("pairError").textContent = "";
   $("pairGo").disabled = false;
-  $("pairGo").textContent = "Pair";
+  $("pairGo").textContent = d ? "Pair" : "Connect";
   $("pairSheet").hidden = false;
-  setTimeout(() => $("pairInput").focus(), 50);
+  setTimeout(() => (d ? $("pairInput") : $("addrInput")).focus(), 50);
 }
 
 function closePair() {
@@ -322,27 +378,36 @@ function closePair() {
 
 async function submitPair() {
   const code = $("pairInput").value.replace(/\D/g, "");
+  const addr = $("addrInput").value.trim();
+  if (pairing.byAddr && !addr) {
+    $("pairError").textContent = "Type the address shown on the other computer.";
+    return;
+  }
   if (code.length !== 6) {
     $("pairError").textContent = "The code has 6 digits.";
     return;
   }
   $("pairError").textContent = "";
   $("pairGo").disabled = true;
-  $("pairGo").textContent = "Pairing…";
+  $("pairGo").textContent = pairing.byAddr ? "Connecting…" : "Pairing…";
   pairing.sent = true;
   pairing.at = Date.now();
   try {
-    await invoke("pair", { device: pairing.device, code });
+    if (pairing.byAddr) await invoke("pair_addr", { addr, code });
+    else await invoke("pair", { device: pairing.device, code });
   } catch (e) {
     $("pairError").textContent = String(e);
     $("pairGo").disabled = false;
-    $("pairGo").textContent = "Pair";
+    $("pairGo").textContent = pairing.byAddr ? "Connect" : "Pair";
   }
 }
 
 $("pairCancel").addEventListener("click", closePair);
 $("pairGo").addEventListener("click", submitPair);
-$("pairInput").addEventListener("keydown", (e) => { if (e.key === "Enter") submitPair(); if (e.key === "Escape") closePair(); });
+$("byAddr").addEventListener("click", () => openPair(null));
+for (const id of ["pairInput", "addrInput"]) {
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") submitPair(); if (e.key === "Escape") closePair(); });
+}
 $("pairInput").addEventListener("input", () => {
   const d = $("pairInput").value.replace(/\D/g, "").slice(0, 6);
   $("pairInput").value = d.length > 3 ? `${d.slice(0, 3)} ${d.slice(3)}` : d;
@@ -362,14 +427,18 @@ function renderPairing() {
       el("button", { class: "link", onclick: async () => { await invoke("forget", { device: p.device }); refresh(); } }, "Forget"),
     ));
   }
+  $("myAddr").textContent = (st?.addresses || []).join(", ") || "–";
   // Follow a pairing attempt in progress.
   if (pairing?.sent && st) {
-    if (pairedList.some((p) => p.device === pairing.device)) {
+    const done = pairing.byAddr
+      ? (st.peers || []).length > 0 && !st.pairing_with && Date.now() - pairing.at > 800
+      : pairedList.some((p) => p.device === pairing.device);
+    if (done) {
       closePair();
     } else if (st.pair_error && !st.pairing_with && Date.now() - pairing.at > 800) {
       $("pairError").textContent = st.pair_error;
       $("pairGo").disabled = false;
-      $("pairGo").textContent = "Pair";
+      $("pairGo").textContent = pairing.byAddr ? "Connect" : "Pair";
       pairing.sent = false;
     }
   }
@@ -445,6 +514,7 @@ function render() {
   renderTransfers();
   renderPairing();
   renderUpdate();
+  renderRadar();
   renderBanner();
   renderStatus();
   if (form.role === "server" && !dragging) renderGrid();
@@ -506,12 +576,12 @@ function mockInvoke() {
       { name: "ubuntu-box", os: "Linux", addr: "192.168.1.40", screen: { x: 0, y: 0, w: 2560, h: 1440 } },
     ],
     discovered: [
-      { name: "macbook", os: "MacOs", role: "client", addr: "192.168.1.31:24850" },
+      { name: "macbook", os: "MacOs", role: "client", addr: "192.168.1.31:24850", device: "b2", link: "network" },
       { name: "ubuntu-box", os: "Linux", role: "client", addr: "169.254.20.2:24850", link: "direct", device: "c3" },
     ],
     layout: cfg.layout, screen: { x: 0, y: 0, w: 2560, h: 1440 },
     wakeable: ["imac"],
-    device: "a1", pairing_code: "485632", needs_pairing: false, pairing_with: null, pair_error: null,
+    device: "a1", pairing_code: "485632", needs_pairing: false, pairing_with: null, pair_error: null, addresses: ["192.168.1.20"], port: 24850,
     paired: [{ device: "b2", name: "macbook" }, { device: "c3", name: "ubuntu-box" }],
     transfers: [
       { offer: 1, label: "holiday video.mp4", peer: "macbook", incoming: true, done: 912 * 1048576, total: 1450 * 1048576, finished: false, error: null },
