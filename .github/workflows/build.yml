@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          cargo test -p openhop-core 2>&1 | tee test.log
+          CARGO_TERM_COLOR=never cargo test -p openhop-core 2>&1 | tee test.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             # Surface failures as annotations (readable without downloading logs).
