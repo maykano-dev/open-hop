@@ -40,6 +40,8 @@ function fillForm(cfg) {
   $("serverAddr").value = form.server_addr || "";
   $("swap").checked = form.swap_cmd_ctrl;
   $("clip").checked = form.clipboard_sync;
+  $("notify").checked = form.notifications;
+  $("wol").checked = form.wake_on_lan;
   $("port").value = form.port;
   renderRole();
 }
@@ -61,10 +63,12 @@ function readForm() {
   form.server_addr = $("serverAddr").value.trim() || null;
   form.swap_cmd_ctrl = $("swap").checked;
   form.clipboard_sync = $("clip").checked;
+  form.notifications = $("notify").checked;
+  form.wake_on_lan = $("wol").checked;
   form.port = parseInt($("port").value, 10) || 24850;
 }
 
-for (const id of ["name", "passphrase", "serverAddr", "swap", "clip", "port"]) {
+for (const id of ["name", "passphrase", "serverAddr", "swap", "clip", "notify", "wol", "port"]) {
   $(id).addEventListener("input", () => { readForm(); setDirty(true); });
 }
 for (const b of document.querySelectorAll(".seg button")) {
@@ -178,7 +182,7 @@ function tile(name, peers, st) {
     el("span", { class: "os" }, OS_LABEL[os] || ""),
     active && peers.size ? el("span", { class: "here", title: "Cursor is here" }) : null,
     el("b", {}, self ? `${form.name} (this)` : name),
-    el("small", {}, screen && screen.w ? `${screen.w}×${screen.h}` : (self ? "" : "Offline")),
+    el("small", {}, screen && screen.w ? `${screen.w}×${screen.h}` : (self ? "" : (st?.wakeable || []).includes(name) ? "Asleep" : "Offline")),
   );
   if (!self) t.addEventListener("pointerdown", (e) => startDrag(e, t, name));
   return t;
@@ -276,8 +280,38 @@ function renderNearby() {
   }
 }
 
+function fmtBytes(b) {
+  if (b >= 1 << 30) return (b / (1 << 30)).toFixed(1) + " GB";
+  if (b >= 1 << 20) return (b / (1 << 20)).toFixed(1) + " MB";
+  if (b >= 1 << 10) return Math.round(b / 1024) + " KB";
+  return b + " B";
+}
+
+function renderTransfers() {
+  const items = (snap.status?.transfers || []).slice(-5).reverse();
+  $("transfersBlock").hidden = !items.length;
+  const box = $("transfers");
+  box.replaceChildren();
+  for (const t of items) {
+    const pct = t.total ? Math.min(100, Math.round((t.done / t.total) * 100)) : 100;
+    const state = t.error ? "Failed" : t.finished ? "Done" : `${pct}%`;
+    const bar = el("div", { class: "bar" }, el("span", { style: `width:${t.error ? 100 : pct}%` }));
+    if (t.error) bar.classList.add("err");
+    else if (t.finished) bar.classList.add("ok");
+    box.append(el("div", { class: "item transfer" },
+      el("span", { class: "icon file" }, "⇣"),
+      el("span", { class: "text" },
+        el("b", {}, t.label),
+        el("span", {}, t.error ? t.error : `From ${t.peer} · ${fmtBytes(t.total)}`),
+        bar),
+      el("span", { class: "tag" + (t.finished && !t.error ? " live" : "") }, state),
+    ));
+  }
+}
+
 function render() {
   if (!snap) return;
+  renderTransfers();
   renderBanner();
   renderStatus();
   if (form.role === "server" && !dragging) renderGrid();
@@ -307,8 +341,9 @@ setInterval(refresh, 800);
 function mockInvoke() {
   const cfg = {
     name: "desk-pc", role: "server", passphrase: "correct horse", port: 24850, server_addr: null, server_name: null,
-    layout: { screens: [{ name: "macbook", x: 1, y: 0 }, { name: "ubuntu-box", x: -1, y: 0 }] },
+    layout: { screens: [{ name: "macbook", x: 1, y: 0 }, { name: "ubuntu-box", x: -1, y: 0 }, { name: "imac", x: 0, y: -1 }] },
     swap_cmd_ctrl: true, clipboard_sync: true, screen: null, linux_backend: "auto",
+    notifications: true, wake_on_lan: true, macs: {}, last_ips: {}, download_dir: null,
   };
   let running = true;
   if (location.search.includes("client")) {
@@ -338,6 +373,11 @@ function mockInvoke() {
       { name: "ubuntu-box", os: "Linux", role: "client", addr: "192.168.1.40:24850" },
     ],
     layout: cfg.layout, screen: { x: 0, y: 0, w: 2560, h: 1440 },
+    wakeable: ["imac"],
+    transfers: [
+      { offer: 1, label: "holiday video.mp4", peer: "macbook", incoming: true, done: 912 * 1048576, total: 1450 * 1048576, finished: false, error: null },
+      { offer: 2, label: "design.psd", peer: "ubuntu-box", incoming: true, done: 48 * 1048576, total: 48 * 1048576, finished: true, error: null },
+    ],
   } : null;
   return async (cmd, args) => {
     switch (cmd) {

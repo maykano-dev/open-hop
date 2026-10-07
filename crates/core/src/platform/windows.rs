@@ -10,7 +10,9 @@ use std::sync::{Arc, OnceLock};
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, MOUSEINPUT,
@@ -46,6 +48,9 @@ static GRABBED: AtomicBool = AtomicBool::new(false);
 static CX: AtomicI32 = AtomicI32::new(0);
 static CY: AtomicI32 = AtomicI32::new(0);
 static HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
+/// GetTickCount() of the last hook callback. Windows silently removes
+/// low-level hooks that are ever too slow; a watchdog reinstalls them.
+static LAST_HOOK_TICK: AtomicU32 = AtomicU32::new(0);
 /// Keys pressed since the grab began. A key-up for anything else was pressed
 /// before crossing over, so we let it through to avoid a stuck local key.
 static GRAB_KEYS: parking_lot::Mutex<Vec<u16>> = parking_lot::Mutex::new(Vec::new());
@@ -75,6 +80,7 @@ fn send(ev: InputEvent) {
 }
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    LAST_HOOK_TICK.store(GetTickCount(), Ordering::Relaxed);
     if code >= 0 {
         let info = &*(lparam.0 as *const MSLLHOOKSTRUCT);
         if info.flags & LLMHF_INJECTED == 0 {
@@ -109,6 +115,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 }
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    LAST_HOOK_TICK.store(GetTickCount(), Ordering::Relaxed);
     if code >= 0 && GRABBED.load(Ordering::Relaxed) {
         let info = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
         let flags = info.flags.0;
@@ -189,12 +196,15 @@ impl WinCapture {
         let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
         std::thread::Builder::new().name("win-hooks".into()).spawn(move || unsafe {
             let hinst: HINSTANCE = GetModuleHandleW(None).map(|m| HINSTANCE(m.0)).unwrap_or_default();
-            let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(hinst), 0);
-            let kbd = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(hinst), 0);
+            let mut mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(hinst), 0);
+            let mut kbd = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(hinst), 0);
             if let (Err(e), _) | (_, Err(e)) = (&mouse, &kbd) {
                 let _ = ready_tx.try_send(Err(format!("installing input hooks failed: {e}")));
                 return;
             }
+            LAST_HOOK_TICK.store(GetTickCount(), Ordering::Relaxed);
+            // Watchdog: every 2 s, if there was user input the hooks never saw, reinstall them.
+            let _ = SetTimer(None, 0, 2000, None);
             let blank = create_blank_window(hinst);
             HOOK_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
             let _ = ready_tx.try_send(Ok(()));
@@ -220,6 +230,24 @@ impl WinCapture {
                         }
                         let _ = SetCursorPos(msg.wParam.0 as i32, msg.lParam.0 as i32);
                     }
+                    WM_TIMER => {
+                        let mut lii = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+                        if GetLastInputInfo(&mut lii).as_bool() {
+                            let seen = LAST_HOOK_TICK.load(Ordering::Relaxed);
+                            if lii.dwTime.wrapping_sub(seen) as i32 > 1500 {
+                                log::warn!("input hooks went silent; reinstalling");
+                                if let Ok(h) = &mouse {
+                                    let _ = UnhookWindowsHookEx(*h);
+                                }
+                                if let Ok(h) = &kbd {
+                                    let _ = UnhookWindowsHookEx(*h);
+                                }
+                                mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(hinst), 0);
+                                kbd = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(hinst), 0);
+                                LAST_HOOK_TICK.store(GetTickCount(), Ordering::Relaxed);
+                            }
+                        }
+                    }
                     _ => {
                         let _ = TranslateMessage(&msg);
                         DispatchMessageW(&msg);
@@ -234,20 +262,18 @@ impl WinCapture {
         }
     }
 
-    fn post(&self, msg: u32, w: usize, l: isize) {
+    fn post(&self, msg: u32, w: usize, l: isize) -> bool {
         let tid = HOOK_THREAD.load(Ordering::SeqCst);
-        unsafe {
-            let _ = PostThreadMessageW(tid, msg, WPARAM(w), LPARAM(l));
-        }
+        unsafe { PostThreadMessageW(tid, msg, WPARAM(w), LPARAM(l)).is_ok() }
     }
 }
 
 impl Capture for WinCapture {
-    fn grab(&self) {
-        self.post(APP_GRAB, 0, 0);
+    fn grab(&self) -> bool {
+        self.post(APP_GRAB, 0, 0)
     }
     fn release(&self, x: i32, y: i32) {
-        self.post(APP_RELEASE, x as isize as usize, y as isize);
+        let _ = self.post(APP_RELEASE, x as isize as usize, y as isize);
     }
     fn screen(&self) -> Rect {
         virtual_screen()

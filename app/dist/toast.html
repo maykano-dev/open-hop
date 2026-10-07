@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OpenHop</title>
+  <style>
+    :root {
+      --card: rgba(246, 246, 248, 0.97);
+      --label: #000;
+      --secondary: rgba(60, 60, 67, 0.65);
+      --line: rgba(60, 60, 67, 0.16);
+      --btn: rgba(118, 118, 128, 0.14);
+      --blue: #007aff;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --card: rgba(44, 44, 46, 0.97); --label: #fff; --secondary: rgba(235, 235, 245, 0.62); --line: rgba(84, 84, 88, 0.6); --btn: rgba(118, 118, 128, 0.3); --blue: #0a84ff; }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: transparent; overflow: hidden; }
+    body { padding: 8px; font-size: 13px; letter-spacing: -0.01em; color: var(--label); }
+    .toast {
+      background: var(--card); border-radius: 18px; padding: 12px 14px 12px; margin-bottom: 8px;
+      box-shadow: 0 0 0 0.5px var(--line), 0 8px 24px rgba(0, 0, 0, 0.18);
+      animation: in .28s cubic-bezier(.2, .9, .3, 1.15);
+      position: relative;
+    }
+    .toast.out { animation: out .22s ease-in forwards; }
+    @keyframes in { from { opacity: 0; transform: translateY(-10px) scale(.97); } }
+    @keyframes out { to { opacity: 0; transform: translateY(-8px) scale(.97); } }
+    .head { display: flex; align-items: center; gap: 6px; color: var(--secondary); font-size: 11.5px; text-transform: uppercase; letter-spacing: .02em; margin-bottom: 6px; }
+    .head img { width: 16px; height: 16px; border-radius: 4px; }
+    .head .when { margin-left: auto; text-transform: none; }
+    .title { font-weight: 600; font-size: 14px; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .body { color: var(--label); opacity: .85; line-height: 1.32; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+    .actions { display: flex; gap: 8px; margin-top: 10px; }
+    .actions button {
+      flex: 1; border: 0; border-radius: 10px; padding: 7px 10px; background: var(--btn); color: var(--blue);
+      font: inherit; font-weight: 600; cursor: pointer;
+    }
+    .actions button:first-child { background: var(--blue); color: #fff; }
+    .close { position: absolute; top: 8px; right: 10px; border: 0; background: none; color: var(--secondary); font-size: 15px; cursor: pointer; opacity: 0; transition: opacity .15s; }
+    .toast:hover .close { opacity: 1; }
+    .toast:hover .when { visibility: hidden; }
+  </style>
+</head>
+<body>
+  <div id="stack"></div>
+  <script src="toast.js"></script>
+</body>
+</html>

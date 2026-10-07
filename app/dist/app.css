@@ -174,3 +174,11 @@ body.role-server .client-only, body.role-client .server-only { display: none; }
 @media (max-width: 820px) {
   .columns { grid-template-columns: 1fr; gap: 0; }
 }
+
+/* transfers */
+.item.transfer .text { flex: 1; }
+.icon.file { background: linear-gradient(160deg, #5ac8fa, #007aff); font-size: 18px; }
+.bar { height: 4px; border-radius: 2px; background: var(--fill); margin-top: 6px; overflow: hidden; }
+.bar span { display: block; height: 100%; background: var(--blue); border-radius: 2px; transition: width .3s; }
+.bar.ok span { background: var(--green); }
+.bar.err span { background: var(--orange); }

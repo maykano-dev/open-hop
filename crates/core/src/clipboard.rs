@@ -22,6 +22,10 @@ fn hash_of(data: &ClipData) -> u64 {
             1u8.hash(&mut h);
             p.hash(&mut h)
         }
+        ClipData::Files(f) => {
+            2u8.hash(&mut h);
+            f.hash(&mut h)
+        }
     }
     h.finish()
 }
@@ -70,7 +74,25 @@ pub fn start() -> (Sender<ClipData>, Receiver<ClipData>) {
 }
 
 fn read(cb: &mut arboard::Clipboard) -> Option<ClipData> {
+    // Files first: a copied file also shows up as text (its path) and, on some
+    // systems, as an icon image. The file itself is what the user meant.
+    if let Ok(files) = cb.get().file_list() {
+        let files: Vec<String> = files
+            .into_iter()
+            .filter(|p| p.exists())
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        if !files.is_empty() {
+            return Some(ClipData::Files(files));
+        }
+    }
     if let Ok(t) = cb.get_text() {
+        if looks_like_file_uris(&t) {
+            let files = uris_to_paths(&t);
+            if !files.is_empty() {
+                return Some(ClipData::Files(files));
+            }
+        }
         if !t.is_empty() && t.len() <= MAX_TEXT_BYTES {
             return Some(ClipData::Text(t));
         }
@@ -83,8 +105,46 @@ fn read(cb: &mut arboard::Clipboard) -> Option<ClipData> {
     None
 }
 
+/// Some file managers only publish copied files as `file://` text.
+fn looks_like_file_uris(t: &str) -> bool {
+    let lines: Vec<&str> = t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    !lines.is_empty() && lines.len() < 10_000 && lines.iter().all(|l| l.starts_with("file://"))
+}
+
+fn uris_to_paths(t: &str) -> Vec<String> {
+    t.lines()
+        .map(str::trim)
+        .filter_map(|l| l.strip_prefix("file://"))
+        .map(|rest| {
+            // Drop an optional host ("file://localhost/x"), then percent-decode.
+            let path = if rest.starts_with('/') { rest } else { rest.find('/').map(|i| &rest[i..]).unwrap_or(rest) };
+            percent_decode(path)
+        })
+        .filter(|p| std::path::Path::new(p).exists())
+        .collect()
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn write(cb: &mut arboard::Clipboard, data: &ClipData) -> Result<(), String> {
     match data {
+        ClipData::Files(files) => cb.set().file_list(files).map_err(|e| e.to_string()),
         ClipData::Text(t) => cb.set_text(t.clone()).map_err(|e| e.to_string()),
         ClipData::Png(p) => {
             let (width, height, rgba) = decode_png(p).ok_or("bad png")?;
@@ -195,8 +255,8 @@ fn run(set_rx: Receiver<ClipData>, changed_tx: Sender<ClipData>) {
                     }
                     // No notifications: text is cheap to poll, images every ~2 s.
                     None => match cb.get_text() {
-                        Ok(t) if !t.is_empty() && t.len() <= MAX_TEXT_BYTES => Some(ClipData::Text(t)),
-                        _ if polls % 5 == 0 => read(&mut cb),
+                        Ok(t) if !t.is_empty() && t.len() <= MAX_TEXT_BYTES && !looks_like_file_uris(&t) => Some(ClipData::Text(t)),
+                        _ if polls.is_multiple_of(5) => read(&mut cb),
                         _ => None,
                     },
                 };
@@ -220,6 +280,18 @@ fn run(set_rx: Receiver<ClipData>, changed_tx: Sender<ClipData>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn file_uri_text() {
+        let dir = std::env::temp_dir().join("openhop uri test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("clip 1.mp4");
+        std::fs::write(&f, b"x").unwrap();
+        let uri = format!("file://{}\n", f.to_string_lossy().replace(' ', "%20"));
+        assert!(looks_like_file_uris(&uri));
+        assert_eq!(uris_to_paths(&uri), vec![f.to_string_lossy().into_owned()]);
+        assert!(!looks_like_file_uris("hello file://x"));
+    }
+
     #[test]
     fn png_roundtrip() {
         let rgba: Vec<u8> = (0..4 * 3 * 2).map(|i| i as u8).collect();

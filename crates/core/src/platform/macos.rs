@@ -101,6 +101,9 @@ fn button_from_number(n: i64) -> Option<MouseButton> {
 fn tap_callback(etype: CGEventType, event: &CGEvent) -> CallbackResult {
     use CGEventType::*;
     let grabbed = GRABBED.load(Ordering::Relaxed);
+    if !grabbed && matches!(etype, CGEventType::LeftMouseDown) {
+        super::dnd::note_left_down();
+    }
     match etype {
         TapDisabledByTimeout | TapDisabledByUserInput => {
             let port = TAP_PORT.load(Ordering::SeqCst);
@@ -233,13 +236,14 @@ impl MacCapture {
 }
 
 impl Capture for MacCapture {
-    fn grab(&self) {
+    fn grab(&self) -> bool {
         HELD_MODS.lock().clear();
         GRABBED.store(true, Ordering::SeqCst);
         unsafe { CGAssociateMouseAndMouseCursorPosition(0) };
         if !self.hidden.swap(true, Ordering::SeqCst) {
             set_cursor_hidden(true);
         }
+        true
     }
     fn release(&self, x: i32, y: i32) {
         GRABBED.store(false, Ordering::SeqCst);

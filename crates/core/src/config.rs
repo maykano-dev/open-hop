@@ -36,6 +36,16 @@ pub struct Config {
     pub screen: Option<Rect>,
     /// Linux client: "auto", "x11" or "uinput".
     pub linux_backend: String,
+    /// Server: MAC address of each client, for Wake-on-LAN.
+    pub macs: std::collections::BTreeMap<String, String>,
+    /// Server: each client's last IP address (helps Wake-on-LAN reach it).
+    pub last_ips: std::collections::BTreeMap<String, String>,
+    /// Wake sleeping computers when you move the pointer toward them.
+    pub wake_on_lan: bool,
+    /// Where received files are saved (default: Downloads/OpenHop).
+    pub download_dir: Option<String>,
+    /// Show small notifications (received files, links copied on another computer).
+    pub notifications: bool,
 }
 
 impl Default for Config {
@@ -52,6 +62,11 @@ impl Default for Config {
             clipboard_sync: true,
             screen: None,
             linux_backend: "auto".into(),
+            macs: Default::default(),
+            last_ips: Default::default(),
+            wake_on_lan: true,
+            download_dir: None,
+            notifications: true,
         }
     }
 }

@@ -9,6 +9,7 @@ use std::sync::Arc;
 mod linux_uinput;
 #[cfg(target_os = "linux")]
 mod linux_x11;
+pub mod dnd;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
@@ -32,7 +33,8 @@ pub enum InputEvent {
 /// Server-side capture of the physical mouse and keyboard.
 pub trait Capture: Send + Sync {
     /// Start swallowing local input and reporting it as events; hide the cursor.
-    fn grab(&self);
+    /// Returns false if the input couldn't be captured (then nothing changed).
+    fn grab(&self) -> bool;
     /// Stop swallowing input, show the cursor and put it at (x, y) (native coords).
     fn release(&self, x: i32, y: i32);
     /// Current local desktop bounds.

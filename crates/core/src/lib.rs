@@ -5,11 +5,13 @@ pub mod clipboard;
 pub mod config;
 pub mod discovery;
 pub mod engine;
+pub mod files;
 pub mod keys;
 pub mod layout;
 pub mod net;
 pub mod platform;
 pub mod protocol;
+pub mod wol;
 
 pub use config::{Config, Role};
 pub use engine::{Engine, Status};

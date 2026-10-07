@@ -65,8 +65,16 @@
           <span class="switch"><input type="checkbox" id="swap"><span class="track"><span class="thumb"></span></span></span>
         </label>
         <label class="row">
-          <span class="label">Sync Clipboard</span>
+          <span class="label">Sync Clipboard &amp; Files</span>
           <span class="switch"><input type="checkbox" id="clip"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row">
+          <span class="label">Notifications</span>
+          <span class="switch"><input type="checkbox" id="notify"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row server-only">
+          <span class="label">Wake Sleeping Computers</span>
+          <span class="switch"><input type="checkbox" id="wol"><span class="track"><span class="thumb"></span></span></span>
         </label>
         <label class="row server-only">
           <span class="label">Port</span>
@@ -88,6 +96,12 @@
         </div>
       </div>
       <p class="footer" id="stageHint"></p>
+
+      <div id="transfersBlock" hidden>
+        <h2 class="section">Transfers</h2>
+        <div class="group" id="transfers"></div>
+        <p class="footer">Received files are saved in Downloads › OpenHop.</p>
+      </div>
 
       <h2 class="section">On Your Network</h2>
       <div class="group" id="nearby"></div>

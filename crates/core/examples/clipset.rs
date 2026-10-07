@@ -4,6 +4,7 @@ fn main() {
     let mut cb = arboard::Clipboard::new().unwrap();
     match args[1].as_str() {
         "text" => cb.set_text(args[2].clone()).unwrap(),
+        "files" => cb.set().file_list(&args[2..]).unwrap(),
         _ => {
             let data = std::fs::read(&args[2]).unwrap();
             let (w, h, rgba) = openhop_core::clipboard::decode_png(&data).unwrap();

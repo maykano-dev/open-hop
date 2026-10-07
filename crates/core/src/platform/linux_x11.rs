@@ -41,7 +41,7 @@ fn x_button(b: MouseButton) -> u8 {
 }
 
 enum Cmd {
-    Grab,
+    Grab(Sender<bool>),
     Release(i32, i32),
 }
 
@@ -78,8 +78,12 @@ impl X11Capture {
 }
 
 impl Capture for X11Capture {
-    fn grab(&self) {
-        let _ = self.cmd.send(Cmd::Grab);
+    fn grab(&self) -> bool {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        if self.cmd.send(Cmd::Grab(tx)).is_err() {
+            return false;
+        }
+        rx.recv_timeout(Duration::from_secs(2)).unwrap_or(false)
     }
     fn release(&self, x: i32, y: i32) {
         let _ = self.cmd.send(Cmd::Release(x, y));
@@ -117,17 +121,23 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
         // Commands from the engine.
         loop {
             match cmd_rx.try_recv() {
-                Ok(Cmd::Grab) if !grabbed => match try_grab(&conn, root) {
+                Ok(Cmd::Grab(reply)) if !grabbed => match try_grab(&conn, root) {
                     Ok(()) => {
                         grabbed = true;
                         held.clear();
                         conn.xfixes_hide_cursor(root)?;
                         conn.warp_pointer(NONE, root, 0, 0, 0, 0, cx as i16, cy as i16)?;
                         conn.flush()?;
+                        let _ = reply.send(true);
                     }
-                    Err(e) => log::warn!("{e}"),
+                    Err(e) => {
+                        log::warn!("{e}");
+                        let _ = reply.send(false);
+                    }
                 },
-                Ok(Cmd::Grab) => {}
+                Ok(Cmd::Grab(reply)) => {
+                    let _ = reply.send(true);
+                }
                 Ok(Cmd::Release(x, y)) => {
                     if grabbed {
                         conn.ungrab_keyboard(CURRENT_TIME)?;

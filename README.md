@@ -19,7 +19,9 @@ Free, open-source and encrypted. Works across Windows, macOS and Linux.
   <img src="docs/screenshots/server-dark.png" width="49%" alt="OpenHop arrangement view in dark mode">
 </p>
 
-OpenHop is a **software KVM**. Put a few computers on your desk, run OpenHop on each of them, and move your mouse off the edge of one screen: the pointer appears on the next computer, and your keyboard follows it. Copy on one machine and paste on another. You don't need a hardware switch or any extra cables, only your local network.
+OpenHop is a **software KVM**. Put a few computers on your desk, run OpenHop on each of them, and move your mouse off the edge of one screen: the pointer appears on the next computer, and your keyboard follows it. Copy text, screenshots, files and videos on one machine and paste them on another, or drag files straight across the screen edge. You don't need a hardware switch or any extra cables, only your local network.
+
+> **Updating from v0.1?** v0.2 speaks a new protocol, so **update every computer**. A v0.1 computer and a v0.2 computer can't connect to each other. Rerun the one-line installer on each machine.
 
 It was built as a free, cross-platform alternative to paid tools such as CursorHop, Synergy or ShareMouse, with Linux supported as a first-class platform.
 
@@ -80,11 +82,16 @@ Then follow [Set up your computers](#set-up-your-computers).
 | ⌨️ **Keyboard sharing** | Your keyboard types on whichever computer has the pointer. Held keys are released when you leave a screen, so nothing gets stuck. |
 | ⌘ **Shortcut translation** | When you cross between a Mac and a PC, `⌘ Command` and `Ctrl` are swapped automatically, so ⌘C on your Mac keyboard becomes Ctrl+C on Windows or Linux. |
 | 📋 **Clipboard sync** | Copy text, an image or a screenshot on one computer and paste it on another. Images arrive pixel-perfect. |
+| 📁 **Copy & paste files** | Copy files, folders or videos in Explorer, Finder or Files, hop over, and paste: the real files arrive, not a path. |
+| 🫳 **Drag & drop files across screens** | Drag files off one computer's screen and drop them on another's. They're saved to `Downloads/OpenHop`, with a prompt to open them. |
+| 🔗 **Smart link prompts** | Copy a link on one computer, move to another, and a notification offers to open it there in the default browser. |
+| 💤 **Wake-on-LAN** | Move the pointer toward a computer that's asleep and OpenHop sends it a wake-up packet. |
 | 🔒 **End-to-end encryption** | Every keystroke, mouse movement and clipboard item is encrypted with the [Noise protocol](https://noiseprotocol.org) (X25519, ChaCha20-Poly1305, BLAKE2s). There is no plaintext mode. |
 | 📡 **Zero-config discovery** | Computers on the same network find each other automatically. You don't type any IP addresses. |
 | 🗺 **Drag-and-drop arrangement** | Arrange screens the way they sit on your desk: left, right, above, below, or chained (A → B → C). |
 | 🖥 **Multi-monitor aware** | Each computer's full desktop (all of its monitors) counts as one screen. |
-| 🌗 **Native-feeling app** | An Apple-inspired settings window with light and dark mode. It keeps running in the system tray. |
+| 🌗 **Native-feeling app** | An Apple-inspired settings window and iOS-style notifications, in light and dark mode. It keeps running in the system tray. |
+| 🛟 **Resilient connections** | Mouse and keyboard travel on a priority lane that never waits behind a file transfer, and a computer that sleeps or drops off Wi-Fi is detected and reconnected automatically. |
 | 🦀 **Fast Rust core** | Native input hooks and a lean protocol. A mouse move costs about 10 bytes on the wire. |
 | 💻 **Headless CLI** | Run it on machines without a desktop session, or script it. |
 
@@ -107,6 +114,7 @@ flowchart LR
 2. Mouse motion, clicks, scrolling and key presses are sent to the active client, which **injects** them as if they came from a real device.
 3. When the pointer leaves that client's screen, it lands on the next screen in the arrangement, which can be another client or back on the server.
 4. Keys travel as standard USB HID codes, so a key pressed on any OS arrives as the same physical key on every other OS.
+5. Files travel on a separate bulk lane in 256 KB pieces, so your pointer stays smooth during a transfer. Clients send files to each other through the server.
 
 ## Platform support
 
@@ -119,7 +127,9 @@ flowchart LR
 
 **What works on Wayland.** A Wayland desktop can be *controlled* but can't yet *share* its own keyboard and mouse. The common setups work fine: a Windows PC or Mac as the server with Ubuntu as a client. If your Linux machine must be the server, log in with an Xorg session.
 
-> **Test status (v0.1.0).** The Linux build is tested end to end: edge switching, keyboard, clicks, return trips, drag-to-arrange, text and image clipboard both ways (including full-size screenshots), wrong-passphrase rejection, auto-discovery, reconnecting, and installing via the `.deb` and the one-line installer. The Windows and macOS code compiles cleanly for those targets, and CI builds their installers, but it hasn't yet had hands-on testing on real hardware. Please [open an issue](https://github.com/maykano-dev/open-hop/issues) if something misbehaves.
+**Drag & drop sources.** Dragging *from* a computer works from Windows Explorer, macOS Finder, and Linux file managers running under X11. On a Wayland desktop, apps keep drags to themselves, so drag files *from* Wayland isn't detected yet. Dropping *onto* a Wayland desktop works, and so does copy & paste of files everywhere.
+
+> **Test status (v0.2.0).** On Linux, everything is tested end to end: edge switching, typing and clicks, the stuck-switching fix (hopping keeps working while another computer is frozen), stale-connection replacement, text, image and full-screenshot clipboard, copy & paste of a 300 MB video, folders, and client-to-client files, drag & drop in both directions, Wake-on-LAN, notifications and their buttons, and the one-line installer. The Windows and macOS code compiles cleanly and CI builds their installers, but it hasn't yet had hands-on testing on real hardware. Please [open an issue](https://github.com/maykano-dev/open-hop/issues) if something misbehaves.
 
 ---
 
@@ -220,10 +230,18 @@ You'll need all computers on the **same network** (Wi-Fi or Ethernet, same route
 - **Copy & paste:** copy as usual on one computer, move over, and paste.
   - ✅ **Text**, including whole documents of up to 8 MB.
   - ✅ **Screenshots and images**: a screenshot taken to the clipboard (`Win+Shift+S`, `⌘⇧⌃4`, `PrtSc` on Linux) or an image copied from a browser or photo app. A full 2560×1440 screenshot arrives in about a second.
-  - ❌ **Files and videos copied in Explorer / Finder / Files** aren't synced yet. The clipboard only holds a reference to the file, not the file itself. File transfer is next on the [roadmap](#roadmap).
+  - ✅ **Files, folders and videos**: copy them in Explorer, Finder or your Linux file manager, move to the other computer, and paste into any folder. Small copies (under 64 MB) are sent right away. Bigger ones start as soon as your pointer arrives on that computer, so a 4 GB video isn't sent to every machine. Progress shows under **Transfers**, and a notification says when it's ready to paste. Received files also stay in `Downloads/OpenHop`.
+- **Drag & drop files:** start dragging files in your file manager, carry them across the screen edge, and let go on the other computer. The files are copied there (into `Downloads/OpenHop`) and a notification offers **Open** and **Show in folder**. The drag on the original computer is cancelled, so nothing moves or gets deleted there.
+<p align="center">
+  <img src="docs/screenshots/toast-light.png" width="40%" alt="Notifications for a copied link and a received file (light)">
+  <img src="docs/screenshots/toast-dark.png" width="40%" alt="Notifications for a copied link and a received file (dark)">
+</p>
+
+- **Links:** copy a web link on one computer. When you move to another, a notification offers to open it there.
+- **Waking a sleeping computer:** when **Wake Sleeping Computers** is on, pushing the pointer toward a computer that's asleep sends it a Wake-on-LAN packet. Its tile shows **Asleep** in the arrangement. Wake-on-LAN must be enabled on that computer: in the BIOS/UEFI and network adapter settings on PCs, or with **Wake for network access** on Macs (works when plugged in). It works best over Ethernet.
 - **Running in the background:** closing the window hides it to the tray or menu bar. Choose **Quit** from the tray icon to stop OpenHop completely.
 - **Start automatically:** once a passphrase is saved, OpenHop starts sharing as soon as it launches. Add it to your OS's login items or startup apps to have it always on.
-- **Something feels stuck?** Move the pointer back to the server. Leaving a screen always releases every key and mouse button that was held there. If a client disconnects, control returns to the server immediately.
+- **Something feels stuck?** Move the pointer back to the server. Leaving a screen always releases every key and mouse button that was held there. If a computer stops responding (asleep, Wi-Fi dropped), OpenHop drops it within about 10 seconds, returns the pointer to you, and reconnects it automatically when it's back, in the same spot in your arrangement.
 
 ---
 
@@ -397,13 +415,30 @@ open-hop/
 
 ## Roadmap
 
-- [ ] **File transfer**: copy/paste and drag-and-drop files and videos between computers
-- [ ] **Wayland as server** via the XDG InputCapture portal (GNOME 45+, KDE 6+)
+**Done in v0.2:** file copy & paste (files, folders, videos), drag & drop across screens, smart link prompts, open-received-file prompts, Wake-on-LAN, resilient connections.
+
+**Next up** (pure software, achievable on all three OSes):
+
+- [ ] **Wayland as server** via the XDG InputCapture portal (GNOME 45+, KDE 6+), plus drag-out from Wayland apps
 - [ ] **Hotkeys**: jump to a screen, or lock the pointer to the current one
+- [ ] **Keep awake / smart sleep**: keep controlled computers awake while connected, and let an idle one sleep while the others stay up
+- [ ] **Do Not Disturb sync**: silence notifications on the other computers while one is presenting or in a full-screen meeting. This works on GNOME and KDE. macOS and Windows have no public API for Focus or Do Not Disturb, so it would rely on a Shortcuts automation (macOS) and is best-effort on Windows.
+- [ ] **Universal launcher** (`Ctrl+Space`): search apps and files on every connected computer and launch them where they live
 - [ ] Per-monitor edges (cross from any monitor, not just the desktop's outer edge)
-- [ ] Code-signed and notarised builds
-- [ ] **Window streaming (phase 2):** drag an app window from one OS onto another
-- [ ] Virtual-screen mode: show another computer's desktop as an extra monitor
+- [ ] Code-signed and notarised builds (needs paid Apple and Windows signing certificates)
+
+**Phase 2: window streaming**
+
+- [ ] Show another computer's desktop as an extra monitor, then stream individual windows across ("teleport" a window from one OS to another)
+- [ ] **Battery-aware streaming**: fall back to plain mouse and keyboard sharing on low battery (depends on streaming)
+
+**Hardware bridging (research).** These need OS-level drivers. Some of those drivers must be signed by Microsoft, or approved by Apple, before they can be distributed:
+
+| Idea | Linux | Windows | macOS |
+|---|---|---|---|
+| USB devices over the network (mic, tablet, YubiKey) | ✅ USB/IP is built into the kernel | Needs a signed USB/IP driver (e.g. usbip-win2) | ❌ Needs a DriverKit extension with an Apple-granted entitlement |
+| Use another computer's speakers/headset | ✅ PipeWire virtual devices | Needs a signed virtual audio driver | Possible with an AudioServerPlugIn (user-space) |
+| Borrow another computer's webcam/mic | ✅ v4l2loopback | ✅ Windows 11 virtual camera API (no driver) | Needs a Camera Extension (signed and notarised) |
 
 Contributions and bug reports are welcome. Please open an issue first for larger changes.
 

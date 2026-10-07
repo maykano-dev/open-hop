@@ -22,6 +22,9 @@ const TAG: usize = 16;
 const MAX_CHUNK: usize = MAX_NOISE - TAG;
 /// Largest application message we accept (clipboard images can be big).
 pub const MAX_MSG: usize = 64 * 1024 * 1024;
+const WRITE_TIMEOUT: Duration = Duration::from_secs(8);
+/// Bulk data is sent in pieces this big so input can slip in between.
+pub const CHUNK: usize = 256 * 1024;
 
 pub fn derive_psk(passphrase: &str) -> [u8; 32] {
     let mut h = Blake2s256::new();
@@ -73,6 +76,8 @@ pub fn handshake(mut stream: TcpStream, psk: &[u8; 32], initiator: bool) -> Resu
     }
     let transport = Arc::new(hs.into_stateless_transport_mode()?);
     stream.set_read_timeout(None)?;
+    // A peer that stops reading (asleep, Wi-Fi gone) must not block us forever.
+    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let read_stream = stream.try_clone()?;
     Ok((
         SecureSender { inner: Arc::new(Mutex::new(SenderState { stream, nonce: 0, transport: transport.clone() })) },
@@ -157,6 +162,100 @@ impl SecureReceiver {
     }
 }
 
+/// A connection's sending side, owned by a writer thread with two queues:
+/// input events (always first) and bulk data (clipboard, files). Callers
+/// never block on the network; a stalled peer is detected and dropped.
+#[derive(Clone)]
+pub struct Link {
+    ctl: crossbeam_channel::Sender<Msg>,
+    bulk: crossbeam_channel::Sender<Msg>,
+    dead: Arc<std::sync::atomic::AtomicBool>,
+    sender: SecureSender,
+}
+
+impl Link {
+    /// `on_dead` runs once, on the writer thread, when the connection fails.
+    pub fn new(sender: SecureSender, on_dead: impl FnOnce() + Send + 'static) -> Link {
+        use std::sync::atomic::Ordering;
+        let (ctl, ctl_rx) = crossbeam_channel::unbounded::<Msg>();
+        let (bulk, bulk_rx) = crossbeam_channel::bounded::<Msg>(16);
+        let dead = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let link = Link { ctl, bulk, dead: dead.clone(), sender: sender.clone() };
+        std::thread::Builder::new()
+            .name("link-writer".into())
+            .spawn(move || {
+                loop {
+                    if dead.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    // Input first, always.
+                    let msg = match ctl_rx.try_recv() {
+                        Ok(m) => m,
+                        Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+                        Err(crossbeam_channel::TryRecvError::Empty) => {
+                            crossbeam_channel::select! {
+                                recv(ctl_rx) -> m => match m { Ok(m) => m, Err(_) => break },
+                                recv(bulk_rx) -> m => match m { Ok(m) => m, Err(_) => continue },
+                                default(Duration::from_millis(500)) => continue,
+                            }
+                        }
+                    };
+                    if let Err(e) = sender.send(&msg) {
+                        log::debug!("link write failed: {e:#}");
+                        break;
+                    }
+                }
+                dead.store(true, Ordering::SeqCst);
+                sender.shutdown();
+                on_dead();
+            })
+            .expect("spawn link writer");
+        link
+    }
+
+    /// Queue a message. Bulk messages are dropped (returns false) if the
+    /// bulk queue is full; use [`Link::send_bulk_wait`] from worker threads.
+    pub fn send(&self, msg: Msg) -> bool {
+        if self.is_dead() {
+            return false;
+        }
+        if msg.is_bulk() {
+            self.bulk.try_send(msg).is_ok()
+        } else {
+            if self.ctl.len() > 10_000 {
+                // Nothing has been written for a long time: give up on this peer.
+                self.close();
+                return false;
+            }
+            self.ctl.send(msg).is_ok()
+        }
+    }
+
+    /// Queue bulk data, waiting (with back-pressure) while the queue is full.
+    pub fn send_bulk_wait(&self, msg: Msg) -> bool {
+        let mut msg = msg;
+        loop {
+            if self.is_dead() {
+                return false;
+            }
+            match self.bulk.send_timeout(msg, Duration::from_millis(500)) {
+                Ok(()) => return true,
+                Err(crossbeam_channel::SendTimeoutError::Timeout(m)) => msg = m,
+                Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => return false,
+            }
+        }
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.dead.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn close(&self) {
+        self.dead.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.sender.shutdown();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,11 +281,46 @@ mod tests {
         let (_, mut rx) = b.unwrap();
         tx.send(&Msg::Move { x: 5, y: 7 }).unwrap();
         let big = vec![7u8; 300_000];
-        tx.send(&Msg::Clipboard(ClipData::Png(big.clone()))).unwrap();
+        tx.send(&Msg::Clip { origin: "a".into(), data: ClipData::Png(big.clone()) }).unwrap();
         tx.send(&Msg::Key { key: 4, down: true }).unwrap();
         assert_eq!(rx.recv().unwrap(), Msg::Move { x: 5, y: 7 });
-        assert_eq!(rx.recv().unwrap(), Msg::Clipboard(ClipData::Png(big)));
+        assert_eq!(rx.recv().unwrap(), Msg::Clip { origin: "a".into(), data: ClipData::Png(big) });
         assert_eq!(rx.recv().unwrap(), Msg::Key { key: 4, down: true });
+    }
+
+    #[test]
+    fn input_overtakes_bulk_and_stalled_peer_is_detected() {
+        let (a, b) = pair("pw", "pw");
+        let (tx, _) = a.unwrap();
+        let (_, mut rx) = b.unwrap();
+        let died = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let d2 = died.clone();
+        let link = Link::new(tx, move || d2.store(true, std::sync::atomic::Ordering::SeqCst));
+        // Fill the bulk lane, then send input: input must not be stuck behind it.
+        for i in 0..10u64 {
+            assert!(link.send_bulk_wait(Msg::ClipPart { origin: String::new(), id: i, total: 1, data: vec![0; 200_000] }));
+        }
+        assert!(link.send(Msg::Key { key: 4, down: true }));
+        let mut saw_key_at = None;
+        for n in 0..11 {
+            if rx.recv().unwrap() == (Msg::Key { key: 4, down: true }) {
+                saw_key_at = Some(n);
+                break;
+            }
+        }
+        assert!(saw_key_at.unwrap() < 10, "key should overtake queued bulk data");
+        // Peer stops reading entirely: writes must time out instead of hanging forever.
+        drop(rx);
+        for _ in 0..400 {
+            link.send(Msg::Ping);
+            let _ = link.send(Msg::ClipPart { origin: String::new(), id: 0, total: 1, data: vec![0; 200_000] });
+            std::thread::sleep(Duration::from_millis(5));
+            if link.is_dead() {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(link.is_dead() && died.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
