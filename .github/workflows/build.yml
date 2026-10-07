@@ -116,7 +116,6 @@ jobs:
       - name: Publish ${{ steps.ver.outputs.tag }}
         if: steps.ver.outputs.exists == 'false'
         run: |
-          find dist -type f | sort
           cat > notes.md <<'EOF'
           ## Install
 
@@ -143,7 +142,10 @@ jobs:
           Then see [Set up your computers](https://github.com/maykano-dev/open-hop#set-up-your-computers).
           EOF
           sed -i 's/^          //' notes.md
-          gh release create "${{ steps.ver.outputs.tag }}" dist/* \
+          mapfile -t FILES < <(find dist -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \))
+          echo "Publishing ${#FILES[@]} files"
+          [ "${#FILES[@]}" -ge 5 ] || { echo "expected at least 5 installers"; exit 1; }
+          gh release create "${{ steps.ver.outputs.tag }}" "${FILES[@]}" \
             --target "$GITHUB_SHA" --title "OpenHop ${{ steps.ver.outputs.tag }}" --notes-file notes.md --latest
         env:
           GH_TOKEN: ${{ github.token }}
