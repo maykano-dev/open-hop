@@ -90,16 +90,60 @@ jobs:
             ${{ matrix.out }}/nsis/*.exe
             ${{ matrix.out }}/dmg/*.dmg
           if-no-files-found: error
-      - name: Attach to GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+
+  release:
+    name: Publish release
+    needs: [test, bundle]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Work out the version
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then TAG="$GITHUB_REF_NAME"; else
+            TAG="v$(node -p "require('./app/src-tauri/tauri.conf.json').version")"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: steps.ver.outputs.exists == 'false'
         with:
-          draft: false
-          make_latest: true
-          files: |
-            ${{ matrix.out }}/deb/*.deb
-            ${{ matrix.out }}/appimage/*.AppImage
-            ${{ matrix.out }}/rpm/*.rpm
-            ${{ matrix.out }}/msi/*.msi
-            ${{ matrix.out }}/nsis/*.exe
-            ${{ matrix.out }}/dmg/*.dmg
+          pattern: OpenHop-*
+          path: dist
+          merge-multiple: true
+      - name: Publish ${{ steps.ver.outputs.tag }}
+        if: steps.ver.outputs.exists == 'false'
+        run: |
+          find dist -type f | sort
+          cat > notes.md <<'EOF'
+          ## Install
+
+          **Windows** (PowerShell)
+          ```powershell
+          irm https://raw.githubusercontent.com/maykano-dev/open-hop/main/scripts/install.ps1 | iex
+          ```
+
+          **macOS / Linux** (Terminal)
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/maykano-dev/open-hop/main/scripts/install.sh | bash
+          ```
+
+          Or download the file for your computer below:
+
+          | Computer | File |
+          |---|---|
+          | Windows 10 / 11 | `…_x64-setup.exe` (or `.msi`) |
+          | macOS (Apple Silicon & Intel) | `…_universal.dmg` |
+          | Ubuntu / Debian / Mint | `…_amd64.deb` |
+          | Fedora / openSUSE | `….x86_64.rpm` |
+          | Other Linux | `…_amd64.AppImage` |
+
+          Then see [Set up your computers](https://github.com/maykano-dev/open-hop#set-up-your-computers).
+          EOF
+          sed -i 's/^          //' notes.md
+          gh release create "${{ steps.ver.outputs.tag }}" dist/* \
+            --target "$GITHUB_SHA" --title "OpenHop ${{ steps.ver.outputs.tag }}" --notes-file notes.md --latest
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -364,7 +364,7 @@ npx tauri build                        # build installers -> target/release/bund
 
 On macOS, build a universal app with `rustup target add aarch64-apple-darwin x86_64-apple-darwin` and `npx tauri build --target universal-apple-darwin`.
 
-**Releases:** push a tag such as `v0.2.0` (`git tag v0.2.0 && git push origin v0.2.0`). GitHub Actions builds every installer and publishes them as the latest release, which the one-line installers pick up automatically.
+**Releases are automatic.** Bump `version` in `app/src-tauri/tauri.conf.json` (and in the root `Cargo.toml`) and push to `main`. Once the tests pass on all three OSes, GitHub Actions builds every installer and publishes them as release `v<version>`, which the one-line installers pick up straight away. Pushing a `v*` tag works too.
 
 ## Project layout
 
