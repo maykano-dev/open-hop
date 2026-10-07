@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenHop</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="titlebar">
+    <div class="title-block">
+      <h1>OpenHop</h1>
+      <p class="subtitle"><span id="statusDot" class="dot"></span><span id="statusText">Off</span></p>
+    </div>
+    <label class="switch big" title="Turn sharing on or off">
+      <input type="checkbox" id="power" aria-label="Sharing">
+      <span class="track"><span class="thumb"></span></span>
+    </label>
+  </header>
+
+  <div id="banner" class="banner" role="status" hidden></div>
+
+  <main class="columns">
+    <section class="col settings">
+      <h2 class="section">This Computer</h2>
+      <div class="group">
+        <label class="row">
+          <span class="label">Name</span>
+          <input id="name" class="value" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="row stacked">
+          <div class="seg" role="radiogroup" aria-label="Role">
+            <button data-role="server" role="radio">Control Others</button>
+            <button data-role="client" role="radio">Be Controlled</button>
+          </div>
+        </div>
+      </div>
+      <p class="footer" id="roleHint"></p>
+
+      <h2 class="section">Security</h2>
+      <div class="group">
+        <label class="row">
+          <span class="label">Passphrase</span>
+          <input id="passphrase" class="value" type="password" autocomplete="off" spellcheck="false" placeholder="Required">
+          <button id="reveal" class="link" type="button">Show</button>
+        </label>
+      </div>
+      <p class="footer">Use the same passphrase on every computer. Connections are end-to-end encrypted with it.</p>
+
+      <div class="client-only">
+        <h2 class="section">Connection</h2>
+        <div class="group">
+          <label class="row">
+            <span class="label">Server</span>
+            <input id="serverAddr" class="value" autocomplete="off" spellcheck="false" placeholder="Automatic">
+          </label>
+        </div>
+        <p class="footer">Leave on Automatic to find the sharing computer on your network.</p>
+      </div>
+
+      <h2 class="section">Options</h2>
+      <div class="group">
+        <label class="row">
+          <span class="label">Swap ⌃ Control and ⌘ Command</span>
+          <span class="switch"><input type="checkbox" id="swap"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row">
+          <span class="label">Sync Clipboard</span>
+          <span class="switch"><input type="checkbox" id="clip"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row server-only">
+          <span class="label">Port</span>
+          <input id="port" class="value" type="number" min="1024" max="65535">
+        </label>
+      </div>
+
+      <button id="save" class="filled" disabled>Save Changes</button>
+      <p id="saveNote" class="footer center"></p>
+    </section>
+
+    <section class="col stage">
+      <h2 class="section" id="stageTitle">Arrangement</h2>
+      <div class="group canvas">
+        <div id="grid" class="grid"></div>
+        <div id="clientView" class="client-view" hidden>
+          <div class="display"><span class="menubar"></span><div class="cursor"></div></div>
+          <p id="clientLine"></p>
+        </div>
+      </div>
+      <p class="footer" id="stageHint"></p>
+
+      <h2 class="section">On Your Network</h2>
+      <div class="group" id="nearby"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

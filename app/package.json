@@ -1,0 +1,13 @@
+{
+  "name": "openhop-app",
+  "version": "0.1.0",
+  "description": "OpenHop desktop app",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.1"
+  },
+  "private": true
+}

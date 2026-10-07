@@ -1,0 +1,21 @@
+[package]
+name = "openhop-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "openhop-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+openhop-core = { path = "../../crates/core" }
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+parking_lot = "0.12"
