@@ -30,7 +30,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
-      - run: cargo test -p openhop-core
+      - name: Run tests
+        shell: bash
+        run: |
+          set +e
+          cargo test -p openhop-core 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Surface failures as annotations (readable without downloading logs).
+            grep -E "panicked at|FAILED|^error|left:|right:|assertion" test.log | head -25 | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+          exit $status
       - run: cargo build --release -p openhop-cli
       - uses: actions/upload-artifact@v4
         with:

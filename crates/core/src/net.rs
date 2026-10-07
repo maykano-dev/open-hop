@@ -296,31 +296,38 @@ mod tests {
         let died = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let d2 = died.clone();
         let link = Link::new(tx, move || d2.store(true, std::sync::atomic::Ordering::SeqCst));
-        // Fill the bulk lane, then send input: input must not be stuck behind it.
-        for i in 0..10u64 {
-            assert!(link.send_bulk_wait(Msg::ClipPart { origin: String::new(), id: i, total: 1, data: vec![0; 200_000] }));
-        }
+        // Queue far more bulk data than any OS socket buffer holds (16 MB),
+        // from a worker thread, as file transfers do.
+        let bulk_link = link.clone();
+        let filler = std::thread::spawn(move || {
+            for i in 0..80u64 {
+                if !bulk_link.send_bulk_wait(Msg::ClipPart { origin: String::new(), id: i, total: 1, data: vec![0; 200_000] }) {
+                    break;
+                }
+            }
+        });
+        std::thread::sleep(Duration::from_millis(300));
         assert!(link.send(Msg::Key { key: 4, down: true }));
+        // Input must arrive long before the queued bulk data is through.
         let mut saw_key_at = None;
-        for n in 0..11 {
+        for n in 0..81 {
             if rx.recv().unwrap() == (Msg::Key { key: 4, down: true }) {
                 saw_key_at = Some(n);
                 break;
             }
         }
-        assert!(saw_key_at.unwrap() < 10, "key should overtake queued bulk data");
-        // Peer stops reading entirely: writes must time out instead of hanging forever.
+        let at = saw_key_at.expect("key never arrived");
+        assert!(at < 60, "key arrived after {at} bulk messages");
+        // The peer stops reading entirely: the link must notice instead of hanging.
         drop(rx);
-        for _ in 0..400 {
+        let start = std::time::Instant::now();
+        while !link.is_dead() && start.elapsed() < Duration::from_secs(20) {
             link.send(Msg::Ping);
-            let _ = link.send(Msg::ClipPart { origin: String::new(), id: 0, total: 1, data: vec![0; 200_000] });
-            std::thread::sleep(Duration::from_millis(5));
-            if link.is_dead() {
-                break;
-            }
+            std::thread::sleep(Duration::from_millis(20));
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(200));
         assert!(link.is_dead() && died.load(std::sync::atomic::Ordering::SeqCst));
+        filler.join().unwrap();
     }
 
     #[test]
