@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.1
+
+**Update every computer** (protocol 5).
+
+### Changed
+- **Live windows are much faster.** Only the parts of a window that change are sent (typing a letter sends a few hundred bytes instead of the whole window), pictures are taken through shared memory on Linux, compressed with a faster encoder, and up to two updates travel at once. Right after a click or key press OpenHop looks for the change immediately.
+- **A window you drag (or open) on another computer moves there.** The original is hidden on its own computer (it keeps running so you can use it) and comes back when you close it on the other side. Windows and Linux; macOS doesn't allow it.
+- **Live windows look like the real thing**: same size as the original, its own title, sharp text (full colour detail), no grey bars. Resizing it resizes the real window, and the other way round.
+- **A new Nearby radar**: device icons, soft sonar waves, and a moving line to the computers you're connected to.
+- The **Address** shown for pairing leaves out container and virtual machine networks (Docker's 172.x addresses).
+
 ## v0.4.0
 
 **Update every computer.** v0.4 uses protocol 4.

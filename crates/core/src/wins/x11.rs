@@ -18,6 +18,15 @@ struct X {
     composite: bool,
     /// Windows we redirected for off-screen pictures.
     redirected: Vec<Window>,
+    /// Shared memory for fast pictures (MIT-SHM), if the server offers it.
+    shm: Option<Shm>,
+    shm_ok: bool,
+}
+
+struct Shm {
+    seg: u32,
+    map: memmap2::MmapMut,
+    size: usize,
 }
 
 fn x() -> Option<&'static Mutex<X>> {
@@ -40,6 +49,8 @@ fn x() -> Option<&'static Mutex<X>> {
             "_NET_WM_STATE_HIDDEN",
             "_NET_WM_STATE_SKIP_TASKBAR",
             "_GTK_FRAME_EXTENTS",
+            "_NET_WM_WINDOW_OPACITY",
+            "_OPENHOP_HIDDEN",
         ];
         let mut atoms = HashMap::new();
         for n in names {
@@ -51,7 +62,11 @@ fn x() -> Option<&'static Mutex<X>> {
             .and_then(|c| c.reply().ok())
             .map(|r| r.major_version > 0 || r.minor_version >= 2)
             .unwrap_or(false);
-        Some(Mutex::new(X { conn, root, atoms, composite, redirected: vec![] }))
+        let shm_ok = {
+            use x11rb::protocol::shm::ConnectionExt as _;
+            conn.shm_query_version().ok().and_then(|c| c.reply().ok()).map(|r| (r.major_version, r.minor_version) >= (1, 2)).unwrap_or(false)
+        };
+        Some(Mutex::new(X { conn, root, atoms, composite, redirected: vec![], shm: None, shm_ok }))
     })
     .as_ref()
 }
@@ -164,6 +179,16 @@ impl X {
                 }
             }
         }
+        let (pw, ph) = (r.w as u32, r.h as u32);
+        let need = (pw * ph * 4) as usize;
+        if depth >= 24 && self.shm_ok {
+            if let Some(bgra) = self.shm_picture(source, ox, oy, pw as u16, ph as u16, need) {
+                if let Some(p) = pixmap {
+                    let _ = self.conn.free_pixmap(p);
+                }
+                return Some(Picture { w: pw, h: ph, bgra });
+            }
+        }
         let img = self.conn.get_image(ImageFormat::Z_PIXMAP, source, ox, oy, r.w as u16, r.h as u16, !0).ok()?.reply();
         if let Some(p) = pixmap {
             let _ = self.conn.free_pixmap(p);
@@ -173,16 +198,52 @@ impl X {
             // Fall back to the visible pixels.
             Err(_) => self.conn.get_image(ImageFormat::Z_PIXMAP, w, ox, oy, r.w as u16, r.h as u16, !0).ok()?.reply().ok()?,
         };
-        let (pw, ph) = (r.w as u32, r.h as u32);
-        if depth < 24 || img.data.len() < (pw * ph * 4) as usize {
+        if depth < 24 || img.data.len() < need {
             return None;
         }
         // 32 bits per pixel, BGRX little-endian.
-        let mut rgba = Vec::with_capacity((pw * ph * 4) as usize);
-        for px in img.data.chunks_exact(4).take((pw * ph) as usize) {
-            rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
+        let mut bgra = img.data;
+        bgra.truncate(need);
+        Some(Picture { w: pw, h: ph, bgra })
+    }
+
+    /// Picture through shared memory: no copying over the X connection.
+    fn shm_picture(&mut self, d: Drawable, x: i16, y: i16, w: u16, h: u16, need: usize) -> Option<Vec<u8>> {
+        use x11rb::protocol::shm::ConnectionExt as _;
+        if self.shm.as_ref().map(|s| s.size < need).unwrap_or(true) {
+            if let Some(old) = self.shm.take() {
+                let _ = self.conn.shm_detach(old.seg);
+            }
+            let size = need.max(8 << 20).next_power_of_two();
+            let seg = self.conn.generate_id().ok()?;
+            let made = self.conn.shm_create_segment(seg, size as u32, false).ok().and_then(|c| c.reply().ok());
+            let Some(reply) = made else {
+                self.shm_ok = false;
+                return None;
+            };
+            let file = std::fs::File::from(reply.shm_fd);
+            let map = unsafe { memmap2::MmapOptions::new().len(size).map_mut(&file).ok()? };
+            self.shm = Some(Shm { seg, map, size });
         }
-        Some(Picture { w: pw, h: ph, rgba })
+        let seg = self.shm.as_ref()?.seg;
+        let r = self.conn.shm_get_image(d, x, y, w, h, !0, ImageFormat::Z_PIXMAP.into(), seg, 0).ok()?.reply().ok()?;
+        if (r.size as usize) < need {
+            return None;
+        }
+        Some(self.shm.as_ref()?.map[..need].to_vec())
+    }
+
+    /// The window manager's frame around a client window (or the window itself).
+    fn toplevel(&self, w: Window) -> Window {
+        let mut cur = w;
+        for _ in 0..16 {
+            let Some(t) = self.conn.query_tree(cur).ok().and_then(|c| c.reply().ok()) else { break };
+            if t.parent == self.root || t.parent == NONE {
+                return cur;
+            }
+            cur = t.parent;
+        }
+        w
     }
 }
 
@@ -239,4 +300,58 @@ pub fn titlebar_window_at(px: i32, py: i32) -> Option<u64> {
         }
     }
     None
+}
+
+pub fn set_hidden(id: u64, hidden: bool) {
+    use x11rb::wrapper::ConnectionExt as _;
+    let Some(x) = x() else { return };
+    let x = x.lock();
+    let w = id as Window;
+    let top = x.toplevel(w);
+    let (op, mark) = (x.a("_NET_WM_WINDOW_OPACITY"), x.a("_OPENHOP_HIDDEN"));
+    for win in [w, top] {
+        if hidden {
+            // Fully transparent (with a compositor, as on GNOME and KDE).
+            let _ = x.conn.change_property32(PropMode::REPLACE, win, op, AtomEnum::CARDINAL, &[0]);
+        } else {
+            let _ = x.conn.delete_property(win, op);
+        }
+    }
+    if hidden {
+        let _ = x.conn.change_property32(PropMode::REPLACE, w, mark, AtomEnum::CARDINAL, &[1]);
+    } else {
+        let _ = x.conn.delete_property(w, mark);
+    }
+    let _ = x.conn.flush();
+}
+
+pub fn lower(id: u64) {
+    let Some(x) = x() else { return };
+    let x = x.lock();
+    let top = x.toplevel(id as Window);
+    let _ = x.conn.configure_window(top, &ConfigureWindowAux::new().stack_mode(StackMode::BELOW));
+    let _ = x.conn.flush();
+}
+
+pub fn resize(id: u64, w: i32, h: i32) {
+    let Some(x) = x() else { return };
+    let x = x.lock();
+    let win = id as Window;
+    // GTK draws shadows around its windows: the content is smaller.
+    let ext = x.prop32(win, "_GTK_FRAME_EXTENTS", AtomEnum::CARDINAL);
+    let (ew, eh) = if ext.len() == 4 { ((ext[0] + ext[1]) as i32, (ext[2] + ext[3]) as i32) } else { (0, 0) };
+    let _ = x.conn.configure_window(win, &ConfigureWindowAux::new().width((w + ew) as u32).height((h + eh) as u32));
+    let _ = x.conn.flush();
+}
+
+pub fn restore_all() {
+    let Some(xm) = x() else { return };
+    let hidden: Vec<Window> = {
+        let x = xm.lock();
+        x.clients().into_iter().filter(|&w| !x.prop32(w, "_OPENHOP_HIDDEN", AtomEnum::CARDINAL).is_empty()).collect()
+    };
+    for w in hidden {
+        log::info!("showing a window a previous run had hidden");
+        set_hidden(w as u64, false);
+    }
 }

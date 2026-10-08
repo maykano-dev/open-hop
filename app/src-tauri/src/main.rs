@@ -443,7 +443,9 @@ fn main() {
             live::fx_done,
             live::dock_toggle,
             live::dock_hide,
-            live::play_sound
+            live::play_sound,
+            live::viewer_fit,
+            live::viewer_title
         ])
         .setup(move |app| {
             // Keep sharing in the background: closing the window hides it to the tray.

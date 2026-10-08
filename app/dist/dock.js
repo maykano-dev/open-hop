@@ -11,6 +11,7 @@ function el(tag, attrs = {}, ...kids) {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "class") n.className = v;
+    else if (k === "style") n.style.cssText = v;
     else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
     else n.setAttribute(k, v);
   }
@@ -22,7 +23,8 @@ function color(s) {
   let h = 0;
   for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   const hues = [211, 262, 340, 28, 145, 190, 8, 48];
-  return `linear-gradient(145deg, hsl(${hues[h % hues.length]}, 80%, 62%), hsl(${hues[h % hues.length] + 18}, 72%, 48%))`;
+  const hue = hues[h % hues.length];
+  return `hsl(${hue}, 75%, 55%); background-image: linear-gradient(145deg, hsl(${hue}, 80%, 62%), hsl(${hue + 18}, 72%, 48%))`;
 }
 
 async function open(computer, w) {
@@ -48,7 +50,7 @@ function render(snap) {
       el("div", { class: "who" }, here ? el("b", {}, "This Computer") : g.name),
       el("div", { class: "tiles" }, ...g.windows.map((w) =>
         el("button", { class: "tile", title: `${w.title}${w.app ? " — " + w.app : ""}`, onclick: () => open(g.name, w) },
-          el("span", { class: "badge", style: `background:${color(w.app || w.title)}` }, (w.app || w.title || "?").trim().charAt(0).toUpperCase()),
+          el("span", { class: "badge", style: `background-color:${color(w.app || w.title)}` }, (w.app || w.title || "?").trim().charAt(0).toUpperCase()),
           el("span", { class: "name" }, w.title))))));
   }
 }

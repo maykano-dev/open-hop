@@ -9,7 +9,7 @@ pub mod sound;
 pub mod system;
 
 use crate::platform::InjectOp;
-use crate::protocol::{Ext, MouseButton, Os, WinEvent, WinInfo};
+use crate::protocol::{Ext, MouseButton, Os, Patch, WinEvent, WinInfo};
 use crate::wins;
 use parking_lot::{Condvar, Mutex, RwLock};
 use serde::Serialize;
@@ -31,18 +31,26 @@ pub enum UiEvent {
     CloseViewer { stream: u64 },
 }
 
-/// The latest picture of a live window.
+/// An update to a live window's picture.
 #[derive(Clone)]
 pub struct Frame {
     pub seq: u64,
     pub w: u32,
     pub h: u32,
     pub title: String,
-    pub jpeg: Arc<Vec<u8>>,
+    pub patches: Arc<Vec<Patch>>,
+}
+
+impl Frame {
+    /// Covers the whole picture (so earlier updates don't matter).
+    fn is_full(&self) -> bool {
+        self.patches.iter().any(|p| p.x == 0 && p.y == 0 && p.w == self.w && p.h == self.h)
+    }
 }
 
 pub enum FrameWait {
-    Frame(Frame),
+    /// Updates to draw, oldest first.
+    Frames(Vec<Frame>),
     /// Paused, with the reason to show.
     Paused(String),
     Closed,
@@ -84,7 +92,8 @@ pub type Inject = Box<dyn FnMut(&[InjectOp]) + Send>;
 
 struct Viewer {
     origin: String,
-    frame: Option<Frame>,
+    /// Updates not shown yet.
+    queue: Vec<Frame>,
     paused: Option<String>,
     closed: bool,
 }
@@ -99,6 +108,28 @@ struct Source {
     /// (frame w, frame h, window w, window h) of the last picture sent.
     scale: Mutex<(u32, u32, u32, u32)>,
     input: Mutex<InputState>,
+    /// Input just went in: look for the change right away (and keep looking
+    /// quickly for a moment) instead of waiting for the next regular look.
+    busy_until: Mutex<Instant>,
+    poke: Condvar,
+}
+
+impl Source {
+    /// Sleep up to `d`, waking early if input arrives.
+    fn nap(&self, d: Duration) {
+        let mut until = self.busy_until.lock();
+        let deadline = Instant::now() + d;
+        let was = *until;
+        while Instant::now() < deadline && *until == was {
+            if self.poke.wait_until(&mut until, deadline).timed_out() {
+                break;
+            }
+        }
+    }
+
+    fn busy(&self) -> bool {
+        *self.busy_until.lock() > Instant::now()
+    }
 }
 
 #[derive(Default)]
@@ -132,12 +163,12 @@ pub struct Hub {
     stop: Arc<AtomicBool>,
 }
 
-fn quality(q: &str) -> (u32, u8, u32) {
-    // (frames per second, JPEG quality, max width)
+/// Pictures per second, JPEG quality, widest picture, full colour detail.
+fn quality(q: &str) -> (u32, u8, u32, bool) {
     match q {
-        "low" => (10, 55, 1280),
-        "high" => (30, 85, 2560),
-        _ => (20, 72, 1920),
+        "low" => (15, 60, 1280, false),
+        "high" => (40, 92, 3840, true),
+        _ => (30, 82, 2560, true),
     }
 }
 
@@ -162,7 +193,11 @@ impl Hub {
             stop: Arc::new(AtomicBool::new(false)),
         });
         let h = hub.clone();
-        let _ = std::thread::Builder::new().name("extras".into()).spawn(move || h.monitor());
+        let _ = std::thread::Builder::new().name("extras".into()).spawn(move || {
+            // Windows a crashed run left hidden come back.
+            wins::restore_all();
+            h.monitor()
+        });
         hub
     }
 
@@ -243,6 +278,19 @@ impl Hub {
     /// there is meant for it. Returns (viewer computer, window).
     pub fn key_target(&self) -> Option<(String, u64)> {
         self.focused.lock().as_ref().map(|(v, _, w)| (v.clone(), *w))
+    }
+
+    /// The pointer is back on this computer: put windows that are open
+    /// elsewhere (and hidden here) behind everything, out of the way.
+    pub fn lower_hidden(&self) {
+        let windows: Vec<u64> = self.sources.lock().values().map(|s| s.window).collect();
+        if !windows.is_empty() {
+            std::thread::spawn(move || {
+                for w in windows {
+                    wins::lower(w);
+                }
+            });
+        }
     }
 
     pub fn play(&self, _why: &str) {
@@ -330,7 +378,7 @@ impl Hub {
         let (title, w, h) = info.map(|i| (i.title, i.w, i.h)).unwrap_or_else(|| ("Window".into(), 960, 640));
         // Fits in a JavaScript number.
         let stream = crate::files::new_id() & ((1 << 52) - 1);
-        self.viewers.lock().insert(stream, Viewer { origin: origin.into(), frame: None, paused: None, closed: false });
+        self.viewers.lock().insert(stream, Viewer { origin: origin.into(), queue: vec![], paused: None, closed: false });
         self.send(origin, Ext::WinOpen { stream, window, os: Os::current() });
         self.ui(UiEvent::OpenViewer { stream, origin: origin.into(), title, w, h, at });
         self.play("window");
@@ -350,32 +398,36 @@ impl Hub {
     }
 
     pub fn input(&self, stream: u64, ev: WinEvent) {
+        log::trace!("{} view input {:?}", ms(), ev);
         let origin = self.viewers.lock().get(&stream).map(|v| v.origin.clone());
         if let Some(o) = origin {
             self.send(&o, Ext::WinInput { stream, ev });
         }
     }
 
-    /// Wait (up to `timeout`) for a picture newer than `after`.
+    /// Wait (up to `timeout`) for updates newer than `after`. Taking them
+    /// tells the owner to send more, so a slow screen gets fewer updates
+    /// instead of a backlog.
     pub fn frame(&self, stream: u64, after: u64, timeout: Duration) -> FrameWait {
         let deadline = Instant::now() + timeout;
         let mut viewers = self.viewers.lock();
         loop {
-            match viewers.get(&stream) {
+            match viewers.get_mut(&stream) {
                 None => return FrameWait::Closed,
                 Some(v) if v.closed => return FrameWait::Closed,
                 Some(v) => {
-                    if let Some(f) = &v.frame {
-                        if f.seq > after {
-                            return FrameWait::Frame(f.clone());
-                        }
+                    v.queue.retain(|f| f.seq > after);
+                    if !v.queue.is_empty() {
+                        let frames = std::mem::take(&mut v.queue);
+                        log::trace!("{} hand {} update(s) to the view", ms(), frames.len());
+                        let (origin, last) = (v.origin.clone(), frames.last().map(|f| f.seq).unwrap_or(0));
+                        drop(viewers);
+                        self.send(&origin, Ext::WinAck { stream, seq: last });
+                        return FrameWait::Frames(frames);
                     }
                     if let Some(p) = &v.paused {
-                        if after > 0 || v.frame.is_none() {
-                            // Report the pause, but don't spin on it.
-                            if Instant::now() + Duration::from_millis(50) >= deadline {
-                                return FrameWait::Paused(p.clone());
-                            }
+                        if Instant::now() + Duration::from_millis(50) >= deadline {
+                            return FrameWait::Paused(p.clone());
                         }
                     }
                 }
@@ -433,12 +485,17 @@ impl Hub {
                 self.open(&origin, window, crate::platform::cursor_pos());
             }
             Ext::WinOpen { stream, window, os } => self.start_source(from, stream, window, os),
-            Ext::WinFrame { stream, seq, w, h, title, jpeg } => {
+            Ext::WinFrame { stream, seq, w, h, title, patches } => {
+                log::trace!("{} got update {seq}", ms());
                 let known = {
                     let mut viewers = self.viewers.lock();
                     match viewers.get_mut(&stream) {
                         Some(v) => {
-                            v.frame = Some(Frame { seq, w, h, title, jpeg: Arc::new(jpeg) });
+                            let f = Frame { seq, w, h, title, patches: Arc::new(patches) };
+                            if f.is_full() {
+                                v.queue.clear();
+                            }
+                            v.queue.push(f);
                             v.paused = None;
                             true
                         }
@@ -450,7 +507,6 @@ impl Hub {
                 }
                 if known {
                     self.frames.notify_all();
-                    self.send(from, Ext::WinAck { stream, seq });
                 } else {
                     self.send(from, Ext::WinClose { stream });
                 }
@@ -461,6 +517,7 @@ impl Hub {
                 }
             }
             Ext::WinInput { stream, ev } => {
+                log::trace!("{} input {:?}", ms(), ev);
                 let src = self.sources.lock().get(&stream).cloned();
                 if let Some(s) = src {
                     self.inject_for(stream, &s, ev);
@@ -503,12 +560,20 @@ impl Hub {
             remote_pause: Mutex::new(None),
             scale: Mutex::new((1, 1, 1, 1)),
             input: Mutex::new(InputState::default()),
+            busy_until: Mutex::new(Instant::now()),
+            poke: Condvar::new(),
         });
         self.sources.lock().insert(stream, src.clone());
+        // It has moved to the other screen: hide it here (it keeps running).
+        wins::set_hidden(window, true);
         let hub = self.clone();
         let _ = std::thread::Builder::new().name("live-window".into()).spawn(move || {
             hub.stream_loop(stream, &src);
             hub.sources.lock().remove(&stream);
+            // Back on this screen, unless it's still open somewhere else.
+            if !hub.sources.lock().values().any(|s| s.window == src.window) {
+                wins::set_hidden(src.window, false);
+            }
             let mut f = hub.focused.lock();
             if f.as_ref().map(|x| x.1) == Some(stream) {
                 *f = None;
@@ -517,11 +582,12 @@ impl Hub {
     }
 
     fn stream_loop(&self, stream: u64, src: &Source) {
-        let (fps, q, max_w) = quality(&self.settings.read().quality);
+        let (fps, q, max_w, full_colour) = quality(&self.settings.read().quality);
         let interval = Duration::from_millis(1000 / fps as u64);
         let mut seq = 0u64;
-        let mut last_hash = 0u64;
-        let mut last_sent = Instant::now() - Duration::from_secs(60);
+        // The last picture sent (after scaling), to find what changed.
+        let mut prev: Option<wins::Picture> = None;
+        let mut last_full = Instant::now();
         let mut sent_at = Instant::now();
         let mut paused_sent = false;
         while !src.stop.load(Ordering::SeqCst) && !self.stop.load(Ordering::SeqCst) {
@@ -537,12 +603,12 @@ impl Hub {
             } else if paused_sent {
                 self.send(&src.viewer, Ext::WinPause { stream, paused: false, reason: String::new() });
                 paused_sent = false;
-                last_hash = 0;
+                prev = None;
             }
-            // One picture in flight at a time: a slow network gets fewer
-            // pictures instead of a growing queue.
-            if seq > 0 && src.acked.load(Ordering::SeqCst) < seq && sent_at.elapsed() < Duration::from_secs(2) {
-                std::thread::sleep(Duration::from_millis(4));
+            // At most two updates on their way: enough to hide the network
+            // delay, without building a queue on a slow link.
+            if seq >= 2 && src.acked.load(Ordering::SeqCst) + 2 <= seq && sent_at.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_millis(2));
                 continue;
             }
             let started = Instant::now();
@@ -555,29 +621,43 @@ impl Hub {
                 std::thread::sleep(Duration::from_millis(300));
                 continue;
             };
-            let h = quick_hash(&pic.rgba);
-            if h == last_hash && last_sent.elapsed() < Duration::from_secs(3) {
-                std::thread::sleep(interval.saturating_sub(started.elapsed()).max(Duration::from_millis(15)));
+            let (ow, oh) = (pic.w, pic.h);
+            let pic = scale_down(pic, max_w);
+            let (fw, fh) = (pic.w, pic.h);
+            // A full picture now and then heals anything that went wrong.
+            let full = prev.as_ref().map(|p| p.w != fw || p.h != fh).unwrap_or(true) || last_full.elapsed() > Duration::from_secs(15);
+            let rects = if full { vec![(0, 0, fw, fh)] } else { changed_rects(prev.as_ref().unwrap(), &pic) };
+            if rects.is_empty() {
+                // Right after input, look again soon: the app is about to redraw.
+                let wait = if src.busy() { Duration::from_millis(8) } else { interval };
+                src.nap(wait.saturating_sub(started.elapsed()).max(Duration::from_millis(4)));
                 continue;
             }
-            last_hash = h;
-            let (ow, oh) = (pic.w, pic.h);
-            let Some((fw, fh, jpeg)) = encode(pic, max_w, q) else {
+            let patches: Vec<Patch> = rects
+                .into_iter()
+                .filter_map(|(x, y, w, h)| encode_patch(&pic, (x, y, w, h), q, full_colour).map(|jpeg| Patch { x, y, w, h, jpeg }))
+                .collect();
+            if patches.is_empty() {
                 std::thread::sleep(interval);
                 continue;
-            };
+            }
+            if full {
+                last_full = Instant::now();
+            }
             *src.scale.lock() = (fw, fh, ow, oh);
+            prev = Some(pic);
             seq += 1;
             let title = self.lists.lock().get(&self.me).and_then(|l| l.iter().find(|w| w.id == src.window).map(|w| w.title.clone())).unwrap_or_default();
-            let len = jpeg.len();
-            if seq == 1 || seq.is_multiple_of(100) {
-                log::debug!("live window: picture {seq} ({fw}x{fh}, {} KB) -> {}", len / 1024, src.viewer);
+            let len: usize = patches.iter().map(|p| p.jpeg.len()).sum();
+            if seq == 1 || seq.is_multiple_of(200) {
+                log::debug!("live window: update {seq} ({fw}x{fh}, {} patch(es), {} KB, {} ms) -> {}", patches.len(), len / 1024, started.elapsed().as_millis(), src.viewer);
             }
-            self.send(&src.viewer, Ext::WinFrame { stream, seq, w: fw, h: fh, title, jpeg });
+            log::trace!("{} send update {seq} ({} bytes, took {} ms)", ms(), len, started.elapsed().as_millis());
+            self.send(&src.viewer, Ext::WinFrame { stream, seq, w: fw, h: fh, title, patches });
             crate::files::pace(len);
             sent_at = Instant::now();
-            last_sent = Instant::now();
-            std::thread::sleep(interval.saturating_sub(started.elapsed()));
+            let wait = if src.busy() { Duration::from_millis(8) } else { interval };
+            src.nap(wait.saturating_sub(started.elapsed()));
         }
     }
 
@@ -592,10 +672,12 @@ impl Hub {
         let mut st = src.input.lock();
         let mut ops: Vec<InjectOp> = vec![];
         let activate = |st: &mut InputState| {
-            if st.last_activate.map(|t| t.elapsed() > Duration::from_secs(2)).unwrap_or(true) {
+            // Bring it forward when the view is first used (or after a while,
+            // in case something else took the focus meanwhile).
+            if st.last_activate.map(|t| t.elapsed() > Duration::from_secs(15)).unwrap_or(true) {
                 wins::activate(src.window);
                 st.last_activate = Some(Instant::now());
-                std::thread::sleep(Duration::from_millis(40));
+                std::thread::sleep(Duration::from_millis(15));
             }
         };
         match ev {
@@ -603,6 +685,13 @@ impl Hub {
                 st.last_activate = None;
                 activate(&mut st);
                 *self.focused.lock() = Some((src.viewer.clone(), stream, src.window));
+            }
+            WinEvent::Resize { w, h } => {
+                let w = (w as i64 * ow as i64 / fw.max(1) as i64) as i32;
+                let h = (h as i64 * oh as i64 / fh.max(1) as i64) as i32;
+                if (w - g.w).abs() > 2 || (h - g.h).abs() > 2 {
+                    wins::resize(src.window, w, h);
+                }
             }
             WinEvent::Blur => {
                 let mut f = self.focused.lock();
@@ -658,6 +747,11 @@ impl Hub {
             if let Some(inj) = self.inject.lock().as_mut() {
                 inj(&ops);
             }
+        }
+        // Show the result as soon as the app has drawn it.
+        if !matches!(ev, WinEvent::Move { .. } | WinEvent::Blur) || src.input.lock().buttons != 0 {
+            *src.busy_until.lock() = Instant::now() + Duration::from_millis(400);
+            src.poke.notify_all();
         }
     }
 
@@ -748,34 +842,101 @@ impl Hub {
     }
 }
 
+/// Milliseconds clock for timing traces.
+fn ms() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() % 100_000).unwrap_or(0)
+}
+
 fn low_battery_reason() -> String {
     "Paused to save battery".into()
 }
 
-/// Fast change detection for pictures.
-fn quick_hash(b: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for c in b.chunks_exact(8) {
-        let v = u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
-        h = (h ^ v).wrapping_mul(0x0000_0100_0000_01b3).rotate_left(5);
+/// Shrink pictures wider than `max_w` (keeps BGRA order).
+fn scale_down(pic: wins::Picture, max_w: u32) -> wins::Picture {
+    if pic.w <= max_w {
+        return pic;
     }
-    h ^ b.len() as u64
+    let h = (pic.h as u64 * max_w as u64 / pic.w as u64).max(1) as u32;
+    match image::RgbaImage::from_raw(pic.w, pic.h, pic.bgra) {
+        Some(img) => {
+            let small = image::imageops::resize(&img, max_w, h, image::imageops::FilterType::Triangle);
+            wins::Picture { w: max_w, h, bgra: small.into_raw() }
+        }
+        None => wins::Picture { w: 0, h: 0, bgra: vec![] },
+    }
 }
 
-/// Scale down to `max_w` if needed and encode as JPEG.
-fn encode(pic: wins::Picture, max_w: u32, quality: u8) -> Option<(u32, u32, Vec<u8>)> {
-    let img = image::RgbaImage::from_raw(pic.w, pic.h, pic.rgba)?;
-    let img = if pic.w > max_w {
-        let h = (pic.h as u64 * max_w as u64 / pic.w as u64).max(1) as u32;
-        image::imageops::resize(&img, max_w, h, image::imageops::FilterType::Triangle)
-    } else {
-        img
-    };
-    let (w, h) = img.dimensions();
-    let rgb: Vec<u8> = img.as_raw().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
-    let mut out = Vec::with_capacity(rgb.len() / 8);
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality).encode(&rgb, w, h, image::ExtendedColorType::Rgb8).ok()?;
-    Some((w, h, out))
+/// The areas that changed between two same-size pictures: one rectangle per
+/// band of changed rows (so a clock in one corner and typing in another
+/// don't make the whole window resend), aligned to 16 pixels.
+fn changed_rects(a: &wins::Picture, b: &wins::Picture) -> Vec<(u32, u32, u32, u32)> {
+    let (w, h) = (b.w as usize, b.h as usize);
+    let stride = w * 4;
+    let px_eq = |r1: &[u8], r2: &[u8], x: usize| r1[x * 4..x * 4 + 3] == r2[x * 4..x * 4 + 3];
+    let mut out = vec![];
+    let mut band: Option<(usize, usize, usize, usize)> = None; // top, bottom, left, right
+    let mut clean_run = 0;
+    for y in 0..h {
+        let (ra, rb) = (&a.bgra[y * stride..(y + 1) * stride], &b.bgra[y * stride..(y + 1) * stride]);
+        if ra == rb {
+            clean_run += 1;
+            if clean_run >= 32 {
+                if let Some(bd) = band.take() {
+                    out.push(bd);
+                }
+            }
+            continue;
+        }
+        clean_run = 0;
+        let mut l = 0;
+        while l < w && px_eq(ra, rb, l) {
+            l += 1;
+        }
+        if l == w {
+            continue; // only the unused alpha byte differs
+        }
+        let mut r = w - 1;
+        while r > l && px_eq(ra, rb, r) {
+            r -= 1;
+        }
+        band = Some(match band {
+            Some((t, _, bl, br)) => (t, y, bl.min(l), br.max(r)),
+            None => (y, y, l, r),
+        });
+    }
+    if let Some(bd) = band {
+        out.push(bd);
+    }
+    out.into_iter()
+        .map(|(t, bt, l, r)| {
+            let x0 = l / 16 * 16;
+            let y0 = t / 16 * 16;
+            let x1 = ((r + 16) / 16 * 16).min(w);
+            let y1 = ((bt + 16) / 16 * 16).min(h);
+            (x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32)
+        })
+        .collect()
+}
+
+/// JPEG of one area of a picture.
+fn encode_patch(pic: &wins::Picture, (x, y, w, h): (u32, u32, u32, u32), quality: u8, full_colour: bool) -> Option<Vec<u8>> {
+    if w == 0 || h == 0 || w > u16::MAX as u32 || h > u16::MAX as u32 {
+        return None;
+    }
+    let stride = pic.w as usize * 4;
+    let mut area = Vec::with_capacity((w * h * 4) as usize);
+    for row in y..y + h {
+        let start = row as usize * stride + x as usize * 4;
+        area.extend_from_slice(pic.bgra.get(start..start + w as usize * 4)?);
+    }
+    let mut out = Vec::with_capacity(area.len() / 10);
+    let mut enc = jpeg_encoder::Encoder::new(&mut out, quality);
+    if full_colour {
+        // Sharp coloured text (no colour blur around letters).
+        enc.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_4_4);
+    }
+    enc.encode(&area, w as u16, h as u16, jpeg_encoder::ColorType::Bgra).ok()?;
+    Some(out)
 }
 
 #[cfg(test)]
@@ -783,26 +944,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn jpeg_and_scaling() {
-        let pic = wins::Picture { w: 4000, h: 1000, rgba: vec![128; 4000 * 1000 * 4] };
-        let (w, h, jpeg) = encode(pic, 1920, 70).unwrap();
-        assert_eq!((w, h), (1920, 480));
+    fn patches_cover_only_changes() {
+        let (w, h) = (200u32, 300u32);
+        let a = wins::Picture { w, h, bgra: vec![200; (w * h * 4) as usize] };
+        let mut b = wins::Picture { w, h, bgra: a.bgra.clone() };
+        assert!(changed_rects(&a, &b).is_empty());
+        // A letter typed near the top, and a clock far below.
+        for (x, y) in [(20usize, 10usize), (21, 12), (150, 280)] {
+            b.bgra[(y * w as usize + x) * 4] = 0;
+        }
+        let r = changed_rects(&a, &b);
+        assert_eq!(r, vec![(16, 0, 16, 16), (144, 272, 16, 16)]);
+        let jpeg = encode_patch(&b, r[0], 80, true).unwrap();
         assert_eq!(&jpeg[..2], &[0xFF, 0xD8]);
-        assert_ne!(quick_hash(&[1u8; 64]), quick_hash(&[2u8; 64]));
+        assert!(jpeg.len() < 2000, "{}", jpeg.len());
+        let small = scale_down(wins::Picture { w: 4000, h: 1000, bgra: vec![1; 4000 * 1000 * 4] }, 1920);
+        assert_eq!((small.w, small.h, small.bgra.len()), (1920, 480, 1920 * 480 * 4));
     }
 
     #[test]
     fn viewer_waits_for_frames() {
         let hub = Hub::new("me".into(), Settings::from_config(&crate::Config::default()));
-        hub.viewers.lock().insert(7, Viewer { origin: "pc".into(), frame: None, paused: None, closed: false });
+        hub.viewers.lock().insert(7, Viewer { origin: "pc".into(), queue: vec![], paused: None, closed: false });
         assert!(matches!(hub.frame(7, 0, Duration::from_millis(20)), FrameWait::Timeout));
         let h2 = hub.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(30));
-            h2.handle("pc", Ext::WinFrame { stream: 7, seq: 1, w: 2, h: 2, title: "t".into(), jpeg: vec![1, 2, 3] });
+            h2.handle("pc", Ext::WinFrame { stream: 7, seq: 1, w: 2, h: 2, title: "t".into(), patches: vec![Patch { x: 0, y: 0, w: 2, h: 2, jpeg: vec![1, 2, 3] }] });
         });
         match hub.frame(7, 0, Duration::from_secs(2)) {
-            FrameWait::Frame(f) => assert_eq!((f.seq, f.jpeg.len()), (1, 3)),
+            FrameWait::Frames(f) => assert_eq!((f[0].seq, f[0].patches[0].jpeg.len()), (1, 3)),
             _ => panic!("no frame"),
         }
         hub.handle("pc", Ext::WinPause { stream: 7, paused: true, reason: "low".into() });

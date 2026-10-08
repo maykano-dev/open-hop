@@ -138,10 +138,10 @@ pub fn capture(id: u64) -> Option<Picture> {
                 // and for apps drawn with DirectX (browsers, Electron).
                 let ok = PrintWindow(h, dc, PRINT_WINDOW_FLAGS(1 | 2)).as_bool();
                 let px = std::slice::from_raw_parts(bits as *const u8, (w * hgt * 4) as usize);
-                let rgba: Vec<u8> = px.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect();
+                let bgra: Vec<u8> = px.to_vec();
                 SelectObject(dc, old);
                 let _ = DeleteObject(bmp.into());
-                ok.then_some(Picture { w: w as u32, h: hgt as u32, rgba })
+                ok.then_some(Picture { w: w as u32, h: hgt as u32, bgra })
             }
             _ => None,
         };
@@ -184,5 +184,69 @@ pub fn titlebar_window_at(x: i32, y: i32) -> Option<u64> {
         let _ = SendMessageTimeoutW(top, WM_NCHITTEST, WPARAM(0), lp, SMTO_ABORTIFHUNG, 50, Some(&mut hit));
         // HTCAPTION
         (hit == 2).then_some(top.0 as usize as u64)
+    }
+}
+
+const HIDDEN_PROP: windows::core::PCWSTR = windows::core::w!("OpenHopHidden");
+
+pub fn set_hidden(id: u64, hidden: bool) {
+    use windows::Win32::Foundation::{COLORREF, HANDLE};
+    unsafe {
+        let h = hwnd(id);
+        if !IsWindow(Some(h)).as_bool() {
+            return;
+        }
+        let saved = GetPropW(h, HIDDEN_PROP);
+        if hidden {
+            if saved.is_invalid() || saved.0.is_null() {
+                let ex = GetWindowLongW(h, GWL_EXSTYLE);
+                // Remember the original style (+1 so it's never zero).
+                let _ = SetPropW(h, HIDDEN_PROP, Some(HANDLE((ex as u32 as usize + 1) as *mut _)));
+                SetWindowLongW(h, GWL_EXSTYLE, ex | WS_EX_LAYERED.0 as i32);
+            }
+            // Nearly transparent, but still a normal window that takes input.
+            let _ = SetLayeredWindowAttributes(h, COLORREF(0), 1, LWA_ALPHA);
+        } else if !saved.0.is_null() {
+            let ex = (saved.0 as usize - 1) as u32 as i32;
+            if ex & WS_EX_LAYERED.0 as i32 != 0 {
+                let _ = SetLayeredWindowAttributes(h, COLORREF(0), 255, LWA_ALPHA);
+            }
+            SetWindowLongW(h, GWL_EXSTYLE, ex);
+            let _ = RemovePropW(h, HIDDEN_PROP);
+            let _ = SetWindowPos(h, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
+    }
+}
+
+pub fn lower(id: u64) {
+    unsafe {
+        let _ = SetWindowPos(hwnd(id), Some(HWND_BOTTOM), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+}
+
+pub fn resize(id: u64, w: i32, h: i32) {
+    unsafe {
+        let hw = hwnd(id);
+        let (mut wr, mut cr) = (RECT::default(), RECT::default());
+        if GetWindowRect(hw, &mut wr).is_err() || GetClientRect(hw, &mut cr).is_err() {
+            return;
+        }
+        // Add the frame around the content area.
+        let dw = (wr.right - wr.left) - (cr.right - cr.left);
+        let dh = (wr.bottom - wr.top) - (cr.bottom - cr.top);
+        let _ = SetWindowPos(hw, None, 0, 0, w + dw, h + dh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+unsafe extern "system" fn restore_one(h: HWND, _: LPARAM) -> BOOL {
+    if !GetPropW(h, HIDDEN_PROP).0.is_null() {
+        set_hidden(h.0 as usize as u64, false);
+    }
+    BOOL(1)
+}
+
+pub fn restore_all() {
+    unsafe {
+        let _ = EnumWindows(Some(restore_one), LPARAM(0));
     }
 }

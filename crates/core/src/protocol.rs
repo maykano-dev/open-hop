@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -170,6 +170,19 @@ pub enum WinEvent {
     Focus,
     /// The viewer window lost the focus.
     Blur,
+    /// The viewer window was resized: resize the real one to match.
+    Resize { w: i32, h: i32 },
+}
+
+/// Part of a live window's picture (JPEG) at (x, y). Only what changed is
+/// sent, so typing a letter costs a few hundred bytes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Patch {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    pub jpeg: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -184,8 +197,9 @@ pub enum Ext {
     WinOpen { stream: u64, window: u64, os: Os },
     /// Ask a computer to open `origin`'s window here (a window dragged across).
     WinOffer { origin: String, window: u64 },
-    /// Owner -> viewer: the next picture of the window (JPEG).
-    WinFrame { stream: u64, seq: u64, w: u32, h: u32, title: String, jpeg: Vec<u8> },
+    /// Owner -> viewer: what changed in the window. `w`×`h` is the whole
+    /// picture; a patch covering all of it starts afresh.
+    WinFrame { stream: u64, seq: u64, w: u32, h: u32, title: String, patches: Vec<Patch> },
     /// Viewer -> owner: picture received; send the next one.
     WinAck { stream: u64, seq: u64 },
     WinInput { stream: u64, ev: WinEvent },

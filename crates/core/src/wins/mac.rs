@@ -89,16 +89,13 @@ pub fn capture(id: u64) -> Option<Picture> {
     }
     let data = img.data();
     let bytes = data.bytes();
-    let mut rgba = Vec::with_capacity(w * h * 4);
+    // BGRA (little-endian premultiplied-first); rows may be padded.
+    let mut bgra = Vec::with_capacity(w * h * 4);
     for row in 0..h {
-        let line = bytes.get(row * stride..row * stride + w * 4)?;
-        for p in line.chunks_exact(4) {
-            // BGRA, little-endian premultiplied-first.
-            rgba.extend_from_slice(&[p[2], p[1], p[0], 255]);
-        }
+        bgra.extend_from_slice(bytes.get(row * stride..row * stride + w * 4)?);
     }
     // Pictures come at the window's size in points (nominal resolution).
-    Some(Picture { w: w as u32, h: h as u32, rgba })
+    Some(Picture { w: w as u32, h: h as u32, bgra })
 }
 
 pub fn activate(id: u64) {
@@ -118,3 +115,10 @@ pub fn titlebar_window_at(x: i32, y: i32) -> Option<u64> {
     })?;
     (y < w.bounds.y + 30).then_some(w.id as u64)
 }
+
+// macOS doesn't let one app change another app's windows (without private
+// APIs), so the original stays visible there.
+pub fn set_hidden(_: u64, _: bool) {}
+pub fn lower(_: u64) {}
+pub fn resize(_: u64, _: i32, _: i32) {}
+pub fn restore_all() {}

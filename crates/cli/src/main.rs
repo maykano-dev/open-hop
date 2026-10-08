@@ -101,7 +101,8 @@ fn main() -> Result<()> {
                     let t = std::time::Instant::now();
                     let pic = openhop_core::wins::capture(id).ok_or_else(|| anyhow::anyhow!("couldn't capture window {id}"))?;
                     let ms = t.elapsed().as_millis();
-                    let img = image::RgbaImage::from_raw(pic.w, pic.h, pic.rgba).ok_or_else(|| anyhow::anyhow!("bad picture"))?;
+                    let rgba: Vec<u8> = pic.bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 255]).collect();
+                    let img = image::RgbaImage::from_raw(pic.w, pic.h, rgba).ok_or_else(|| anyhow::anyhow!("bad picture"))?;
                     image::DynamicImage::ImageRgba8(img).to_rgb8().save(&v[1])?;
                     println!("saved {}x{} picture in {ms} ms (geometry {:?})", pic.w, pic.h, openhop_core::wins::geometry(id));
                 }

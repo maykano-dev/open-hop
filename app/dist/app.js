@@ -18,6 +18,7 @@ function el(tag, attrs = {}, ...kids) {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "class") n.className = v;
+    else if (k === "style") n.style.cssText = v;
     else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
     else n.setAttribute(k, v);
   }
@@ -352,6 +353,17 @@ function renderNearby() {
 
 let radarKey = "";
 
+const ICONS = {
+  laptop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.6"/><path d="M2 19h20"/></svg>',
+  desktop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1.6"/><path d="M9 20h6M12 16v4"/></svg>',
+};
+function deviceIcon(os) {
+  const span = document.createElement("span");
+  span.className = "glyph";
+  span.innerHTML = os === "MacOs" ? ICONS.laptop : ICONS.desktop;
+  return span.firstChild;
+}
+
 function renderRadar() {
   const st = snap.status;
   const radar = $("radar");
@@ -361,36 +373,49 @@ function renderRadar() {
   const paired = new Set((st?.paired || []).map((p) => p.device));
   const isClient = form.role === "client";
   const state = (d) => connected.has(d.name) ? "live" : paired.has(d.device) ? "paired" : (isClient && d.role === "server") ? "pair" : "seen";
-  const key = JSON.stringify([running, isClient, form.name, snap.os, items.map((d) => [d.device, d.name, d.os, d.role, state(d)])]);
+  const w = radar.clientWidth || 600;
+  const key = JSON.stringify([running, isClient, form.name, snap.os, w, items.map((d) => [d.device, d.name, d.os, d.role, state(d)])]);
   if (key === radarKey) return;
   radarKey = key;
   radar.classList.toggle("idle", !running);
-  radar.querySelectorAll(".peer, .me, .guide, .caption").forEach((n) => n.remove());
-  const initials = { MacOs: "MAC", Windows: "WIN", Linux: "LNX", Other: "PC" };
-  const w = radar.clientWidth || 600, h = 300, cx = w / 2, cy = 140;
-  for (const r of [92, 128]) {
-    radar.append(el("span", { class: "guide", style: `width:${r * 2}px;height:${r * 2}px;top:${cy}px` }));
+  radar.querySelectorAll(".peer, .me, .guide, .caption, svg.links").forEach((n) => n.remove());
+  const h = 300, cx = w / 2, cy = h * 0.46;
+  for (const r of [86, 132]) {
+    radar.append(el("span", { class: "guide", style: `width:${r * 2.6}px;height:${r * 1.56}px;top:${cy}px` }));
   }
-  radar.append(el("div", { class: "me", style: `top:${cy}px` },
-    el("div", { class: "avatar" }, initials[snap.os] || "PC"),
-    el("span", {}, form.name || "This computer")));
+  const me = el("div", { class: "me", style: `top:${cy}px` }, el("div", { class: "avatar" }, deviceIcon(snap.os)), el("span", {}, form.name || "This computer"));
+  radar.append(me);
   const n = items.length;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "links");
+  radar.append(svg);
   items.forEach((d, i) => {
-    const orbit = n > 6 && i % 2 ? 128 : (n > 6 ? 92 : 112);
-    const angle = (-90 + 35 + (360 / Math.max(n, 1)) * i) * Math.PI / 180;
-    const x = cx + Math.cos(angle) * orbit * 1.55, y = cy + Math.sin(angle) * orbit * 0.95;
+    // Spread around the orbit, starting top-right; alternate rings when busy.
+    const ring = n > 5 ? (i % 2 ? 132 : 86) : 116;
+    const angle = (-60 + (360 / Math.max(n, 1)) * i) * Math.PI / 180;
+    const x = cx + Math.cos(angle) * ring * 1.3;
+    // Keep names and buttons inside the card.
+    const y = Math.max(46, Math.min(h - 78, cy + Math.sin(angle) * ring * 0.78));
     const s = state(d);
-    const label = s === "live" ? "Connected" : s === "paired" ? "Paired" : s === "pair" ? "Tap to pair" : d.role === "server" ? "Sharing" : "Waiting";
+    const label = s === "live" ? "Connected" : s === "paired" ? "Paired" : s === "pair" ? "Tap to pair" : d.role === "server" ? "Sharing" : "Nearby";
     const node = el(s === "pair" ? "button" : "div", {
       class: `peer os-${d.os} ${s}${s === "pair" ? " can-pair" : ""}`,
-      style: `left:${Math.round(x)}px;top:${Math.round(y)}px`,
+      style: `left:${Math.round(x)}px;top:${Math.round(y)}px;animation-delay:${i * 70}ms`,
       title: `${d.name} · ${OS_LABEL[d.os] || ""}`,
     },
-      el("div", { class: "avatar" }, initials[d.os] || "PC"),
+      el("div", { class: "avatar" }, deviceIcon(d.os)),
       el("span", { class: "nm" }, d.name),
       el("span", { class: "st" + (s === "pair" ? " cta" : "") }, label));
     if (s === "pair") node.addEventListener("click", () => openPair(d));
     radar.append(node);
+    if (s === "live") {
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      // From this computer's edge to the other one's.
+      const dx = x - cx, dy = y - cy, len = Math.hypot(dx, dy) || 1;
+      line.setAttribute("x1", cx + dx / len * 40); line.setAttribute("y1", cy + dy / len * 40);
+      line.setAttribute("x2", x - dx / len * 34); line.setAttribute("y2", y - dy / len * 34);
+      svg.append(line);
+    }
   });
   const caption = !running ? "Turn on OpenHop to look for computers nearby."
     : n === 0 ? "Looking for computers nearby… Open OpenHop on your other computers."

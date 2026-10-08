@@ -386,16 +386,29 @@ fn bind_v4_listener(port: u16) -> Result<(TcpListener, u16)> {
 
 /// IP addresses of this computer's network interfaces (for "connect by address").
 pub fn local_addresses() -> Vec<String> {
-    let mut v: Vec<String> = netdev::get_interfaces()
+    let mut v: Vec<(bool, String)> = netdev::get_interfaces()
         .into_iter()
-        .filter(|i| i.is_up() && !i.is_loopback())
-        .flat_map(|i| i.ipv4.into_iter().map(|n| n.addr()))
-        .filter(|a| !a.is_loopback() && !a.is_link_local())
-        .map(|a| a.to_string())
+        .filter(|i| i.is_up() && !i.is_loopback() && !is_virtual_interface(&i.name))
+        .flat_map(|i| {
+            // Prefer the real network: Wi-Fi and Ethernet first.
+            let real = i.gateway.is_some();
+            i.ipv4.into_iter().map(move |n| (real, n.addr()))
+        })
+        .filter(|(_, a)| !a.is_loopback() && !a.is_link_local())
+        .map(|(real, a)| (!real, a.to_string()))
         .collect();
     v.sort();
-    v.dedup();
-    v
+    v.dedup_by(|a, b| a.1 == b.1);
+    v.into_iter().map(|(_, a)| a).collect()
+}
+
+/// Networks that only exist inside this computer (containers, virtual
+/// machines): another computer can't reach us through them.
+pub fn is_virtual_interface(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    ["docker", "br-", "veth", "virbr", "vboxnet", "vmnet", "lxc", "lxd", "cni", "flannel", "kube", "podman", "cali", "tun", "utun", "vethernet"]
+        .iter()
+        .any(|p| n.starts_with(p))
 }
 
 fn bind_v6_listener(port: u16) -> Option<TcpListener> {
@@ -1219,6 +1232,7 @@ impl Server {
 
     fn go_local(&mut self, exit_side: Side, frac: f64) {
         self.key_pass = None;
+        self.ctx.hub.lower_hidden();
         if let Some((old, _, _)) = self.active.take() {
             self.release_held(old);
             self.send(old, Msg::Leave);
@@ -1933,6 +1947,7 @@ impl Client {
         let r = match m {
             Msg::Enter { x, y } => {
                 self.here = true;
+                self.ctx.hub.lower_hidden();
                 self.ctx.status.lock().active = self.ctx.cfg.name.clone();
                 if let Some(req) = self.common.arrived() {
                     link.send(req);

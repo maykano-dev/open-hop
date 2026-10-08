@@ -32,13 +32,17 @@ mod imp {
     pub fn titlebar_window_at(_: i32, _: i32) -> Option<u64> {
         None
     }
+    pub fn set_hidden(_: u64, _: bool) {}
+    pub fn lower(_: u64) {}
+    pub fn resize(_: u64, _: i32, _: i32) {}
+    pub fn restore_all() {}
 }
 
-/// A picture of a window, RGBA, top row first.
+/// A picture of a window: BGRA (what every OS hands out), top row first.
 pub struct Picture {
     pub w: u32,
     pub h: u32,
-    pub rgba: Vec<u8>,
+    pub bgra: Vec<u8>,
 }
 
 /// Normal application windows, front-most first where the OS says.
@@ -51,7 +55,7 @@ pub fn list() -> Vec<WinInfo> {
 /// A picture of the window's contents (even if other windows cover it, where
 /// the OS allows). None if it's gone or minimized.
 pub fn capture(id: u64) -> Option<Picture> {
-    imp::capture(id).filter(|p| p.w > 0 && p.h > 0 && p.rgba.len() == (p.w * p.h * 4) as usize)
+    imp::capture(id).filter(|p| p.w > 0 && p.h > 0 && p.bgra.len() == (p.w * p.h * 4) as usize)
 }
 
 /// Where the captured area is on screen (native coordinates).
@@ -68,4 +72,27 @@ pub fn activate(id: u64) {
 /// there, that window is being dragged.
 pub fn titlebar_window_at(x: i32, y: i32) -> Option<u64> {
     imp::titlebar_window_at(x, y)
+}
+
+/// Hide the window on this screen (it's open live on another computer) or
+/// show it again. It stays where it is, so it can still be controlled.
+pub fn set_hidden(id: u64, hidden: bool) {
+    imp::set_hidden(id, hidden)
+}
+
+/// Put a hidden window behind the others, so it can't catch clicks here.
+pub fn lower(id: u64) {
+    imp::lower(id)
+}
+
+/// Resize the window's content area (from a live view being resized).
+pub fn resize(id: u64, w: i32, h: i32) {
+    if w >= 80 && h >= 60 {
+        imp::resize(id, w, h)
+    }
+}
+
+/// Show any windows a previous run left hidden (e.g. after a crash).
+pub fn restore_all() {
+    imp::restore_all()
 }

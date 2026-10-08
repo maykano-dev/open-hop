@@ -62,14 +62,14 @@ fn open_viewer(handle: &AppHandle, stream: u64, origin: &str, title: &str, w: i3
         return;
     }
     let (mw, mh) = monitor_logical(handle);
-    // Same size as on the other computer, but never bigger than 85% of this screen.
-    let (mut vw, mut vh) = (w.max(320) as f64, h.max(200) as f64);
-    let k = (mw * 0.85 / vw).min(mh * 0.85 / vh).min(1.0);
+    // Same size as on the other computer, unless that's bigger than this screen.
+    let (mut vw, mut vh) = (w.max(120) as f64, h.max(80) as f64);
+    let k = (mw * 0.92 / vw).min(mh * 0.9 / vh).min(1.0);
     vw *= k;
     vh *= k;
     let url = format!("viewer.html?s={stream}&o={}&t={}", enc(origin), enc(title));
     let mut b = WebviewWindowBuilder::new(handle, &label, WebviewUrl::App(url.into()))
-        .title(format!("{title} — on {origin}"))
+        .title(title)
         .inner_size(vw, vh)
         .min_inner_size(240.0, 160.0)
         .focused(true);
@@ -200,35 +200,61 @@ pub fn win_input(app: State<App>, stream: String, ev: WinEvent) {
     }
 }
 
-/// The next picture of a live window, as bytes:
-/// kind (0 picture, 1 paused, 2 closed, 3 nothing new), seq u64, w u32, h u32,
-/// text length u16, text (title, or pause reason), JPEG.
+/// The next updates of a live window, as bytes (little-endian):
+/// kind u8 (0 updates, 1 paused, 2 closed, 3 nothing new), then for kind 0:
+/// count u16, and per update: seq u64, w u32, h u32, title (u16 length +
+/// UTF-8), patch count u16, per patch x, y, w, h, length (u32) + JPEG.
+/// Kind 1 carries the pause reason as a u16-length string.
 #[tauri::command]
 pub async fn win_frame(app: State<'_, App>, stream: String, after: String) -> Result<tauri::ipc::Response, String> {
     let hub = hub(&app).ok_or("not running")?;
     let (stream, after) = (parse(&stream)?, parse(&after).unwrap_or(0));
     let r = tauri::async_runtime::spawn_blocking(move || hub.frame(stream, after, Duration::from_secs(2))).await.map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    let mut head = |kind: u8, seq: u64, w: u32, h: u32, text: &str| {
-        out.push(kind);
-        out.extend_from_slice(&seq.to_le_bytes());
-        out.extend_from_slice(&w.to_le_bytes());
-        out.extend_from_slice(&h.to_le_bytes());
-        let t = text.as_bytes();
-        let t = &t[..t.len().min(1000)];
+    let text = |out: &mut Vec<u8>, t: &str| {
+        let t = &t.as_bytes()[..t.len().min(1000)];
         out.extend_from_slice(&(t.len() as u16).to_le_bytes());
         out.extend_from_slice(t);
     };
     match r {
-        FrameWait::Frame(f) => {
-            head(0, f.seq, f.w, f.h, &f.title);
-            out.extend_from_slice(&f.jpeg);
+        FrameWait::Frames(frames) => {
+            out.push(0);
+            out.extend_from_slice(&(frames.len() as u16).to_le_bytes());
+            for f in frames {
+                out.extend_from_slice(&f.seq.to_le_bytes());
+                out.extend_from_slice(&f.w.to_le_bytes());
+                out.extend_from_slice(&f.h.to_le_bytes());
+                text(&mut out, &f.title);
+                out.extend_from_slice(&(f.patches.len() as u16).to_le_bytes());
+                for p in f.patches.iter() {
+                    for v in [p.x, p.y, p.w, p.h, p.jpeg.len() as u32] {
+                        out.extend_from_slice(&v.to_le_bytes());
+                    }
+                    out.extend_from_slice(&p.jpeg);
+                }
+            }
         }
-        FrameWait::Paused(reason) => head(1, 0, 0, 0, &reason),
-        FrameWait::Closed => head(2, 0, 0, 0, ""),
-        FrameWait::Timeout => head(3, 0, 0, 0, ""),
+        FrameWait::Paused(reason) => {
+            out.push(1);
+            text(&mut out, &reason);
+        }
+        FrameWait::Closed => out.push(2),
+        FrameWait::Timeout => out.push(3),
     }
     Ok(tauri::ipc::Response::new(out))
+}
+
+/// A live window's content size changed on its own computer: make the view
+/// window the same size, so it looks just like the original.
+#[tauri::command]
+pub fn viewer_fit(window: tauri::WebviewWindow, w: f64, h: f64) {
+    let _ = window.set_size(LogicalSize::new(w.max(120.0), h.max(80.0)));
+}
+
+/// Show a viewer's title like the original window's.
+#[tauri::command]
+pub fn viewer_title(window: tauri::WebviewWindow, title: String) {
+    let _ = window.set_title(&title);
 }
 
 #[tauri::command]

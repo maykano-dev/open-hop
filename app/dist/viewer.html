@@ -14,7 +14,8 @@
     }
     :root[data-theme="dark"] { --bg: #111113; --label: #fff; --secondary: rgba(235, 235, 245, 0.62); --pill: rgba(44, 44, 46, 0.88); }
     html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; color: var(--label); }
-    canvas { display: block; width: 100vw; height: 100vh; outline: none; cursor: default; }
+    /* The picture fills the window 1:1 (the window is sized to match). */
+    canvas { display: block; width: 100vw; height: 100vh; object-fit: contain; outline: none; cursor: default; }
     .pill {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
       background: var(--pill); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
@@ -26,9 +27,6 @@
     .spinner { width: 22px; height: 22px; margin: 0 auto 8px; border-radius: 50%; border: 2.5px solid var(--secondary); border-top-color: var(--blue); animation: spin .8s linear infinite; }
     .pill:not(.loading) .spinner { display: none; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    /* A gentle "arrival" when the window first appears. */
-    canvas.arrive { animation: arrive .45s cubic-bezier(.2, .9, .3, 1.1); }
-    @keyframes arrive { from { opacity: 0; transform: scale(.94); filter: blur(4px); } }
   </style>
 </head>
 <body>

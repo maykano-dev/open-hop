@@ -1,19 +1,22 @@
 "use strict";
-// A live window from another computer: shows its pictures and sends your
-// clicks, scrolling and typing back to it.
+// A live window from another computer. It should feel like the window
+// itself: same size, sharp, and your clicks and typing go to it. Only the
+// parts of the picture that change are sent and redrawn.
 
 const invoke = window.__TAURI__ ? window.__TAURI__.core.invoke : null;
 const q = new URLSearchParams(location.search);
 const stream = q.get("s");
 const origin = q.get("o") || "the other computer";
 const canvas = document.getElementById("view");
-const ctx = canvas.getContext("2d");
+const ctx = canvas.getContext("2d", { alpha: false });
 const pill = document.getElementById("pill");
-let frame = null;           // ImageBitmap
-let fw = 0, fh = 0;         // picture size (the other computer's pixels)
-let box = { x: 0, y: 0, w: 1, h: 1 };
+let fw = 0, fh = 0;          // picture size (the other computer's pixels)
 let closed = false;
-let arrived = false;
+let shown = false;
+let title = "";
+// A size we asked the real window to take (so its new pictures don't make
+// us resize back).
+let asked = null;
 
 function status(text, sub = "", loading = false) {
   document.getElementById("pillText").textContent = text;
@@ -23,20 +26,62 @@ function status(text, sub = "", loading = false) {
 }
 status("Opening the window…", `from ${origin}`, true);
 
-function draw() {
-  const dpr = window.devicePixelRatio || 1;
-  const cw = Math.round(canvas.clientWidth * dpr), ch = Math.round(canvas.clientHeight * dpr);
-  if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
-  ctx.fillStyle = getComputedStyle(document.body).backgroundColor;
-  ctx.fillRect(0, 0, cw, ch);
-  if (!frame) return;
-  const k = Math.min(cw / fw, ch / fh);
+// Where the picture is drawn inside the view (CSS pixels).
+function box() {
+  const r = canvas.getBoundingClientRect();
+  if (!fw) return { x: 0, y: 0, w: r.width, h: r.height };
+  const k = Math.min(r.width / fw, r.height / fh);
   const w = fw * k, h = fh * k;
-  box = { x: (cw - w) / 2 / dpr, y: (ch - h) / 2 / dpr, w: w / dpr, h: h / dpr };
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(frame, (cw - w) / 2, (ch - h) / 2, w, h);
+  return { x: r.left + (r.width - w) / 2, y: r.top + (r.height - h) / 2, w, h };
 }
-window.addEventListener("resize", draw);
+
+function u32(dv, o) { return dv.getUint32(o, true); }
+
+async function apply(buf) {
+  const dv = new DataView(buf);
+  let o = 1;
+  const count = dv.getUint16(o, true); o += 2;
+  let last = null;
+  for (let i = 0; i < count; i++) {
+    const seq = dv.getBigUint64(o, true); o += 8;
+    const w = u32(dv, o), h = u32(dv, o + 4); o += 8;
+    const tl = dv.getUint16(o, true); o += 2;
+    const t = new TextDecoder().decode(new Uint8Array(buf, o, tl)); o += tl;
+    const n = dv.getUint16(o, true); o += 2;
+    const patches = [];
+    for (let k = 0; k < n; k++) {
+      const x = u32(dv, o), y = u32(dv, o + 4), pw = u32(dv, o + 8), ph = u32(dv, o + 12), len = u32(dv, o + 16);
+      o += 20;
+      patches.push({ x, y, pw, ph, blob: new Blob([new Uint8Array(buf, o, len)], { type: "image/jpeg" }) });
+      o += len;
+    }
+    // Decode all patches first, then draw together (no half-drawn frames).
+    const bitmaps = await Promise.all(patches.map((p) => createImageBitmap(p.blob).catch(() => null)));
+    if (w !== fw || h !== fh) resizeTo(w, h);
+    patches.forEach((p, k) => {
+      if (bitmaps[k]) { ctx.drawImage(bitmaps[k], p.x, p.y); bitmaps[k].close(); }
+    });
+    if (t && t !== title) {
+      title = t;
+      document.title = t;
+      invoke("viewer_title", { title: t }).catch(() => {});
+    }
+    last = seq;
+  }
+  return last;
+}
+
+// The picture changed size (the real window was resized over there).
+function resizeTo(w, h) {
+  fw = w; fh = h;
+  canvas.width = w; canvas.height = h;
+  const ours = asked && Math.abs(asked.w - w) <= 3 && Math.abs(asked.h - h) <= 3;
+  if (!ours && shown && invoke) {
+    // Follow it, so the view stays the same size as the window.
+    invoke("viewer_fit", { w, h }).catch(() => {});
+  }
+  asked = null;
+}
 
 async function loop() {
   let after = "0";
@@ -50,26 +95,22 @@ async function loop() {
       continue;
     }
     if (!(buf instanceof ArrayBuffer)) buf = ArrayBuffer.isView(buf) ? buf.buffer : new Uint8Array(buf).buffer;
-    const dv = new DataView(buf);
-    const kind = dv.getUint8(0);
-    const seq = dv.getBigUint64(1, true);
-    const w = dv.getUint32(9, true), h = dv.getUint32(13, true);
-    const tl = dv.getUint16(17, true);
-    const text = new TextDecoder().decode(new Uint8Array(buf, 19, tl));
+    const kind = new DataView(buf).getUint8(0);
     if (kind === 0) {
-      const jpeg = new Blob([new Uint8Array(buf, 19 + tl)], { type: "image/jpeg" });
-      try {
-        const bmp = await createImageBitmap(jpeg);
-        if (frame) frame.close();
-        frame = bmp; fw = w; fh = h;
-        after = seq.toString();
-        if (text) document.title = `${text} — on ${origin}`;
-        draw();
+      const last = await apply(buf);
+      if (last != null) after = last.toString();
+      if (!shown) {
+        shown = true;
         status("");
-        if (!arrived) { arrived = true; canvas.classList.add("arrive"); canvas.focus(); }
-      } catch (e) { status("Couldn't show the picture", String(e)); }
+        canvas.focus();
+        fitIfNeeded();
+      } else {
+        status("");
+      }
     } else if (kind === 1) {
-      status(text || "Paused", "Plain mouse and keyboard sharing keeps working.");
+      const dv = new DataView(buf);
+      const tl = dv.getUint16(1, true);
+      status(new TextDecoder().decode(new Uint8Array(buf, 3, tl)) || "Paused", "Plain mouse and keyboard sharing keeps working.");
       await new Promise((r) => setTimeout(r, 400));
     } else if (kind === 2) {
       closed = true;
@@ -79,11 +120,30 @@ async function loop() {
 }
 loop().catch((e) => status("Something went wrong", String(e)));
 
+// ------------------------------------------------------------------ size
+
+// When this view is resized, resize the real window to match, so the
+// picture stays sharp (1:1) instead of being stretched.
+let resizeTimer = null;
+function fitIfNeeded() {
+  if (!fw) return;
+  const w = Math.round(window.innerWidth), h = Math.round(window.innerHeight);
+  if (Math.abs(w - fw) > 3 || Math.abs(h - fh) > 3) {
+    asked = { w, h };
+    send({ Resize: { w, h } });
+  }
+}
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(fitIfNeeded, 250);
+});
+
 // ------------------------------------------------------------------ input
 
 function toFrame(e) {
-  const x = Math.round((e.clientX - box.x) * fw / box.w);
-  const y = Math.round((e.clientY - box.y) * fh / box.h);
+  const b = box();
+  const x = Math.round((e.clientX - b.x) * fw / b.w);
+  const y = Math.round((e.clientY - b.y) * fh / b.h);
   return { x: Math.max(0, Math.min(fw - 1, x)), y: Math.max(0, Math.min(fh - 1, y)), inside: x >= 0 && y >= 0 && x < fw && y < fh };
 }
 function send(ev) {
