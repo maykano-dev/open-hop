@@ -142,6 +142,202 @@ fn linux_fullscreen() -> Option<bool> {
     Some(st.contains(&full))
 }
 
+// ------------------------------------------------------------- battery, storage
+
+/// (percent, charging or plugged in) if this computer has a battery.
+pub fn battery() -> Option<(u8, bool)> {
+    #[cfg(target_os = "linux")]
+    {
+        for e in std::fs::read_dir("/sys/class/power_supply").ok()?.flatten() {
+            let p = e.path();
+            if std::fs::read_to_string(p.join("type")).map(|t| t.trim() == "Battery").unwrap_or(false) {
+                // Peripherals (mice, keyboards) report batteries too; skip them.
+                if std::fs::read_to_string(p.join("scope")).map(|s| s.trim() == "Device").unwrap_or(false) {
+                    continue;
+                }
+                let pct = std::fs::read_to_string(p.join("capacity")).ok()?.trim().parse::<u8>().ok()?;
+                let status = std::fs::read_to_string(p.join("status")).unwrap_or_default();
+                return Some((pct.min(100), status.trim() != "Discharging"));
+            }
+        }
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let s = run("pmset", &["-g", "batt"])?;
+        let line = s.lines().find(|l| l.contains('%'))?;
+        let pct: u8 = line.split('%').next()?.rsplit(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
+        return Some((pct.min(100), !line.contains("discharging")));
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+        let mut st = SYSTEM_POWER_STATUS::default();
+        unsafe { GetSystemPowerStatus(&mut st).ok()? };
+        // 128 = no battery, 255 = unknown
+        if st.BatteryFlag & 128 != 0 || st.BatteryLifePercent > 100 {
+            return None;
+        }
+        return Some((st.BatteryLifePercent, st.ACLineStatus == 1));
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// (free, total) bytes on the disk with the user's files.
+pub fn disk() -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        let home = dirs::home_dir()?;
+        let path = std::ffi::CString::new(home.to_string_lossy().as_bytes()).ok()?;
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
+            return None;
+        }
+        let unit = st.f_frsize as u64;
+        return Some((st.f_bavail as u64 * unit, st.f_blocks as u64 * unit));
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+        let (mut free, mut total) = (0u64, 0u64);
+        let dir = windows::core::HSTRING::from(dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|| "C:\\".into()));
+        unsafe { GetDiskFreeSpaceExW(&dir, Some(&mut free), Some(&mut total), None).ok()? };
+        return Some((free, total));
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+// ------------------------------------------------------------- lock, sleep, wake
+
+/// Is the screen locked?
+pub fn locked() -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(s) = run(
+            "gdbus",
+            &["call", "--session", "--dest", "org.gnome.ScreenSaver", "--object-path", "/org/gnome/ScreenSaver", "--method", "org.gnome.ScreenSaver.GetActive"],
+        ) {
+            return Some(s.contains("true"));
+        }
+        let id = std::env::var("XDG_SESSION_ID").ok()?;
+        let s = run("loginctl", &["show-session", &id, "-p", "LockedHint", "--value"])?;
+        return Some(s.trim() == "yes");
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::StationsAndDesktops::{CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_SWITCHDESKTOP};
+        // The lock screen runs on a desktop we can't open.
+        return Some(match unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_SWITCHDESKTOP) } {
+            Ok(d) => {
+                unsafe {
+                    let _ = CloseDesktop(d);
+                }
+                false
+            }
+            Err(_) => true,
+        });
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return Some(mac::screen_locked());
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// Lock the screen now.
+pub fn lock_now() {
+    log::info!("locking this computer");
+    #[cfg(target_os = "linux")]
+    {
+        if run("loginctl", &["lock-session"]).is_none() {
+            let _ = run("xdg-screensaver", &["lock"]);
+        }
+    }
+    #[cfg(windows)]
+    unsafe {
+        let _ = windows::Win32::System::Shutdown::LockWorkStation();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Sleeping the display locks it (with "require password" on, the default).
+        let _ = run("pmset", &["displaysleepnow"]);
+    }
+}
+
+/// Put the computer to sleep now.
+pub fn sleep_now() {
+    log::info!("putting this computer to sleep");
+    #[cfg(target_os = "linux")]
+    {
+        let _ = run("systemctl", &["suspend"]);
+    }
+    #[cfg(windows)]
+    unsafe {
+        let _ = windows::Win32::System::Power::SetSuspendState(false, false, false);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = run("pmset", &["sleepnow"]);
+    }
+}
+
+/// Wake the display (when another computer is being used again).
+pub fn wake_display() {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = run("xset", &["dpms", "force", "on"]);
+        let _ = run(
+            "gdbus",
+            &[
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.ScreenSaver",
+                "--object-path",
+                "/org/gnome/ScreenSaver",
+                "--method",
+                "org.gnome.ScreenSaver.SimulateUserActivity",
+            ],
+        );
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Power::{SetThreadExecutionState, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED};
+        let _ = SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("caffeinate").args(["-u", "-t", "2"]).spawn();
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+    use core_foundation::string::CFString;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGSessionCopyCurrentDictionary() -> CFDictionaryRef;
+    }
+
+    pub fn screen_locked() -> bool {
+        unsafe {
+            let d = CGSessionCopyCurrentDictionary();
+            if d.is_null() {
+                return false;
+            }
+            let d: CFDictionary<CFString, CFType> = CFDictionary::wrap_under_create_rule(d);
+            d.find(CFString::new("CGSSessionScreenIsLocked")).and_then(|v| v.downcast::<CFBoolean>()).map(bool::from).unwrap_or(false)
+        }
+    }
+}
+
 #[cfg(windows)]
 mod win {
     use windows::core::{HSTRING, PCWSTR};

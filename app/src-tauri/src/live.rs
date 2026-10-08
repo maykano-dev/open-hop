@@ -107,9 +107,12 @@ fn show_fx(handle: &AppHandle, x: i32, y: i32, payload: serde_json::Value) {
 pub fn pump(handle: &AppHandle) {
     let app = handle.state::<App>();
     let Some(hub) = hub(&app) else { return };
+    crate::island::follow_fullscreen(handle, hub.fullscreen(""));
     for ev in hub.take_ui() {
         match ev {
             UiEvent::OpenViewer { stream, origin, title, w, h, at } => open_viewer(handle, stream, &origin, &title, w, h, at),
+            UiEvent::Locate { x, y } => show_fx(handle, x, y, serde_json::json!({ "kind": "locate" })),
+            UiEvent::Notice { title, body, icon } => crate::island::push(handle, crate::island::Activity { title, body, icon }),
             UiEvent::MaximizeViewer { stream, on } => {
                 let label = format!("view-{stream}");
                 if let Some(w) = handle.get_webview_window(&label) {

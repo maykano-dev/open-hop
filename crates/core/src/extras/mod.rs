@@ -8,7 +8,7 @@
 pub mod system;
 
 use crate::platform::InjectOp;
-use crate::protocol::{Ext, MouseButton, Os, Patch, WinEvent, WinInfo};
+use crate::protocol::{Ext, MouseButton, Os, Patch, PcStatus, WinEvent, WinInfo};
 use crate::wins;
 use parking_lot::{Condvar, Mutex, RwLock};
 use serde::Serialize;
@@ -51,6 +51,25 @@ pub enum UiEvent {
         stream: u64,
         on: bool,
     },
+    /// Show where the pointer is (it's at x, y).
+    Locate {
+        x: i32,
+        y: i32,
+    },
+    /// Tell the user something (on this screen: they're using it).
+    Notice {
+        title: String,
+        body: String,
+        icon: String,
+    },
+}
+
+/// A computer at a glance, for the Control Center.
+#[derive(Debug, Clone, Serialize)]
+pub struct Computer {
+    pub name: String,
+    pub this: bool,
+    pub status: PcStatus,
 }
 
 /// An update to a live window's picture.
@@ -199,6 +218,18 @@ pub struct Hub {
     dragging: Mutex<Option<(u64, Instant)>>,
     /// This computer's desktop (to keep windows coming back on it).
     screen: Mutex<Option<crate::protocol::Rect>>,
+    /// Every computer's state (this one too).
+    stats: Mutex<BTreeMap<String, PcStatus>>,
+    /// Focus (Do Not Disturb) on every computer.
+    focus: AtomicBool,
+    /// Do Not Disturb as we last set it ourselves (not to be sent back).
+    dnd_expect: Mutex<Option<(bool, Instant)>>,
+    /// The pointer is on this computer's screen.
+    pointer_here: AtomicBool,
+    /// A full-screen app is in front here.
+    fullscreen: AtomicBool,
+    /// We locked or woke this screen ourselves (not to be sent back).
+    lock_expect: Mutex<Option<Instant>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -231,6 +262,12 @@ impl Hub {
             whole_clicks: AtomicBool::new(false),
             dragging: Mutex::new(None),
             screen: Mutex::new(None),
+            stats: Mutex::new(BTreeMap::new()),
+            focus: AtomicBool::new(false),
+            dnd_expect: Mutex::new(None),
+            pointer_here: AtomicBool::new(true),
+            fullscreen: AtomicBool::new(false),
+            lock_expect: Mutex::new(None),
             stop: Arc::new(AtomicBool::new(false)),
         });
         let h = hub.clone();
@@ -285,6 +322,102 @@ impl Hub {
     pub fn set_injector(&self, inject: Inject, whole_clicks: bool) {
         *self.inject.lock() = Some(inject);
         self.whole_clicks.store(whole_clicks, Ordering::SeqCst);
+    }
+
+    // ------------------------------------------------------ Control Center
+
+    /// Every computer at a glance, this one first.
+    pub fn computers(&self) -> Vec<Computer> {
+        let online: BTreeSet<String> = self.lists.lock().keys().cloned().collect();
+        let stats = self.stats.lock();
+        let mut v: Vec<Computer> = stats
+            .iter()
+            .filter(|(n, _)| **n == self.me || online.contains(*n))
+            .map(|(n, st)| Computer { name: n.clone(), this: *n == self.me, status: st.clone() })
+            .collect();
+        v.sort_by_key(|c| (!c.this, c.name.clone()));
+        v
+    }
+
+    pub fn focus(&self) -> bool {
+        self.focus.load(Ordering::SeqCst)
+    }
+
+    /// Focus (Do Not Disturb) on or off on every computer.
+    pub fn set_focus(&self, on: bool) {
+        self.apply_focus(on);
+        self.send("*", Ext::Focus { on });
+    }
+
+    fn apply_focus(&self, on: bool) {
+        if self.focus.swap(on, Ordering::SeqCst) == on {
+            return;
+        }
+        log::info!("Focus turned {} on every computer", if on { "on" } else { "off" });
+        *self.dnd_expect.lock() = Some((on, Instant::now()));
+        std::thread::spawn(move || system::set_dnd(on));
+        if let Some(st) = self.stats.lock().get_mut(&self.me) {
+            st.focus = on;
+        }
+    }
+
+    /// Lock every computer.
+    pub fn lock_all(&self) {
+        self.send("*", Ext::Lock);
+        *self.lock_expect.lock() = Some(Instant::now());
+        std::thread::spawn(system::lock_now);
+    }
+
+    /// Put every computer to sleep (this one last, so the message gets out).
+    pub fn sleep_all(&self) {
+        self.send("*", Ext::Sleep);
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(800));
+            system::sleep_now();
+        });
+    }
+
+    /// Show where the pointer is, on whichever screen it's on.
+    pub fn find_pointer(&self) {
+        self.send("*", Ext::Locate);
+        self.locate_here();
+    }
+
+    fn locate_here(&self) {
+        if self.pointer_here.load(Ordering::SeqCst) {
+            if let Some((x, y)) = crate::platform::cursor_pos() {
+                self.ui(UiEvent::Locate { x, y });
+            }
+        }
+    }
+
+    /// Tell the user something on the screen they're using (this one or another).
+    pub fn notice_everywhere(&self, title: &str, body: &str, icon: &str) {
+        self.send("*", Ext::Notice { title: title.into(), body: body.into(), icon: icon.into() });
+        self.notice_here(title, body, icon);
+    }
+
+    fn notice_here(&self, title: &str, body: &str, icon: &str) {
+        if self.pointer_here.load(Ordering::SeqCst) {
+            self.ui(UiEvent::Notice { title: title.into(), body: body.into(), icon: icon.into() });
+        }
+    }
+
+    /// The engine says whether the pointer is on this screen.
+    pub fn set_pointer_here(&self, here: bool) {
+        self.pointer_here.store(here, Ordering::SeqCst);
+    }
+
+    pub fn pointer_here(&self) -> bool {
+        self.pointer_here.load(Ordering::SeqCst)
+    }
+
+    /// A full-screen app is in front on computer `name` (this one: "").
+    pub fn fullscreen(&self, name: &str) -> bool {
+        if name.is_empty() || name == self.me {
+            return self.fullscreen.load(Ordering::SeqCst);
+        }
+        self.stats.lock().get(name).map(|s| s.fullscreen).unwrap_or(false)
     }
 
     /// This computer's desktop bounds.
@@ -385,6 +518,7 @@ impl Hub {
     /// A computer went away: forget its windows and live windows.
     pub fn peer_left(&self, name: &str) {
         self.lists.lock().remove(name);
+        self.stats.lock().remove(name);
         self.quiet_from.lock().remove(name);
         self.update_dnd();
         let gone: Vec<u64> = self.viewers.lock().iter().filter(|(_, v)| v.origin == name).map(|(k, _)| *k).collect();
@@ -556,6 +690,25 @@ impl Hub {
 
     pub fn handle(self: &Arc<Self>, from: &str, ext: Ext) {
         match ext {
+            Ext::Status(st) => {
+                self.stats.lock().insert(from.into(), st);
+            }
+            Ext::Focus { on } => self.apply_focus(on),
+            Ext::Lock => {
+                if system::locked() != Some(true) {
+                    *self.lock_expect.lock() = Some(Instant::now());
+                    std::thread::spawn(system::lock_now);
+                }
+            }
+            Ext::Sleep => {
+                std::thread::spawn(system::sleep_now);
+            }
+            Ext::Wake => {
+                *self.lock_expect.lock() = Some(Instant::now());
+                std::thread::spawn(system::wake_display);
+            }
+            Ext::Locate => self.locate_here(),
+            Ext::Notice { title, body, icon } => self.notice_here(&title, &body, &icon),
             Ext::Theme { dark } => {
                 if self.settings.read().theme_sync && system::dark_mode() != Some(dark) {
                     *self.theme_expect.lock() = Some(dark);
@@ -1033,6 +1186,13 @@ impl Hub {
         let mut last_dark = system::dark_mode();
         let mut last_quiet = false;
         let mut tick = 0u64;
+        let mut status_sent = Instant::now() - Duration::from_secs(60);
+        let mut last_status: Option<PcStatus> = None;
+        let mut disk = (system::disk(), Instant::now());
+        // Battery warnings already given (thresholds), reset when plugged in.
+        let mut warned: u8 = 101;
+        let mut last_locked = system::locked();
+        let mut last_dnd = system::dnd();
         while !self.stop.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(500));
             tick += 1;
@@ -1048,8 +1208,70 @@ impl Hub {
                     last_list = Some(list);
                 }
             }
+            // Full-screen app in front (games, videos): stay out of the way.
+            if tick.is_multiple_of(2) {
+                self.fullscreen.store(system::presenting(), Ordering::SeqCst);
+            }
             if !tick.is_multiple_of(4) {
                 continue;
+            }
+            // This computer at a glance (every 2 s, sent when it changes).
+            if disk.1.elapsed() > Duration::from_secs(60) {
+                disk = (system::disk(), Instant::now());
+            }
+            let locked = system::locked();
+            let battery = system::battery();
+            let st = PcStatus {
+                battery,
+                disk: disk.0,
+                focus: self.focus(),
+                locked: locked == Some(true),
+                fullscreen: self.fullscreen.load(Ordering::SeqCst),
+                os: Some(Os::current()),
+            };
+            self.stats.lock().insert(self.me.clone(), st.clone());
+            let resend = last_status.as_ref() != Some(&st) || status_sent.elapsed() > Duration::from_secs(30);
+            if connected && resend {
+                self.send("*", Ext::Status(st.clone()));
+                status_sent = Instant::now();
+            }
+            last_status = Some(st);
+            // Running low: say so on whichever screen is in use.
+            match battery {
+                Some((pct, false)) => {
+                    let step = [5u8, 10, 20].into_iter().find(|t| pct <= *t);
+                    if let Some(t) = step {
+                        if t < warned {
+                            warned = t;
+                            let body = if pct <= 5 { "Plug it in now, it's about to run out." } else { "Plug it in soon." };
+                            self.notice_everywhere(&format!("{} is at {pct}%", self.me), body, "battery");
+                        }
+                    }
+                }
+                Some((_, true)) => warned = 101,
+                None => {}
+            }
+            // Locked here: lock the others too. Unlocked: wake their displays.
+            if locked.is_some() && locked != last_locked {
+                let ours = self.lock_expect.lock().map(|t| t.elapsed() < Duration::from_secs(10)).unwrap_or(false);
+                if !ours && connected {
+                    if locked == Some(true) {
+                        log::info!("this computer was locked; locking the others");
+                        self.send("*", Ext::Lock);
+                    } else {
+                        self.send("*", Ext::Wake);
+                    }
+                }
+                last_locked = locked;
+            }
+            // Do Not Disturb switched here by hand: Focus everywhere.
+            let dnd_now = system::dnd();
+            if dnd_now.is_some() && dnd_now != last_dnd {
+                let ours = self.dnd_expect.lock().map(|(v, t)| Some(v) == dnd_now && t.elapsed() < Duration::from_secs(10)).unwrap_or(false);
+                if !ours && dnd_now != Some(self.focus()) {
+                    self.set_focus(dnd_now == Some(true));
+                }
+                last_dnd = dnd_now;
             }
             let s = self.settings.read().clone();
             // Dark mode.
@@ -1068,8 +1290,8 @@ impl Hub {
             }
             // Do Not Disturb / presenting (ignoring the DND we turned on ourselves).
             if s.dnd_sync {
-                let own_dnd = self.dnd_before.lock().is_none() && system::dnd() == Some(true);
-                let quiet = own_dnd || system::presenting();
+                // (Do Not Disturb itself is shared as Focus.)
+                let quiet = self.fullscreen.load(Ordering::SeqCst);
                 if quiet != last_quiet || (quiet && tick.is_multiple_of(40)) {
                     if connected {
                         self.send("*", Ext::Quiet { on: quiet });

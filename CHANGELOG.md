@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.7.0
+
+**Update every computer** (protocol 9).
+
+### Added
+- **The island.** A small black pill at the top of the screen (around the notch on a MacBook, under the top bar on Linux) shows where the pointer is and live hints: Focus on, a computer running low, files on their way. Hover it or press **Ctrl+Alt+Space** and it springs open into the **Control Center**:
+  - **Focus** for every computer at once (Do Not Disturb). Switching Do Not Disturb on by hand on one computer does the same.
+  - **Find pointer**: rings close in on the pointer, on whichever screen it's on. Shaking the mouse does the same.
+  - **Lock all** and **Sleep all**. Locking one computer locks the others; unlocking one wakes the others' displays.
+  - Every computer's **battery and storage** at a glance, and which one has the pointer.
+  - The **windows of your other computers**: click one to open it here (this replaces the separate window dock).
+- **"Plug it in" warnings**: when a laptop drops to 20%, 10% and 5%, a notice appears on the screen you're using, whichever computer that is.
+- **Live activities**: notifications (files received, links copied) now appear in the island instead of the corner.
+- **Shortcuts**: Ctrl+Alt+Shift+arrow keys jump to the next screen that way; Ctrl+Alt+Shift+L keeps the pointer on the screen it's on (press again to release). They work from any computer's keyboard.
+- **Game guard**: while a full-screen game or video is in front, the pointer doesn't slip off the screen edge and the island hides.
+- **Edge comfort**: the pointer rests a moment against an edge before hopping, corners never hop, and pushing past another computer's edge needs a little push.
+- The tray menu has Control Center, Focus, Find My Pointer and Lock All.
+- The main window shows **Your Computers** with battery and storage, a **Focus** button, and a sliding tab control.
+
 ## v0.6.0
 
 **Update every computer** (protocol 8).

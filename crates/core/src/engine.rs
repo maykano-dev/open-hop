@@ -50,6 +50,76 @@ impl Placed {
     }
 }
 
+/// Shaking the mouse (quick left-right swings) finds the pointer.
+#[derive(Default)]
+struct Shake {
+    dir: i32,
+    travel: i32,
+    flips: std::collections::VecDeque<Instant>,
+    fired: Option<Instant>,
+}
+
+impl Shake {
+    fn feed(&mut self, dx: i32) -> bool {
+        if dx == 0 {
+            return false;
+        }
+        let d = dx.signum();
+        if d == self.dir {
+            self.travel += dx.abs();
+            return false;
+        }
+        let strong = self.travel >= 40;
+        self.dir = d;
+        self.travel = dx.abs();
+        let now = Instant::now();
+        if !strong {
+            self.flips.clear();
+            return false;
+        }
+        self.flips.push_back(now);
+        while self.flips.front().map(|t| now.duration_since(*t) > Duration::from_millis(900)).unwrap_or(false) {
+            self.flips.pop_front();
+        }
+        if self.flips.len() >= 4 && self.fired.map(|f| f.elapsed() > Duration::from_secs(2)).unwrap_or(true) {
+            self.fired = Some(now);
+            self.flips.clear();
+            return true;
+        }
+        false
+    }
+}
+
+/// How long the pointer rests against a screen edge before hopping (so it
+/// doesn't hop by accident), and corners that never hop.
+const EDGE_DWELL: Duration = Duration::from_millis(70);
+const CORNER: f64 = 0.03;
+/// Pushing this far past another computer's screen edge hops on.
+const EDGE_PUSH: i32 = 20;
+
+/// Keyboard shortcuts OpenHop handles itself (even while the keyboard is in
+/// use on another screen): Ctrl+Alt+Shift+arrows jump to the next screen that
+/// way, Ctrl+Alt+Shift+L keeps the pointer on the screen it's on.
+enum Hotkey {
+    Jump(Side),
+    Pin,
+}
+
+fn hotkey(held: &HashSet<u16>, key: u16) -> Option<Hotkey> {
+    let any = |a: u16, b: u16| held.contains(&a) || held.contains(&b);
+    if !(any(0xE0, 0xE4) && any(0xE2, 0xE6) && any(0xE1, 0xE5)) {
+        return None;
+    }
+    match key {
+        0x4F => Some(Hotkey::Jump(Side::Right)),
+        0x50 => Some(Hotkey::Jump(Side::Left)),
+        0x51 => Some(Hotkey::Jump(Side::Bottom)),
+        0x52 => Some(Hotkey::Jump(Side::Top)),
+        0x0F => Some(Hotkey::Pin),
+        _ => None,
+    }
+}
+
 /// In `Server::active`: the pointer is on this (the server's) screen, moved
 /// by another computer's keyboard and mouse.
 const THIS: u64 = u64::MAX;
@@ -164,6 +234,10 @@ enum Control {
     },
     /// Forget a paired computer.
     Forget(String),
+    /// Move the pointer to the next screen that way.
+    Jump(Side),
+    /// Keep the pointer on the screen it's on (or let it move again).
+    Pin,
 }
 
 /// Server-side pairing state: the current code and brute-force protection.
@@ -352,6 +426,16 @@ impl Engine {
     /// Client: pair with a server by its address (e.g. "192.168.1.20").
     pub fn pair_addr(&self, addr: String, code: String) {
         let _ = self.ctl.send(Control::PairAddr { addr, code });
+    }
+
+    /// Move the pointer to the next screen in that direction (a shortcut).
+    pub fn jump(&self, side: Side) {
+        let _ = self.ctl.send(Control::Jump(side));
+    }
+
+    /// Keep the pointer on the screen it's on, or let it move again.
+    pub fn pin(&self) {
+        let _ = self.ctl.send(Control::Pin);
     }
 
     /// Forget a paired computer (it will need the code again).
@@ -825,6 +909,17 @@ struct Server {
     injected: Placed,
     /// The arrangement and pairing code last told to the clients.
     group_sent: Option<(Layout, String)>,
+    /// Keys physically held on this keyboard / the driving client's (for shortcuts).
+    raw_keys: HashSet<u16>,
+    drive_keys: HashSet<u16>,
+    /// The pointer stays on the screen it's on (Ctrl+Alt+Shift+L).
+    pinned: bool,
+    /// Resting against this screen's edge since (to hop after a moment).
+    edge_wait: Option<(Side, Instant)>,
+    /// How far the pointer has pushed past another screen's edge.
+    push: i32,
+    shake: Shake,
+    last_local: (i32, i32),
 }
 
 impl Server {
@@ -904,11 +999,19 @@ impl Server {
             local_buttons: HashSet::new(),
             injected: Placed::default(),
             group_sent: None,
+            raw_keys: HashSet::new(),
+            drive_keys: HashSet::new(),
+            pinned: false,
+            edge_wait: None,
+            push: 0,
+            shake: Shake::default(),
+            last_local: (0, 0),
         };
         s.update_status();
         s.ctx.hub.set_screen(s.capture.screen());
         let pinger = tick(Duration::from_secs(3));
         let fast = tick(Duration::from_millis(100));
+        let edge_tick = tick(Duration::from_millis(30));
         loop {
             select! {
                 recv(input_rx) -> ev => if let Ok(ev) = ev { s.on_input(ev) },
@@ -918,6 +1021,8 @@ impl Server {
                     Ok(Control::SetLayout(l)) => s.set_layout(l),
                     Ok(Control::Forget(d)) => s.forget(&d),
                     Ok(Control::Pair { .. }) | Ok(Control::PairAddr { .. }) => {}
+                    Ok(Control::Jump(side)) => s.jump(side),
+                    Ok(Control::Pin) => s.toggle_pin(),
                     Ok(Control::Stop) | Err(_) => break,
                 },
                 recv(pinger) -> _ => {
@@ -925,6 +1030,7 @@ impl Server {
                     s.update_status();
                     s.send_group(false);
                 }
+                recv(edge_tick) -> _ => s.check_edge_wait(),
                 recv(fast) -> _ => {
                     s.check_local_drop();
                     s.update_key_pass();
@@ -957,6 +1063,8 @@ impl Server {
         st.peers = self.peers.values().map(|p| PeerStatus { name: p.name.clone(), os: p.os, addr: p.addr.ip().to_string(), screen: p.screen }).collect();
         st.peers.sort_by(|a, b| a.name.cmp(&b.name));
         st.active = self.active.and_then(|(id, _, _)| self.peers.get(&id)).map(|p| p.name.clone()).unwrap_or_default();
+        let here = (self.driver.is_none() && self.active.is_none()) || matches!(self.active, Some((THIS, _, _)));
+        self.ctx.hub.set_pointer_here(here);
         st.pairing_code = Some(self.ctx.pair.lock().code.clone());
         st.paired = paired_list(&self.ctx.cfg.trusted);
         st.layout = self.ctx.cfg.layout.clone();
@@ -1235,14 +1343,33 @@ impl Server {
         }
         match (ev, self.active) {
             (InputEvent::LocalMove { x, y }, None) => {
+                if self.shake.feed(x - self.last_local.0) {
+                    self.ctx.hub.find_pointer();
+                }
+                self.last_local = (x, y);
                 let screen = self.capture.screen();
                 let Some(side) = touching_edge(&screen, x, y) else {
+                    self.edge_wait = None;
                     return;
                 };
                 let Some(target) = self.ctx.cfg.layout.neighbor(SERVER, side).map(str::to_string) else {
                     return;
                 };
                 let frac = edge_fraction(&screen, side, x, y);
+                // Corners never hop; a full-screen game or video keeps the
+                // pointer; and the pointer rests a moment against the edge.
+                if self.pinned || !(CORNER..=1.0 - CORNER).contains(&frac) || self.ctx.hub.fullscreen("") {
+                    self.edge_wait = None;
+                    return;
+                }
+                match self.edge_wait {
+                    Some((s, t)) if s == side && t.elapsed() >= EDGE_DWELL => self.edge_wait = None,
+                    Some((s, _)) if s == side => return,
+                    _ => {
+                        self.edge_wait = Some((side, Instant::now()));
+                        return;
+                    }
+                }
                 match self.peer_by_name(&target) {
                     Some(id) => {
                         self.start_local_drag_if_any();
@@ -1263,15 +1390,30 @@ impl Server {
                 }
             }
             (InputEvent::Delta { dx, dy }, Some((id, x, y))) => {
+                if self.shake.feed(dx) {
+                    self.ctx.hub.find_pointer();
+                }
                 let Some(p) = self.peers.get(&id) else { return };
                 let (w, h, pname) = (p.screen.w, p.screen.h, p.name.clone());
                 match apply_delta(w, h, x, y, dx, dy) {
                     Ok((nx, ny)) => {
+                        self.push = 0;
                         self.active = Some((id, nx, ny));
                         self.send(id, Msg::Move { x: nx, y: ny });
                     }
                     Err((side, frac)) => {
-                        let neighbor = self.ctx.cfg.layout.neighbor(&pname, side).map(str::to_string);
+                        // Hop only after pushing a little past the edge, never
+                        // from a corner, a pinned screen or a full-screen game.
+                        let over = match side {
+                            Side::Left | Side::Right => dx.abs(),
+                            Side::Top | Side::Bottom => dy.abs(),
+                        };
+                        self.push += over;
+                        let blocked = self.pinned || !(CORNER..=1.0 - CORNER).contains(&frac) || self.ctx.hub.fullscreen(&pname) || self.push < EDGE_PUSH;
+                        if !blocked {
+                            self.push = 0;
+                        }
+                        let neighbor = if blocked { None } else { self.ctx.cfg.layout.neighbor(&pname, side).map(str::to_string) };
                         match neighbor.as_deref() {
                             Some(SERVER) => {
                                 self.start_remote_drag_if_any(id, &pname, SERVER);
@@ -1317,6 +1459,15 @@ impl Server {
             }
             (InputEvent::Wheel { dx, dy }, Some((id, _, _))) => self.send(id, Msg::Wheel { dx, dy }),
             (InputEvent::Key { key, down }, Some((id, _, _))) => {
+                if down {
+                    if let Some(h) = hotkey(&self.raw_keys, key) {
+                        self.run_hotkey(h);
+                        return;
+                    }
+                    self.raw_keys.insert(key);
+                } else {
+                    self.raw_keys.remove(&key);
+                }
                 let os = self.peers.get(&id).map(|p| p.os).unwrap_or(Os::Other);
                 let key = if should_swap(&self.ctx.cfg, Os::current(), os) { keys::swap_ctrl_meta(key) } else { key };
                 if down {
@@ -1400,6 +1551,71 @@ impl Server {
             }
         }
         self.update_status();
+    }
+
+    // ---------- shortcuts and edges
+
+    fn run_hotkey(&mut self, h: Hotkey) {
+        match h {
+            Hotkey::Jump(side) => self.jump(side),
+            Hotkey::Pin => self.toggle_pin(),
+        }
+    }
+
+    fn toggle_pin(&mut self) {
+        self.pinned = !self.pinned;
+        let (t, b) = if self.pinned {
+            ("Pointer stays on this screen", "Press Ctrl+Alt+Shift+L to let it move between screens again.")
+        } else {
+            ("Pointer moves between screens again", "")
+        };
+        self.ctx.hub.notice_everywhere(t, b, "pin");
+    }
+
+    /// Jump to the next screen in that direction from the one the pointer is on.
+    fn jump(&mut self, side: Side) {
+        if let Some(c) = self.driver {
+            let from = match self.active {
+                Some((THIS, _, _)) => SERVER.to_string(),
+                Some((a, _, _)) => self.peers.get(&a).map(|p| p.name.clone()).unwrap_or_default(),
+                None => return,
+            };
+            self.drive_cross(c, &from, side, 0.5);
+            return;
+        }
+        match self.active {
+            None => {
+                let Some(target) = self.ctx.cfg.layout.neighbor(SERVER, side).map(str::to_string) else { return };
+                if let Some(id) = self.peer_by_name(&target) {
+                    self.enter(id, side, 0.5);
+                }
+            }
+            Some((id, _, _)) => {
+                let Some(pname) = self.peers.get(&id).map(|p| p.name.clone()) else { return };
+                match self.ctx.cfg.layout.neighbor(&pname, side).map(str::to_string) {
+                    Some(n) if n == SERVER => self.go_local(side, 0.5),
+                    Some(n) => {
+                        if let Some(next) = self.peer_by_name(&n) {
+                            self.enter(next, side, 0.5);
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// The pointer is resting against this screen's edge: hop once it has
+    /// rested long enough.
+    fn check_edge_wait(&mut self) {
+        let Some((side, t)) = self.edge_wait else { return };
+        if t.elapsed() < EDGE_DWELL || self.active.is_some() || self.driver.is_some() {
+            return;
+        }
+        match platform::cursor_pos() {
+            Some((x, y)) if touching_edge(&self.capture.screen(), x, y) == Some(side) => self.on_input(InputEvent::LocalMove { x, y }),
+            _ => self.edge_wait = None,
+        }
     }
 
     // ---------- any computer drives the others
@@ -1565,6 +1781,9 @@ impl Server {
         let from_os = self.peers.get(&c).map(|p| p.os).unwrap_or(Os::Other);
         match ev {
             DriveEv::Delta { dx, dy } => {
+                if self.shake.feed(dx) {
+                    self.ctx.hub.find_pointer();
+                }
                 let (w, h, name) = if a == THIS {
                     let r = self.capture.screen();
                     (r.w, r.h, SERVER.to_string())
@@ -1576,6 +1795,7 @@ impl Server {
                 };
                 match apply_delta(w, h, x, y, dx, dy) {
                     Ok((nx, ny)) => {
+                        self.push = 0;
                         self.active = Some((a, nx, ny));
                         if a == THIS {
                             self.local_move(nx, ny);
@@ -1584,7 +1804,16 @@ impl Server {
                         }
                     }
                     Err((side, frac)) => {
-                        if !self.drive_cross(c, &name, side, frac) {
+                        self.push += match side {
+                            Side::Left | Side::Right => dx.abs(),
+                            Side::Top | Side::Bottom => dy.abs(),
+                        };
+                        let full = if a == THIS { self.ctx.hub.fullscreen("") } else { self.ctx.hub.fullscreen(&name) };
+                        let blocked = self.pinned || !(CORNER..=1.0 - CORNER).contains(&frac) || full || self.push < EDGE_PUSH;
+                        if !blocked {
+                            self.push = 0;
+                        }
+                        if blocked || !self.drive_cross(c, &name, side, frac) {
                             let (nx, ny) = ((x + dx).clamp(0, w - 1), (y + dy).clamp(0, h - 1));
                             self.active = Some((a, nx, ny));
                             if a == THIS {
@@ -1625,6 +1854,15 @@ impl Server {
                 }
             }
             DriveEv::Key { key, down } => {
+                if down {
+                    if let Some(h) = hotkey(&self.drive_keys, key) {
+                        self.run_hotkey(h);
+                        return;
+                    }
+                    self.drive_keys.insert(key);
+                } else {
+                    self.drive_keys.remove(&key);
+                }
                 let to_os = if a == THIS { Os::current() } else { self.peers.get(&a).map(|p| p.os).unwrap_or(Os::Other) };
                 let key = if should_swap(&self.ctx.cfg, from_os, to_os) { keys::swap_ctrl_meta(key) } else { key };
                 if a == THIS {
@@ -2039,6 +2277,12 @@ struct Client {
     driving: bool,
     /// Where the server put the pointer lately.
     placed: Placed,
+    /// The pointer stays on this screen (Ctrl+Alt+Shift+L).
+    pinned: bool,
+    /// Resting against the screen edge since.
+    edge_wait: Option<(Side, Instant)>,
+    shake: Shake,
+    last_local: (i32, i32),
     /// When this computer's own mouse last reported the edge / its position.
     edge_sent: Instant,
     pos_sent: Instant,
@@ -2102,6 +2346,10 @@ impl Client {
             cap_rx: crossbeam_channel::never(),
             driving: false,
             placed: Placed::default(),
+            pinned: false,
+            edge_wait: None,
+            shake: Shake::default(),
+            last_local: (0, 0),
             edge_sent: Instant::now(),
             pos_sent: Instant::now(),
         };
@@ -2395,6 +2643,16 @@ impl Client {
                             break Ok(SessionEnd::Forgot);
                         }
                     }
+                    Ok(Control::Jump(side)) => {
+                        if !self.driving {
+                            link.send(Msg::EdgeHit { side, frac: 0.5 });
+                        }
+                    }
+                    Ok(Control::Pin) => {
+                        self.pinned = !self.pinned;
+                        let t = if self.pinned { "Pointer stays on this screen" } else { "Pointer moves between screens again" };
+                        self.ctx.hub.notice_everywhere(t, "", "pin");
+                    }
                     Ok(Control::SetLayout(l)) => {
                         // The arrangement is kept by the hub: change it there.
                         self.ctx.status.lock().layout = l.clone();
@@ -2405,6 +2663,18 @@ impl Client {
                 recv(awake) -> _ => {
                     if self.here && self.last_input.elapsed() < Duration::from_secs(30) {
                         link.send(Msg::Ping);
+                    }
+                    // Resting against the edge long enough: hop.
+                    if let Some((side, t)) = self.edge_wait {
+                        if t.elapsed() >= EDGE_DWELL && !self.driving {
+                            match platform::cursor_pos() {
+                                Some((x, y)) if touching_edge(&screen, x, y) == Some(side) => {
+                                    self.edge_wait = None;
+                                    link.send(Msg::EdgeHit { side, frac: edge_fraction(&screen, side, x, y) });
+                                }
+                                _ => self.edge_wait = None,
+                            }
+                        }
                     }
                 },
                 recv(ticker) -> _ => {
@@ -2443,6 +2713,7 @@ impl Client {
         let r = match m {
             Msg::Enter { x, y } => {
                 self.here = true;
+                self.ctx.hub.set_pointer_here(true);
                 if let Some(cap) = &self.capture {
                     cap.idle_cursor(false);
                 }
@@ -2462,6 +2733,7 @@ impl Client {
             }
             Msg::Leave => {
                 self.here = false;
+                self.ctx.hub.set_pointer_here(false);
                 self.ctx.status.lock().active.clear();
                 self.release_all();
                 // One pointer: this screen's hides until its own mouse moves.
@@ -2476,6 +2748,7 @@ impl Client {
                     if cap.grab() {
                         self.driving = true;
                         self.here = false;
+                        self.ctx.hub.set_pointer_here(false);
                         self.release_all();
                         self.ctx.status.lock().active.clear();
                     }
@@ -2499,6 +2772,7 @@ impl Client {
                     }
                 }
                 self.here = false;
+                self.ctx.hub.set_pointer_here(home);
                 if home {
                     self.ctx.status.lock().active = self.ctx.cfg.name.clone();
                 }
@@ -2643,6 +2917,12 @@ impl Client {
                 if self.here && self.placed.ours((x, y)) {
                     return;
                 }
+                // This computer's own mouse or touchpad: the pointer is here.
+                self.ctx.hub.set_pointer_here(true);
+                if self.shake.feed(x - self.last_local.0) {
+                    self.ctx.hub.find_pointer();
+                }
+                self.last_local = (x, y);
                 if self.here {
                     // The touchpad moved the pointer while the server's mouse
                     // was using this screen: keep the server in step.
@@ -2652,11 +2932,24 @@ impl Client {
                         link.send(Msg::LocalPos { x: x - screen.x, y: y - screen.y });
                     }
                 }
-                if let Some(side) = touching_edge(&screen, x, y) {
-                    if self.edge_sent.elapsed() > Duration::from_millis(250) {
-                        self.edge_sent = Instant::now();
-                        link.send(Msg::EdgeHit { side, frac: edge_fraction(&screen, side, x, y) });
+                match touching_edge(&screen, x, y) {
+                    Some(side) => {
+                        let frac = edge_fraction(&screen, side, x, y);
+                        // Not from corners, a pinned pointer or a full-screen game;
+                        // after resting a moment against the edge.
+                        if self.pinned || !(CORNER..=1.0 - CORNER).contains(&frac) || self.ctx.hub.fullscreen("") {
+                            self.edge_wait = None;
+                        } else if self.edge_wait.map(|(s, _)| s != side).unwrap_or(true) {
+                            self.edge_wait = Some((side, Instant::now()));
+                        } else if self.edge_wait.map(|(_, t)| t.elapsed() >= EDGE_DWELL).unwrap_or(false)
+                            && self.edge_sent.elapsed() > Duration::from_millis(250)
+                        {
+                            self.edge_sent = Instant::now();
+                            self.edge_wait = None;
+                            link.send(Msg::EdgeHit { side, frac });
+                        }
                     }
+                    None => self.edge_wait = None,
                 }
             }
             _ if !self.driving => {}

@@ -8,10 +8,15 @@
 </head>
 <body>
   <header class="titlebar">
+    <img class="appicon" src="icon.png" alt="" width="44" height="44">
     <div class="title-block">
       <h1>OpenHop</h1>
       <p class="subtitle"><span id="statusDot" class="dot"></span><span id="statusText">Off</span></p>
     </div>
+    <button id="focusBtn" class="focus-btn" type="button" title="Silence notifications on every computer">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.2 14.6A8.6 8.6 0 0 1 9.4 3.8a8.6 8.6 0 1 0 10.8 10.8z"/></svg>
+      <span>Focus</span>
+    </button>
     <label class="switch big" title="Turn sharing on or off">
       <input type="checkbox" id="power" aria-label="Sharing">
       <span class="track"><span class="thumb"></span></span>
@@ -23,6 +28,7 @@
   <main class="columns">
     <section class="col settings">
       <div class="tabs" id="tabs" role="tablist" aria-label="Settings">
+        <span class="tab-pill" aria-hidden="true"></span>
         <button data-tab="general" role="tab" class="on" aria-selected="true">General</button>
         <button data-tab="look" role="tab" aria-selected="false">Look</button>
       </div>
@@ -129,6 +135,10 @@
     </section>
 
     <section class="col stage">
+      <div id="pcsBlock" hidden>
+        <h2 class="section">Your Computers</h2>
+        <div class="pcs" id="pcs"></div>
+      </div>
       <h2 class="section" id="stageTitle">Arrangement</h2>
       <div class="group canvas">
         <div id="grid" class="grid"></div>

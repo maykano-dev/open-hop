@@ -6,6 +6,7 @@
     "toast",
     "fx",
     "dock",
+    "island",
     "view-*"
   ],
   "permissions": [

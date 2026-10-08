@@ -74,9 +74,10 @@ async function setPref(patch) {
 
 $("openDock").addEventListener("click", () => invoke("dock_toggle"));
 
-// General | Look tabs.
-for (const t of document.querySelectorAll("#tabs button")) {
+// General | Look tabs (the selected background slides across).
+for (const [i, t] of [...document.querySelectorAll("#tabs button")].entries()) {
   t.addEventListener("click", () => {
+    $("tabs").style.setProperty("--tab", i);
     for (const o of document.querySelectorAll("#tabs button")) {
       const on = o === t;
       o.classList.toggle("on", on);
@@ -594,7 +595,74 @@ async function refresh() {
 refresh();
 setInterval(refresh, 800);
 
+// ------------------------------------------------------------------ your computers and Focus
+
+const PC_ICON = {
+  laptop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.6"/><path d="M2 19h20"/></svg>',
+  desktop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1.6"/><path d="M9 20h6M12 16v4"/></svg>',
+};
+let overviewKey = "";
+let focusOn = false;
+
+function gb(bytes) {
+  const g = bytes / 1e9;
+  return g >= 1000 ? `${(g / 1000).toFixed(1)} TB` : `${g >= 10 ? Math.round(g) : g.toFixed(1)} GB`;
+}
+
+async function refreshOverview() {
+  let o;
+  try { o = await invoke("overview"); } catch (_) { return; }
+  if (!o) return;
+  focusOn = o.focus;
+  $("focusBtn").classList.toggle("on", o.focus);
+  $("focusBtn").querySelector("span").textContent = o.focus ? "Focus on" : "Focus";
+  const key = JSON.stringify(o);
+  if (key === overviewKey) return;
+  overviewKey = key;
+  const box = $("pcs");
+  box.replaceChildren();
+  $("pcsBlock").hidden = (o.computers || []).length < 2;
+  for (const c of o.computers || []) {
+    const st = c.status || {};
+    const here = (o.active || o.me) === c.name;
+    const card = el("div", { class: "pc-card" + (here ? " here" : "") });
+    const top = el("div", { class: "top" });
+    top.innerHTML = st.battery ? PC_ICON.laptop : PC_ICON.desktop;
+    top.append(el("span", {}, c.this ? `${c.name} (this)` : c.name));
+    card.append(top);
+    const line = el("div", { class: "line" }, here ? el("span", { class: "pointer" }, "Pointer here") : (st.locked ? "Locked" : "Ready"));
+    if (st.battery) {
+      const [pct, chg] = st.battery;
+      const cell = el("span", { class: "cell" + (chg ? " chg" : pct <= 20 ? " low" : "") }, el("i", { style: `width:${Math.max(6, pct)}%` }));
+      line.append(el("span", { class: "batt" }, cell, `${pct}%`));
+    }
+    card.append(line);
+    if (st.disk) {
+      const [free, total] = st.disk;
+      card.append(el("div", { class: "disk" }, el("i", { style: `width:${Math.round((1 - free / Math.max(1, total)) * 100)}%` })));
+      card.append(el("small", {}, `${gb(free)} free`));
+    }
+    box.append(card);
+  }
+}
+$("focusBtn").addEventListener("click", async () => {
+  focusOn = !focusOn;
+  $("focusBtn").classList.toggle("on", focusOn);
+  try { await invoke("island_focus", { on: focusOn }); } catch (e) { showBanner(String(e)); }
+  refreshOverview();
+});
+refreshOverview();
+setInterval(refreshOverview, 2000);
+
 // ------------------------------------------------------------------ demo mode
+
+function mockOverview() {
+  return { focus: false, me: "desk-pc", active: "macbook", computers: [
+    { name: "desk-pc", this: true, status: { battery: null, disk: [412e9, 1000e9], locked: false } },
+    { name: "macbook", this: false, status: { battery: [64, true], disk: [128e9, 512e9], locked: false } },
+    { name: "ubuntu-box", this: false, status: { battery: [14, false], disk: [38e9, 256e9], locked: true } },
+  ] };
+}
 
 function mockInvoke() {
   const cfg = {
@@ -654,6 +722,7 @@ function mockInvoke() {
       case "update_prefs": Object.assign(cfg, args.prefs); return null;
       case "start": running = true; return null;
       case "stop": running = false; return null;
+      case "overview": return mockOverview();
       default: return null;
     }
   };

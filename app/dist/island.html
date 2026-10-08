@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OpenHop</title>
+  <style>
+    /* The island is always black, like the notch it lives around. */
+    :root {
+      --ink: #f5f5f7;
+      --soft: rgba(235, 235, 245, .62);
+      --faint: rgba(235, 235, 245, .32);
+      --glass: rgba(255, 255, 255, .085);
+      --glass-hi: rgba(255, 255, 255, .15);
+      --accent: #0a84ff;
+      --focus: #5e5ce6;
+      --good: #30d158;
+      --warn: #ff9f0a;
+      --bad: #ff453a;
+      --spring: cubic-bezier(.32, 1.35, .45, 1);
+      --ease: cubic-bezier(.25, .9, .3, 1);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu, Cantarell, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      color: var(--ink);
+    }
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; -webkit-user-select: none; cursor: default; }
+    button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: default; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    .island {
+      position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+      width: var(--w, 210px); height: var(--h, 34px);
+      background: #000; overflow: hidden;
+      border-radius: 0 0 var(--r, 17px) var(--r, 17px);
+      transition: width .46s var(--spring), height .46s var(--spring), border-radius .46s var(--ease);
+    }
+    body.floating .island { border-radius: var(--r, 17px); }
+
+    /* ---- at rest: a slim pill with live hints ---- */
+    .rest {
+      position: absolute; inset: 0 0 auto 0; height: 34px; padding: 0 14px;
+      display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; letter-spacing: -.01em;
+      transition: opacity .2s var(--ease), transform .3s var(--ease);
+    }
+    .rest .where { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+    .rest .where span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--soft); }
+    .rest .where b { font-weight: 600; color: var(--ink); white-space: nowrap; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex: none; box-shadow: 0 0 8px color-mix(in srgb, var(--good) 70%, transparent); }
+    .dot.off { background: #636366; box-shadow: none; }
+    .hints { display: flex; gap: 6px; align-items: center; }
+    .hints svg { width: 15px; height: 15px; display: block; }
+    .hint-focus { color: #a5a3ff; }
+    .hint-batt { color: var(--warn); }
+    .ring-progress { width: 15px; height: 15px; transform: rotate(-90deg); }
+    .ring-progress circle { fill: none; stroke-width: 2.5; }
+    .open .rest, .activity .rest { opacity: 0; transform: scale(.92); pointer-events: none; }
+
+    /* ---- a live activity: one line or two, for a few seconds ---- */
+    .act {
+      position: absolute; left: 0; right: 0; top: 0; height: 76px; padding: 0 20px;
+      display: flex; align-items: center; gap: 12px; opacity: 0; transform: translateY(-6px) scale(.97);
+      transition: opacity .25s var(--ease) .08s, transform .4s var(--spring) .05s; pointer-events: none;
+    }
+    .activity .act { opacity: 1; transform: none; pointer-events: auto; }
+    .act .badge { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; flex: none; background: var(--glass-hi); }
+    .act .badge svg { width: 20px; height: 20px; }
+    .act .badge.battery { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+    .act .badge.focus { background: color-mix(in srgb, var(--focus) 30%, transparent); color: #b3b1ff; }
+    .act .badge.files { background: color-mix(in srgb, var(--accent) 25%, transparent); color: #7cc0ff; }
+    .act .txt { min-width: 0; flex: 1; }
+    .act .t { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -.015em; }
+    .act .b { font-size: 12.5px; color: var(--soft); margin-top: 1px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .act .acts { display: flex; gap: 6px; }
+    .chip { font-size: 12.5px; font-weight: 600; padding: 6px 12px; border-radius: 999px; background: var(--glass-hi); white-space: nowrap; }
+    .chip:hover { background: rgba(255, 255, 255, .22); }
+    .chip.primary { background: var(--accent); }
+
+    /* ---- open: Control Center ---- */
+    .panel {
+      position: absolute; top: 0; left: 50%; width: 520px; margin-left: -260px; padding: 16px 20px 20px; box-sizing: border-box;
+      opacity: 0; transform: scale(.94) translateY(-10px); transform-origin: 50% 0;
+      transition: opacity .18s var(--ease), transform .4s var(--spring); pointer-events: none;
+    }
+    .open .panel { opacity: 1; transform: none; pointer-events: auto; transition-delay: .06s; }
+    body.attached .panel { padding-top: 12px; }
+
+    .head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .head .title { flex: 1; min-width: 0; }
+    .head h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -.02em; }
+    .head p { margin: 1px 0 0; font-size: 12px; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .iconbtn { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--glass); color: var(--soft); }
+    .iconbtn:hover { background: var(--glass-hi); color: var(--ink); }
+    .iconbtn svg { width: 16px; height: 16px; }
+
+    .controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+    .ctl { display: flex; flex-direction: column; align-items: center; gap: 7px; font-size: 11.5px; color: var(--soft); }
+    .ctl .disc {
+      width: 54px; height: 54px; border-radius: 50%; display: grid; place-items: center; background: var(--glass);
+      transition: background .25s var(--ease), transform .3s var(--spring), color .25s;
+    }
+    .ctl .disc svg { width: 24px; height: 24px; }
+    .ctl:hover .disc { background: var(--glass-hi); }
+    .ctl:active .disc { transform: scale(.9); }
+    .ctl.on .disc { background: var(--focus); color: #fff; }
+    .ctl.on { color: var(--ink); }
+    .ctl.armed .disc { background: var(--bad); color: #fff; }
+
+    .section { font-size: 12px; color: var(--faint); margin: 0 2px 8px; font-weight: 600; }
+    .pcs { display: flex; gap: 10px; overflow-x: auto; margin-bottom: 16px; scrollbar-width: none; }
+    .pcs::-webkit-scrollbar { display: none; }
+    .pc {
+      flex: 1 0 140px; max-width: 220px; background: var(--glass); border-radius: 18px; padding: 12px 13px; box-sizing: border-box; position: relative;
+    }
+    .pc.here { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 80%, transparent); }
+    .pc .top { display: flex; align-items: center; gap: 8px; }
+    .pc .top svg { width: 20px; height: 20px; color: var(--soft); flex: none; }
+    .pc .name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -.015em; }
+    .pc .state { font-size: 11.5px; color: var(--soft); margin-top: 8px; display: flex; align-items: center; gap: 6px; min-height: 16px; white-space: nowrap; }
+    .pc .state .batt { margin-left: auto; }
+    .pc .state .pointer { color: #7cc0ff; }
+    .batt { display: inline-flex; align-items: center; gap: 5px; }
+    .batt .cell { width: 24px; height: 12px; border-radius: 3.5px; border: 1.5px solid rgba(235, 235, 245, .45); position: relative; box-sizing: border-box; padding: 1.5px; }
+    .batt .cell::after { content: ""; position: absolute; right: -4px; top: 3px; width: 2px; height: 4px; border-radius: 0 1px 1px 0; background: rgba(235, 235, 245, .45); }
+    .batt .fill { display: block; height: 100%; border-radius: 1.5px; background: var(--ink); transition: width .6s var(--ease); }
+    .batt.low .fill { background: var(--warn); }
+    .batt.crit .fill { background: var(--bad); }
+    .batt.charging .fill { background: var(--good); }
+    .disk { margin-top: 8px; }
+    .disk .bar { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, .12); overflow: hidden; }
+    .disk .bar i { display: block; height: 100%; background: var(--soft); border-radius: 2px; }
+    .disk small { display: block; font-size: 11px; color: var(--faint); margin-top: 4px; }
+
+    .wins { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; }
+    .wins::-webkit-scrollbar { display: none; }
+    .win { flex: none; width: 92px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 4px; border-radius: 14px; }
+    .win:hover { background: var(--glass); }
+    .win .app { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; font-weight: 700; font-size: 16px; color: #fff; }
+    .win .n { font-size: 11px; color: var(--soft); width: 100%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .win .o { font-size: 10px; color: var(--faint); }
+    .empty { font-size: 12px; color: var(--faint); padding: 4px 2px 0; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .island, .rest, .act, .panel, .ctl .disc { transition-duration: .01s !important; transition-delay: 0s !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="island" id="island">
+    <div class="rest" id="rest">
+      <div class="where"><i class="dot" id="dot"></i><b id="restName">OpenHop</b><span id="restSub"></span></div>
+      <div class="hints" id="hints"></div>
+    </div>
+    <div class="act" id="act">
+      <div class="badge" id="actBadge"></div>
+      <div class="txt"><div class="t" id="actTitle"></div><div class="b" id="actBody"></div></div>
+      <div class="acts" id="actButtons"></div>
+    </div>
+    <div class="panel" id="panel">
+      <div class="head">
+        <div class="title"><h1 id="headTitle">OpenHop</h1><p id="headSub"></p></div>
+        <button class="iconbtn" id="openApp" title="Open OpenHop" aria-label="Open OpenHop"></button>
+      </div>
+      <div class="controls">
+        <button class="ctl" id="cFocus"><span class="disc"></span><span class="lbl">Focus</span></button>
+        <button class="ctl" id="cFind"><span class="disc"></span><span class="lbl">Find pointer</span></button>
+        <button class="ctl" id="cLock"><span class="disc"></span><span class="lbl">Lock all</span></button>
+        <button class="ctl" id="cSleep"><span class="disc"></span><span class="lbl">Sleep all</span></button>
+      </div>
+      <div class="pcs" id="pcs"></div>
+      <div class="section" id="winsTitle">Windows on your other computers</div>
+      <div class="wins" id="wins"></div>
+    </div>
+  </div>
+  <script src="island.js"></script>
+</body>
+</html>

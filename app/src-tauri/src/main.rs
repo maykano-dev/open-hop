@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod island;
 mod live;
 mod updater;
 
@@ -13,7 +14,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, State, WindowEvent};
 
 const TOAST_W: f64 = 372.0;
 
@@ -96,7 +97,7 @@ fn close_older_copies() {
 }
 
 /// Reading the OS setting runs a small program on some systems: cache it.
-fn system_dark() -> Option<bool> {
+pub(crate) fn system_dark() -> Option<bool> {
     static CACHE: Mutex<Option<(std::time::Instant, Option<bool>)>> = Mutex::new(None);
     let mut c = CACHE.lock();
     if let Some((at, v)) = *c {
@@ -517,15 +518,28 @@ fn main() {
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    log::debug!("shortcut {:?}", event.state());
-                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        live::toggle_dock(app);
+                .with_handler(|app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::{Code, ShortcutState};
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let engine = app.state::<App>();
+                    let engine = engine.engine.lock();
+                    use openhop_core::layout::Side;
+                    match shortcut.key {
+                        Code::Space => island::toggle(app),
+                        Code::ArrowLeft => engine.as_ref().map(|e| e.jump(Side::Left)).unwrap_or(()),
+                        Code::ArrowRight => engine.as_ref().map(|e| e.jump(Side::Right)).unwrap_or(()),
+                        Code::ArrowUp => engine.as_ref().map(|e| e.jump(Side::Top)).unwrap_or(()),
+                        Code::ArrowDown => engine.as_ref().map(|e| e.jump(Side::Bottom)).unwrap_or(()),
+                        Code::KeyL => engine.as_ref().map(|e| e.pin()).unwrap_or(()),
+                        _ => {}
                     }
                 })
                 .build(),
         )
         .manage(state)
+        .manage(island::Island::default())
         .invoke_handler(tauri::generate_handler![
             snapshot,
             save_config,
@@ -551,6 +565,14 @@ fn main() {
             live::dock_toggle,
             live::dock_hide,
             live::viewer_drag,
+            island::island_state,
+            island::island_size,
+            island::island_focus,
+            island::island_lock_all,
+            island::island_sleep_all,
+            island::island_find_pointer,
+            island::island_open_app,
+            island::overview,
             live::viewer_log,
             live::viewer_fit,
             live::viewer_title
@@ -558,11 +580,14 @@ fn main() {
         .setup(move |app| {
             // Keep sharing in the background: closing the window hides it to the tray.
             let show = MenuItem::with_id(app, "show", "Open OpenHop", true, None::<&str>)?;
-            let dock = MenuItem::with_id(app, "dock", "Windows on All Computers (Ctrl+Alt+Space)", true, None::<&str>)?;
+            let dock = MenuItem::with_id(app, "dock", "Control Center (Ctrl+Alt+Space)", true, None::<&str>)?;
+            let focus = MenuItem::with_id(app, "focus", "Focus on All Computers", true, None::<&str>)?;
+            let find = MenuItem::with_id(app, "find", "Find My Pointer", true, None::<&str>)?;
+            let lock = MenuItem::with_id(app, "lock", "Lock All Computers", true, None::<&str>)?;
             let on = app.state::<App>().config.lock().enabled;
             let toggle = MenuItem::with_id(app, "toggle", if on { "Turn OpenHop Off" } else { "Turn OpenHop On" }, true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit (starts again at login)", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &dock, &toggle, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &dock, &focus, &find, &lock, &toggle, &quit])?;
             app.manage(TrayToggle(toggle.clone()));
             TrayIconBuilder::with_id("tray")
                 .icon(app.default_window_icon().cloned().expect("icon"))
@@ -575,7 +600,17 @@ fn main() {
                             let _ = w.set_focus();
                         }
                     }
-                    "dock" => live::toggle_dock(app),
+                    "dock" => island::toggle(app),
+                    "focus" | "find" | "lock" => {
+                        if let Some(e) = app.state::<App>().engine.lock().as_ref() {
+                            let hub = e.hub();
+                            match ev.id().as_ref() {
+                                "focus" => hub.set_focus(!hub.focus()),
+                                "find" => hub.find_pointer(),
+                                _ => hub.lock_all(),
+                            }
+                        }
+                    }
                     "toggle" => {
                         let state = app.state::<App>();
                         let running = state.engine.lock().is_some();
@@ -594,25 +629,25 @@ fn main() {
                     _ => {}
                 })
                 .build(app)?;
-            // Small always-on-top window for notifications (received files, copied links).
-            WebviewWindowBuilder::new(app, "toast", WebviewUrl::App("toast.html".into()))
-                .title("OpenHop")
-                .inner_size(TOAST_W, 100.0)
-                .decorations(false)
-                .transparent(true)
-                .shadow(false)
-                .always_on_top(true)
-                .skip_taskbar(true)
-                .resizable(false)
-                .focused(false)
-                .visible(false)
-                .build()?;
+            // The island at the top of the screen: Control Center and live
+            // activities (notifications too).
+            island::create(app)?;
             live::create_fx(app)?;
             {
                 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
-                let sc = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
-                if let Err(e) = app.global_shortcut().register(sc) {
-                    log::info!("window dock shortcut unavailable: {e}");
+                let all = Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT;
+                let keys = [
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space),
+                    Shortcut::new(Some(all), Code::ArrowLeft),
+                    Shortcut::new(Some(all), Code::ArrowRight),
+                    Shortcut::new(Some(all), Code::ArrowUp),
+                    Shortcut::new(Some(all), Code::ArrowDown),
+                    Shortcut::new(Some(all), Code::KeyL),
+                ];
+                for sc in keys {
+                    if let Err(e) = app.global_shortcut().register(sc) {
+                        log::info!("shortcut unavailable: {e}");
+                    }
                 }
             }
             // Live windows and arrival animations.
@@ -697,6 +732,12 @@ fn main() {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
+                }
+                return;
+            }
+            if label == "island" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
                 }
                 return;
             }

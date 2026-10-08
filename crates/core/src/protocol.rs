@@ -4,7 +4,7 @@
 use crate::layout::{Layout, Side};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -395,6 +395,40 @@ pub enum Ext {
         stream: u64,
         on: bool,
     },
+    /// The sender's state, shown on every computer.
+    Status(PcStatus),
+    /// Focus (Do Not Disturb) for all computers, switched on or off.
+    Focus {
+        on: bool,
+    },
+    /// Lock the screen now (one computer was locked).
+    Lock,
+    /// Go to sleep now.
+    Sleep,
+    /// Wake the display (one computer was unlocked).
+    Wake,
+    /// Show where the pointer is, if it's on your screen.
+    Locate,
+    /// Something to tell the user, on the screen they're using.
+    Notice {
+        title: String,
+        body: String,
+        icon: String,
+    },
+}
+
+/// A computer's state at a glance.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PcStatus {
+    /// Percent, and whether it's charging (or plugged in).
+    pub battery: Option<(u8, bool)>,
+    /// Free and total bytes on the disk with the user's files.
+    pub disk: Option<(u64, u64)>,
+    pub focus: bool,
+    pub locked: bool,
+    /// A full-screen app (a game, a video) is in front.
+    pub fullscreen: bool,
+    pub os: Option<Os>,
 }
 
 impl Msg {

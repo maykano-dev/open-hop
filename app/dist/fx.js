@@ -7,7 +7,11 @@ function play(p) {
   clearTimeout(timer);
   stage.className = "stage";
   void stage.offsetWidth; // restart the animations
-  if (p.kind === "incoming") {
+  if (p.kind === "locate") {
+    label.textContent = "";
+    stage.classList.add("locate");
+    timer = setTimeout(done, 1700);
+  } else if (p.kind === "incoming") {
     label.textContent = p.from ? `From ${p.from}` : p.label;
     stage.classList.add("incoming");
     // If it never lands (very slow transfer), fade out eventually.

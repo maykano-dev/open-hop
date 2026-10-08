@@ -301,6 +301,49 @@ select.value option { color: #000; }
 .accents button { width: 22px; height: 22px; border-radius: 50%; border: 0; padding: 0; cursor: pointer; box-shadow: inset 0 0 0 0.5px rgba(0,0,0,.15); }
 .accents button[aria-checked="true"] { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--blue); }
 .slider { margin-left: auto; width: 46%; accent-color: var(--blue); }
-.tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; margin: 4px 0 6px; border-radius: 9px; background: var(--fill, rgba(118,118,128,.12)); }
-.tabs button { border: 0; background: transparent; color: var(--label); font: inherit; font-size: 13px; font-weight: 500; padding: 6px 0; border-radius: 7px; cursor: pointer; }
-.tabs button.on { background: var(--card, #fff); box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 0 0 .5px rgba(0,0,0,.04); font-weight: 600; }
+.tabs { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; margin: 4px 0 6px; border-radius: 9px; background: var(--fill, rgba(118,118,128,.12)); }
+.tabs button { position: relative; z-index: 1; border: 0; background: transparent; color: var(--label); font: inherit; font-size: 13px; font-weight: 500; padding: 6px 0; border-radius: 7px; cursor: pointer; transition: font-weight .2s; }
+.tabs button.on { font-weight: 600; }
+/* The selected tab's background slides between tabs. */
+.tab-pill {
+  position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc(50% - 3px); border-radius: 7px;
+  background: var(--card, #fff); box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 0 0 .5px rgba(0,0,0,.04);
+  transform: translateX(calc(var(--tab, 0) * (100% + 2px))); transition: transform .38s cubic-bezier(.32, 1.25, .45, 1);
+}
+
+/* ---------- header extras */
+.appicon { width: 44px; height: 44px; border-radius: 11px; flex: none; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+.focus-btn {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px 7px 11px; border-radius: 999px; border: 0;
+  background: var(--fill-strong); color: var(--label); font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: background .25s, color .25s, transform .3s cubic-bezier(.32, 1.35, .45, 1);
+}
+.focus-btn svg { width: 15px; height: 15px; }
+.focus-btn:active { transform: scale(.94); }
+.focus-btn.on { background: #5e5ce6; color: #fff; }
+.titlebar .focus-btn + .switch { margin-left: 4px; }
+
+/* ---------- your computers */
+.pcs { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+.pcs::-webkit-scrollbar { display: none; }
+.pc-card { flex: 1 0 168px; max-width: 240px; background: var(--card); border-radius: 16px; box-shadow: var(--shadow); padding: 14px 15px; box-sizing: border-box; }
+.pc-card.here { box-shadow: var(--shadow), inset 0 0 0 1.5px var(--blue); }
+.pc-card .top { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+.pc-card .top svg { width: 20px; height: 20px; color: var(--secondary); flex: none; }
+.pc-card .top span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-card .line { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: var(--secondary); white-space: nowrap; }
+.pc-card .line .pointer { color: var(--blue); font-weight: 600; }
+.pc-card .batt { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; }
+.pc-card .cell { width: 23px; height: 11px; border-radius: 3.5px; border: 1.5px solid var(--tertiary); position: relative; box-sizing: border-box; padding: 1.5px; }
+.pc-card .cell i { display: block; height: 100%; border-radius: 1.5px; background: var(--label); }
+.pc-card .cell.low i { background: var(--orange); }
+.pc-card .cell.chg i { background: var(--green); }
+.pc-card .disk { margin-top: 10px; height: 4px; border-radius: 2px; background: var(--fill-strong); overflow: hidden; }
+.pc-card .disk i { display: block; height: 100%; background: var(--secondary); }
+.pc-card small { display: block; margin-top: 5px; font-size: 11.5px; color: var(--tertiary); }
+
+/* One entrance when the window opens. */
+@media (prefers-reduced-motion: no-preference) {
+  .columns { animation: settle .55s cubic-bezier(.25, .9, .3, 1) both; }
+  @keyframes settle { from { opacity: 0; transform: translateY(8px); } }
+}

@@ -86,9 +86,12 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 📋 **Clipboard sync** | Copy text, an image or a screenshot on one computer and paste it on another. Images arrive pixel-perfect. |
 | 📁 **Copy & paste files** | Copy files, folders or videos in Explorer, Finder or Files, hop over, and paste: the real files arrive, not a path. A copied picture file pastes as a picture too, into chats, documents and image editors. |
 | 🫳 **Drag & drop files across screens** | Drag files off one computer's screen and drop them into a folder or app on another's, just like a local drag. |
-| 🪟 **Windows from any computer** | A dock (**Ctrl+Alt+Space**) shows the open windows of every computer. Click one and it opens live on the computer you're using, with its own title bar: you see it update and can click, scroll and type in it. Or just drag a window by its title bar off the screen edge, and drag it back the same way. |
+| 🏝 **The island** | A small pill at the top of the screen (around a MacBook's notch) that opens into the Control Center: Focus for every computer, Find My Pointer, Lock All, Sleep All, every computer's battery and storage, and their windows. Notifications and "plug in your laptop" warnings pop out of it on the screen you're using. |
+| ⌨️ **Shortcuts** | Ctrl+Alt+Space opens the Control Center. Ctrl+Alt+Shift+arrows jump to the next screen; Ctrl+Alt+Shift+L keeps the pointer where it is. Shake the mouse to find the pointer. |
+| 🎮 **Game guard** | A full-screen game or video keeps the pointer on its screen. Corners never hop, and the pointer rests a moment at an edge first, so you don't hop by accident. |
+| 🪟 **Windows from any computer** | The Control Center (**Ctrl+Alt+Space**, or hover the island) shows the open windows of every computer. Click one and it opens live on the computer you're using, with its own title bar: you see it update and can click, scroll and type in it. Or just drag a window by its title bar off the screen edge, and drag it back the same way. |
 | 🌙 **Dark mode sync** | Switch dark mode on one computer and the others follow. |
-| 🔕 **Do Not Disturb sync** | While one computer is presenting, in a full-screen call or in Do Not Disturb, the others go quiet too. |
+| 🔕 **Focus everywhere** | Turn on Focus (Do Not Disturb) from the island, the tray or any computer's own settings, and every computer goes quiet. |
 | ✨ **Landing animation** | A short animation where files or windows arrive. |
 | 🎨 **Looks right** | Light or dark following your computer's own setting, with six accent colours. |
 | 🔁 **Connect once** | Turn OpenHop on once and it stays on: with its window closed, after restarts and after the computer is switched off and on, until you switch it off. |
@@ -152,6 +155,8 @@ flowchart LR
 | Do Not Disturb sync | best effort | via two Shortcuts* | ✅ GNOME | ✅ GNOME |
 
 \* macOS has no public switch for Focus. In the Shortcuts app, make two shortcuts named **OpenHop Focus On** and **OpenHop Focus Off**, each with one *Set Focus* action, and OpenHop runs them.
+
+> **Test status (v0.7.0).** Tested on Linux with two copies of the app: the island at rest, opening on hover, Focus switching on both computers, Find My Pointer from the island and by shaking the mouse, the pin and jump shortcuts (also while the keyboard was in use on the other screen), notices in the island, quick edge touches and corners not hopping while resting at the edge does. Battery warnings, Lock All and Sleep All use each system's own tools and weren't exercised here (no battery or login session in the test setup). Windows and macOS build in CI but haven't been tried on real machines.
 
 > **Test status (v0.6.0).** Tested end to end on Linux (two X servers, two copies of the app, and the app with the command-line version): a laptop's own mouse and keyboard driving the desktop and coming home, the desktop's mouse taking over again, the touchpad moving the pointer while the desktop's mouse was on the laptop, pairing by tapping and typing the code (the computer that types the code joins), forgetting (it stands alone again), rearranging screens from the joined computer, maximizing and restoring a live window, clicking in it while maximized, and dragging it back home. Windows and macOS build and pass the automated tests but haven't been tried on real machines.
 
@@ -286,7 +291,7 @@ Update **every computer** to the same version: computers only connect to others 
 - **Waking a sleeping computer:** pushing the pointer toward a computer that's asleep sends it a Wake-on-LAN packet. Its tile shows **Asleep** in the arrangement. Wake-on-LAN must be enabled on that computer: in the BIOS/UEFI and network adapter settings on PCs, or with **Wake for network access** on Macs (works when plugged in). It works best over Ethernet.
 - **Connect once:** you don't need to keep the window open, or open OpenHop again after a restart. Closing the window hides OpenHop to the tray or menu bar and sharing carries on, and it starts by itself (in the background, already connected) every time you sign in. It stays that way until you switch it off with the switch at the top of its window (or **Turn OpenHop Off** in the tray menu).
 - **Nothing to set up:** clipboard and file sync, ⌃/⌘ swapping, dragging windows across screens, dark mode and Do Not Disturb sync, notifications and Wake-on-LAN are simply always on. The network port is chosen automatically: if an older OpenHop still holds it, that copy is closed; if another program has it, OpenHop uses the next free one. The only option is the transfer **Speed Limit**; the **Look** tab has the accent colour.
-- **Windows from other computers:** press **Ctrl+Alt+Space** (or click the tray icon › *Windows on All Computers*) for the window dock. Click a window from any computer and it moves here: it looks and behaves like a normal window, with its own title bar (drag it to move it, click its buttons, drag an edge to resize it and the real one follows), while the app keeps running on its own computer, where the original is hidden until it comes back (macOS can't hide another app's window, so there it stays visible). You can also grab a window by its title bar and drag it off the screen edge onto another computer: it opens there under your pointer. Drag it by its title bar back across the edge and it's home again, still following your mouse.
+- **Windows from other computers:** press **Ctrl+Alt+Space** or hover the island at the top of the screen; the Control Center lists your other computers' windows. Click a window from any computer and it moves here: it looks and behaves like a normal window, with its own title bar (drag it to move it, click its buttons, drag an edge to resize it and the real one follows), while the app keeps running on its own computer, where the original is hidden until it comes back (macOS can't hide another app's window, so there it stays visible). You can also grab a window by its title bar and drag it off the screen edge onto another computer: it opens there under your pointer. Drag it by its title bar back across the edge and it's home again, still following your mouse.
 - **Something feels stuck?** Move the pointer back to its own screen. Leaving a screen always releases every key and mouse button that was held there. If a computer stops responding (asleep, Wi-Fi dropped), OpenHop drops it within about 10 seconds, returns the pointer to you, and reconnects it automatically when it's back, in the same spot in your arrangement.
 
 ---
@@ -531,6 +536,8 @@ open-hop/
 ```
 
 ## Roadmap
+
+**Done in v0.7:** the island and Control Center, Focus everywhere, low-battery warnings on the screen you're using, lock and sleep together, find my pointer, shortcuts, game guard, edge comfort.
 
 **Done in v0.6:** every computer's keyboard and mouse work on every screen (no more "control" or "be controlled"), one pointer at a time, live windows that maximize to the screen they're on, smoother scrolling and typing next to live windows.
 
