@@ -31,24 +31,14 @@ impl UinputInjector {
         for row in keys::TABLE {
             kb_keys.insert(KeyCode::new(row.1));
         }
-        let keyboard = VirtualDevice::builder()
-            .context(hint)?
-            .name("OpenHop virtual keyboard")
-            .with_keys(&kb_keys)?
-            .build()
-            .context(hint)?;
+        let keyboard = VirtualDevice::builder().context(hint)?.name("OpenHop virtual keyboard").with_keys(&kb_keys)?.build().context(hint)?;
 
         let mut btns = AttributeSet::<KeyCode>::new();
         for b in [BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_SIDE, BTN_EXTRA] {
             btns.insert(KeyCode::new(b));
         }
         let mut rel = AttributeSet::<RelativeAxisCode>::new();
-        for r in [
-            RelativeAxisCode::REL_WHEEL,
-            RelativeAxisCode::REL_HWHEEL,
-            RelativeAxisCode::REL_WHEEL_HI_RES,
-            RelativeAxisCode::REL_HWHEEL_HI_RES,
-        ] {
+        for r in [RelativeAxisCode::REL_WHEEL, RelativeAxisCode::REL_HWHEEL, RelativeAxisCode::REL_WHEEL_HI_RES, RelativeAxisCode::REL_HWHEEL_HI_RES] {
             rel.insert(r);
         }
         // An absolute pointer (like a VM "tablet"): the compositor maps the
@@ -77,10 +67,7 @@ impl Injector for UinputInjector {
     fn move_to(&mut self, x: i32, y: i32) -> Result<()> {
         let x = (x - self.rect.x).clamp(0, self.rect.w - 1);
         let y = (y - self.rect.y).clamp(0, self.rect.h - 1);
-        self.pointer.emit(&[
-            ev(EventType::ABSOLUTE, AbsoluteAxisCode::ABS_X.0, x),
-            ev(EventType::ABSOLUTE, AbsoluteAxisCode::ABS_Y.0, y),
-        ])?;
+        self.pointer.emit(&[ev(EventType::ABSOLUTE, AbsoluteAxisCode::ABS_X.0, x), ev(EventType::ABSOLUTE, AbsoluteAxisCode::ABS_Y.0, y)])?;
         Ok(())
     }
     fn button(&mut self, button: MouseButton, down: bool) -> Result<()> {

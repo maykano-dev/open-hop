@@ -49,6 +49,8 @@ fn x() -> Option<&'static Mutex<X>> {
             "_NET_WM_STATE_HIDDEN",
             "_NET_WM_STATE_SKIP_TASKBAR",
             "_GTK_FRAME_EXTENTS",
+            "_NET_FRAME_EXTENTS",
+            "_NET_WM_MOVERESIZE",
             "_NET_WM_WINDOW_OPACITY",
             "_OPENHOP_HIDDEN",
         ];
@@ -56,12 +58,8 @@ fn x() -> Option<&'static Mutex<X>> {
         for n in names {
             atoms.insert(n, conn.intern_atom(false, n.as_bytes()).ok()?.reply().ok()?.atom);
         }
-        let composite = conn
-            .composite_query_version(0, 4)
-            .ok()
-            .and_then(|c| c.reply().ok())
-            .map(|r| r.major_version > 0 || r.minor_version >= 2)
-            .unwrap_or(false);
+        let composite =
+            conn.composite_query_version(0, 4).ok().and_then(|c| c.reply().ok()).map(|r| r.major_version > 0 || r.minor_version >= 2).unwrap_or(false);
         let shm_ok = {
             use x11rb::protocol::shm::ConnectionExt as _;
             conn.shm_query_version().ok().and_then(|c| c.reply().ok()).map(|r| (r.major_version, r.minor_version) >= (1, 2)).unwrap_or(false)
@@ -91,9 +89,7 @@ impl X {
     }
 
     fn title(&self, w: Window) -> String {
-        self.text(w, self.a("_NET_WM_NAME"), self.a("UTF8_STRING"))
-            .or_else(|| self.text(w, AtomEnum::WM_NAME.into(), AtomEnum::ANY.into()))
-            .unwrap_or_default()
+        self.text(w, self.a("_NET_WM_NAME"), self.a("UTF8_STRING")).or_else(|| self.text(w, AtomEnum::WM_NAME.into(), AtomEnum::ANY.into())).unwrap_or_default()
     }
 
     fn app(&self, w: Window) -> String {
@@ -158,20 +154,58 @@ impl X {
         Some(r)
     }
 
-    fn picture(&mut self, w: Window) -> Option<Picture> {
-        let full = self.conn.get_geometry(w).ok()?.reply().ok()?;
+    /// The window manager's title bar and borders: (left, right, top, bottom).
+    fn frame_extents(&self, w: Window) -> (i32, i32, i32, i32) {
+        let e = self.prop32(w, "_NET_FRAME_EXTENTS", AtomEnum::CARDINAL);
+        if e.len() == 4 && e.iter().all(|v| *v < 400) {
+            (e[0] as i32, e[1] as i32, e[2] as i32, e[3] as i32)
+        } else {
+            (0, 0, 0, 0)
+        }
+    }
+
+    /// The whole window as you see it: content plus the window manager's
+    /// title bar and borders.
+    fn full_rect(&self, w: Window) -> Option<Rect> {
         let r = self.rect(w)?;
+        let (l, rr, t, b) = self.frame_extents(w);
+        Some(Rect { x: r.x - l, y: r.y - t, w: r.w + l + rr, h: r.h + t + b })
+    }
+
+    /// Height of the title bar at the top of `full_rect`.
+    fn bar(&self, w: Window) -> i32 {
+        let (_, _, t, _) = self.frame_extents(w);
+        if t > 0 {
+            t
+        } else if self.prop32(w, "_GTK_FRAME_EXTENTS", AtomEnum::CARDINAL).len() == 4 {
+            // The app draws its own (GTK header bar).
+            46
+        } else {
+            0
+        }
+    }
+
+    fn picture(&mut self, client: Window) -> Option<Picture> {
+        let r = self.full_rect(client)?;
+        // With a window manager frame, take the picture of the frame (it
+        // holds the title bar and the app's window).
+        let decorated = self.frame_extents(client) != (0, 0, 0, 0);
+        let w = if decorated { self.toplevel(client) } else { client };
+        let full = self.conn.get_geometry(w).ok()?.reply().ok()?;
         let t = self.conn.translate_coordinates(w, self.root, 0, 0).ok()?.reply().ok()?;
-        let (ox, oy) = ((r.x - t.dst_x as i32) as i16, (r.y - t.dst_y as i32) as i16);
+        let (ox, oy) = ((r.x - t.dst_x as i32).max(0) as i16, (r.y - t.dst_y as i32).max(0) as i16);
+        let r = Rect { x: r.x, y: r.y, w: r.w.min(full.width as i32 - ox as i32), h: r.h.min(full.height as i32 - oy as i32) };
+        if r.w <= 0 || r.h <= 0 {
+            return None;
+        }
         let depth = full.depth;
         // With Composite the picture is right even if other windows cover it.
         let mut source: Drawable = w;
         let mut pixmap = None;
         if self.composite {
-            if !self.redirected.contains(&w)
-                && self.conn.composite_redirect_window(w, composite::Redirect::AUTOMATIC).is_ok() {
-                    self.redirected.push(w);
-                }
+            if !self.redirected.contains(&w) && self.conn.composite_redirect_window(w, composite::Redirect::AUTOMATIC).is_ok() {
+                self.redirected.push(w);
+            }
             if let Ok(p) = self.conn.generate_id() {
                 if self.conn.composite_name_window_pixmap(w, p).is_ok() {
                     pixmap = Some(p);
@@ -237,7 +271,9 @@ impl X {
     fn toplevel(&self, w: Window) -> Window {
         let mut cur = w;
         for _ in 0..16 {
-            let Some(t) = self.conn.query_tree(cur).ok().and_then(|c| c.reply().ok()) else { break };
+            let Some(t) = self.conn.query_tree(cur).ok().and_then(|c| c.reply().ok()) else {
+                break;
+            };
             if t.parent == self.root || t.parent == NONE {
                 return cur;
             }
@@ -255,7 +291,7 @@ pub fn list() -> Vec<WinInfo> {
         .into_iter()
         .filter(|&w| x.is_listed(w))
         .filter_map(|w| {
-            let r = x.rect(w)?;
+            let r = x.full_rect(w)?;
             Some(WinInfo { id: w as u64, title: x.title(w), app: x.app(w), w: r.w, h: r.h })
         })
         .filter(|w| !w.title.is_empty())
@@ -269,7 +305,45 @@ pub fn capture(id: u64) -> Option<Picture> {
 }
 
 pub fn geometry(id: u64) -> Option<Rect> {
-    x()?.lock().rect(id as Window)
+    x()?.lock().full_rect(id as Window)
+}
+
+pub fn bar_height(id: u64) -> i32 {
+    x().map(|x| x.lock().bar(id as Window)).unwrap_or(0)
+}
+
+pub fn raise(id: u64) {
+    let Some(x) = x() else { return };
+    let x = x.lock();
+    let top = x.toplevel(id as Window);
+    let _ = x.conn.configure_window(top, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE));
+    let _ = x.conn.flush();
+}
+
+/// Put the window's top-left corner (title bar included) at (px, py).
+pub fn move_to(id: u64, px: i32, py: i32) {
+    let Some(x) = x() else { return };
+    let x = x.lock();
+    let w = id as Window;
+    // Positions given to the window manager are the frame's corner
+    // (NorthWest gravity); GTK windows also have invisible shadow margins.
+    let ext = x.prop32(w, "_GTK_FRAME_EXTENTS", AtomEnum::CARDINAL);
+    let (sl, st) = if ext.len() == 4 { (ext[0] as i32, ext[2] as i32) } else { (0, 0) };
+    let _ = x.conn.configure_window(w, &ConfigureWindowAux::new().x(px - sl).y(py - st));
+    let _ = x.conn.flush();
+}
+
+/// The mouse button is held over the title bar: let the window manager
+/// carry the window with the mouse from here.
+pub fn begin_move(id: u64, px: i32, py: i32) {
+    let Some(x) = x() else { return };
+    let x = x.lock();
+    let w = id as Window;
+    // _NET_WM_MOVERESIZE_MOVE with button 1, from a normal application.
+    let _ = x.conn.ungrab_pointer(x11rb::CURRENT_TIME);
+    let ev = ClientMessageEvent::new(32, w, x.a("_NET_WM_MOVERESIZE"), [px as u32, py as u32, 8, 1, 1]);
+    let _ = x.conn.send_event(false, x.root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ev);
+    let _ = x.conn.flush();
 }
 
 pub fn activate(id: u64) {
@@ -289,11 +363,15 @@ pub fn titlebar_window_at(px: i32, py: i32) -> Option<u64> {
     // Front-most listed window containing the point.
     let clients: Vec<Window> = x.clients().into_iter().rev().filter(|&w| x.is_listed(w)).collect();
     for w in clients {
-        let Some(r) = x.rect(w) else { continue };
-        // The title bar is drawn by the window manager just above the window,
-        // or by the app itself (GTK header bars) in its top 50 pixels.
-        if px >= r.x - 2 && px <= r.x + r.w + 2 && py >= r.y - 48 && py <= r.y + r.h {
-            if py < r.y + 50 {
+        let Some(r) = x.full_rect(w) else { continue };
+        // The title bar is drawn by the window manager at the top of the
+        // window, or by the app itself (GTK header bars).
+        if px >= r.x - 2 && px <= r.x + r.w + 2 && py >= r.y - 2 && py <= r.y + r.h {
+            let bar = match x.bar(w) {
+                0 => 50,
+                b => b + 4,
+            };
+            if py < r.y + bar {
                 return Some(w as u64);
             }
             return None;
@@ -337,10 +415,15 @@ pub fn resize(id: u64, w: i32, h: i32) {
     let Some(x) = x() else { return };
     let x = x.lock();
     let win = id as Window;
-    // GTK draws shadows around its windows: the content is smaller.
+    // `w`×`h` includes the title bar and borders; GTK windows also have
+    // shadows around them that aren't part of what's shown.
     let ext = x.prop32(win, "_GTK_FRAME_EXTENTS", AtomEnum::CARDINAL);
     let (ew, eh) = if ext.len() == 4 { ((ext[0] + ext[1]) as i32, (ext[2] + ext[3]) as i32) } else { (0, 0) };
-    let _ = x.conn.configure_window(win, &ConfigureWindowAux::new().width((w + ew) as u32).height((h + eh) as u32));
+    let (l, r, t, b) = x.frame_extents(win);
+    let (cw, ch) = (w - l - r + ew, h - t - b + eh);
+    if cw > 0 && ch > 0 {
+        let _ = x.conn.configure_window(win, &ConfigureWindowAux::new().width(cw as u32).height(ch as u32));
+    }
     let _ = x.conn.flush();
 }
 

@@ -137,4 +137,9 @@ command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -q "Status
   info "ufw firewall is active: opening OpenHop's ports"
   $SUDO ufw allow 24850:24890/tcp >/dev/null && $SUDO ufw allow 24851/udp >/dev/null
 }
+# Wi-Fi power saving delays keystrokes on the other computers: turn it off.
+if [ -d /etc/NetworkManager/conf.d ] && [ ! -f /etc/NetworkManager/conf.d/60-openhop-wifi-powersave.conf ]; then
+  printf '[connection]\nwifi.powersave = 2\n' | $SUDO tee /etc/NetworkManager/conf.d/60-openhop-wifi-powersave.conf >/dev/null 2>&1 || true
+  command -v iw >/dev/null 2>&1 && for dev in $(iw dev 2>/dev/null | awk '/Interface/ {print $2}'); do $SUDO iw dev "$dev" set power_save off 2>/dev/null || true; done
+fi
 exit 0

@@ -67,10 +67,7 @@ pub fn decode_png(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
 pub fn start() -> (Sender<ClipData>, Receiver<ClipData>) {
     let (set_tx, set_rx) = crossbeam_channel::unbounded::<ClipData>();
     let (changed_tx, changed_rx) = crossbeam_channel::unbounded::<ClipData>();
-    std::thread::Builder::new()
-        .name("clipboard".into())
-        .spawn(move || run(set_rx, changed_tx))
-        .expect("spawn clipboard");
+    std::thread::Builder::new().name("clipboard".into()).spawn(move || run(set_rx, changed_tx)).expect("spawn clipboard");
     (set_tx, changed_rx)
 }
 
@@ -225,14 +222,19 @@ impl Clip {
             image = cb.get_image().ok();
             image.is_some()
         };
-        choose(files, has_image, || {
-            let img = image?;
-            if img.bytes.len() <= MAX_IMAGE_BYTES && img.width > 0 && img.height > 0 {
-                encode_png(img.width, img.height, &img.bytes)
-            } else {
-                None
-            }
-        }, text)
+        choose(
+            files,
+            has_image,
+            || {
+                let img = image?;
+                if img.bytes.len() <= MAX_IMAGE_BYTES && img.width > 0 && img.height > 0 {
+                    encode_png(img.width, img.height, &img.bytes)
+                } else {
+                    None
+                }
+            },
+            text,
+        )
     }
 
     /// Cheap text-only poll for systems without change notifications.
@@ -393,7 +395,9 @@ mod native {
         for (i, f) in files.iter().enumerate() {
             let p = f.canonicalize().unwrap_or_else(|_| f.clone());
             let url = NSURL::fileURLWithPath(&NSString::from_str(&p.to_string_lossy()));
-            let Some(s) = url.absoluteString() else { continue };
+            let Some(s) = url.absoluteString() else {
+                continue;
+            };
             let item = NSPasteboardItem::new();
             unsafe {
                 item.setString_forType(&s, NSPasteboardTypeFileURL);
@@ -443,9 +447,7 @@ fn change_counter() -> Option<ChangeCounter> {
     let root = conn.setup().roots[n].root;
     conn.xfixes_query_version(5, 0).ok()?.reply().ok()?;
     let clipboard = conn.intern_atom(false, b"CLIPBOARD").ok()?.reply().ok()?.atom;
-    let mask = SelectionEventMask::SET_SELECTION_OWNER
-        | SelectionEventMask::SELECTION_WINDOW_DESTROY
-        | SelectionEventMask::SELECTION_CLIENT_CLOSE;
+    let mask = SelectionEventMask::SET_SELECTION_OWNER | SelectionEventMask::SELECTION_WINDOW_DESTROY | SelectionEventMask::SELECTION_CLIENT_CLOSE;
     conn.xfixes_select_selection_input(root, clipboard, mask).ok()?;
     conn.flush().ok()?;
     let mut counter = 1u64;
@@ -511,9 +513,7 @@ fn run(set_rx: Receiver<ClipData>, changed_tx: Sender<ClipData>) {
                     }
                     // No notifications: text is cheap to poll, everything else every ~2 s.
                     None => match cb.quick_text() {
-                        Some(t) if !t.is_empty() && t.len() <= MAX_TEXT_BYTES && !looks_like_file_uris(&t) && !is_reference(&t) => {
-                            Some(ClipData::Text(t))
-                        }
+                        Some(t) if !t.is_empty() && t.len() <= MAX_TEXT_BYTES && !looks_like_file_uris(&t) && !is_reference(&t) => Some(ClipData::Text(t)),
                         _ if polls.is_multiple_of(5) => cb.read(),
                         _ => None,
                     },
@@ -523,7 +523,9 @@ fn run(set_rx: Receiver<ClipData>, changed_tx: Sender<ClipData>) {
                     if Some(h) != last {
                         last = Some(h);
                         match &d {
-                            ClipData::Png(p) => log::info!("copied an image ({} KB)", p.len() / 1024),
+                            ClipData::Png(p) => {
+                                log::info!("copied an image ({} KB)", p.len() / 1024)
+                            }
                             ClipData::Files(f) => log::info!("copied {} file(s)", f.len()),
                             ClipData::Text(_) => log::debug!("copied text"),
                         }
@@ -551,7 +553,9 @@ pub fn inspect() -> String {
     match cb.read() {
         Some(ClipData::Files(f)) => out.push_str(&format!("OpenHop would send {} file(s): {}\n", f.len(), f.join(", "))),
         Some(ClipData::Png(p)) => out.push_str(&format!("OpenHop would send an image ({} KB)\n", p.len() / 1024)),
-        Some(ClipData::Text(t)) => out.push_str(&format!("OpenHop would send text ({} chars): {:?}\n", t.chars().count(), t.chars().take(80).collect::<String>())),
+        Some(ClipData::Text(t)) => {
+            out.push_str(&format!("OpenHop would send text ({} chars): {:?}\n", t.chars().count(), t.chars().take(80).collect::<String>()))
+        }
         None => out.push_str("OpenHop would send nothing\n"),
     }
     out

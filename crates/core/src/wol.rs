@@ -5,7 +5,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 /// MAC address of the network interface that owns `local_ip`
 /// (the address this computer uses to talk to the server).
 pub fn mac_for_ip(local_ip: IpAddr) -> Option<String> {
-    let IpAddr::V4(v4) = local_ip else { return None };
+    let IpAddr::V4(v4) = local_ip else {
+        return None;
+    };
     netdev::get_interfaces()
         .into_iter()
         .find(|i| i.ipv4.iter().any(|n| n.addr() == v4))
@@ -30,9 +32,13 @@ pub fn magic_packet(mac: [u8; 6]) -> Vec<u8> {
 /// Send the magic packet to the LAN broadcast address and, if known, the
 /// computer's last address (some routers drop global broadcasts).
 pub fn wake(mac: &str, last_ip: Option<IpAddr>) -> bool {
-    let Some(mac) = parse_mac(mac) else { return false };
+    let Some(mac) = parse_mac(mac) else {
+        return false;
+    };
     let packet = magic_packet(mac);
-    let Ok(sock) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else { return false };
+    let Ok(sock) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
+        return false;
+    };
     let _ = sock.set_broadcast(true);
     let mut targets = vec![SocketAddr::from((Ipv4Addr::BROADCAST, 9))];
     if let Some(IpAddr::V4(ip)) = last_ip {

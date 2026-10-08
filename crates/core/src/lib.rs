@@ -13,6 +13,7 @@ pub mod keys;
 pub mod layout;
 pub mod net;
 pub mod platform;
+pub mod portfree;
 pub mod protocol;
 pub mod wins;
 pub mod wol;

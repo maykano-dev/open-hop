@@ -36,6 +36,12 @@ mod imp {
     pub fn lower(_: u64) {}
     pub fn resize(_: u64, _: i32, _: i32) {}
     pub fn restore_all() {}
+    pub fn bar_height(_: u64) -> i32 {
+        0
+    }
+    pub fn raise(_: u64) {}
+    pub fn move_to(_: u64, _: i32, _: i32) {}
+    pub fn begin_move(_: u64, _: i32, _: i32) {}
 }
 
 /// A picture of a window: BGRA (what every OS hands out), top row first.
@@ -58,7 +64,8 @@ pub fn capture(id: u64) -> Option<Picture> {
     imp::capture(id).filter(|p| p.w > 0 && p.h > 0 && p.bgra.len() == (p.w * p.h * 4) as usize)
 }
 
-/// Where the captured area is on screen (native coordinates).
+/// Where the window is on screen, title bar included (native coordinates).
+/// That's also what's captured.
 pub fn geometry(id: u64) -> Option<Rect> {
     imp::geometry(id)
 }
@@ -95,4 +102,26 @@ pub fn resize(id: u64, w: i32, h: i32) {
 /// Show any windows a previous run left hidden (e.g. after a crash).
 pub fn restore_all() {
     imp::restore_all()
+}
+
+/// Height of the window's title bar (pixels at the top of its picture),
+/// 0 if unknown.
+pub fn bar_height(id: u64) -> i32 {
+    imp::bar_height(id)
+}
+
+/// Put the window above the others (without moving the keyboard focus).
+pub fn raise(id: u64) {
+    imp::raise(id)
+}
+
+/// Put the window's top-left corner (title bar included) at (x, y).
+pub fn move_to(id: u64, x: i32, y: i32) {
+    imp::move_to(id, x, y)
+}
+
+/// The left button is held over the window's title bar at (x, y): the
+/// window follows the mouse from now on, as if picked up there.
+pub fn begin_move(id: u64, x: i32, y: i32) {
+    imp::begin_move(id, x, y)
 }

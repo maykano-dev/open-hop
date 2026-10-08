@@ -5,11 +5,11 @@ use anyhow::Result;
 use crossbeam_channel::Sender;
 use std::sync::Arc;
 
+pub mod dnd;
 #[cfg(target_os = "linux")]
 mod linux_uinput;
 #[cfg(target_os = "linux")]
 mod linux_x11;
-pub mod dnd;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
@@ -56,6 +56,11 @@ pub trait Capture: Send + Sync {
     /// focused over there). Only needed where our own input can't get past
     /// the capture.
     fn keyboard_passthrough(&self, _on: bool) {}
+    /// Our own injected mouse button can't be held down on its own while
+    /// the mouse is captured: inject whole clicks (see `Hub::set_injector`).
+    fn whole_clicks(&self) -> bool {
+        false
+    }
     /// Current local desktop bounds.
     fn screen(&self) -> Rect;
 }
@@ -200,8 +205,7 @@ pub fn create_injector(override_screen: Option<Rect>, linux_backend: &str) -> Re
 
 #[cfg(target_os = "linux")]
 pub fn linux_is_wayland() -> bool {
-    std::env::var("XDG_SESSION_TYPE").map(|s| s == "wayland").unwrap_or(false)
-        || std::env::var_os("WAYLAND_DISPLAY").is_some()
+    std::env::var("XDG_SESSION_TYPE").map(|s| s == "wayland").unwrap_or(false) || std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
 /// Accumulates fractional wheel movement into whole notches for platforms

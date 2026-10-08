@@ -3086,7 +3086,7 @@ dependencies = [
 
 [[package]]
 name = "openhop-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "openhop-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3119,7 +3119,7 @@ dependencies = [
 
 [[package]]
 name = "openhop-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arboard",

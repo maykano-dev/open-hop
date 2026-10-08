@@ -1,4 +1,4 @@
-//! Small OS integrations: dark mode, Do Not Disturb / presenting, battery.
+//! Small OS integrations: dark mode, Do Not Disturb / presenting.
 //! All best-effort: anything the OS doesn't expose returns None and is skipped.
 
 #[allow(dead_code)]
@@ -142,49 +142,6 @@ fn linux_fullscreen() -> Option<bool> {
     Some(st.contains(&full))
 }
 
-// ------------------------------------------------------------- battery
-
-/// (percent, charging) if this computer has a battery.
-pub fn battery() -> Option<(u8, bool)> {
-    #[cfg(target_os = "linux")]
-    {
-        for e in std::fs::read_dir("/sys/class/power_supply").ok()?.flatten() {
-            let p = e.path();
-            if std::fs::read_to_string(p.join("type")).map(|t| t.trim() == "Battery").unwrap_or(false) {
-                let pct = std::fs::read_to_string(p.join("capacity")).ok()?.trim().parse::<u8>().ok()?;
-                let status = std::fs::read_to_string(p.join("status")).unwrap_or_default();
-                return Some((pct, status.trim() != "Discharging"));
-            }
-        }
-        return None;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let s = run("pmset", &["-g", "batt"])?;
-        let line = s.lines().find(|l| l.contains('%'))?;
-        let pct: u8 = line.split('%').next()?.rsplit(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
-        return Some((pct, !line.contains("discharging")));
-    }
-    #[cfg(windows)]
-    {
-        use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
-        let mut st = SYSTEM_POWER_STATUS::default();
-        unsafe { GetSystemPowerStatus(&mut st).ok()? };
-        // 128 = no battery, 255 = unknown
-        if st.BatteryFlag & 128 != 0 || st.BatteryLifePercent > 100 {
-            return None;
-        }
-        return Some((st.BatteryLifePercent, st.ACLineStatus == 1));
-    }
-    #[allow(unreachable_code)]
-    None
-}
-
-/// Low enough to save power: under 20% and not charging.
-pub fn battery_low() -> bool {
-    matches!(battery(), Some((p, false)) if p < 20)
-}
-
 #[cfg(windows)]
 mod win {
     use windows::core::{HSTRING, PCWSTR};
@@ -196,7 +153,15 @@ mod win {
         let mut v = 0u32;
         let mut len = 4u32;
         let r = unsafe {
-            RegGetValueW(HKEY_CURRENT_USER, &HSTRING::from(key), &HSTRING::from(name), RRF_RT_REG_DWORD, None, Some(&mut v as *mut u32 as *mut _), Some(&mut len))
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                &HSTRING::from(key),
+                &HSTRING::from(name),
+                RRF_RT_REG_DWORD,
+                None,
+                Some(&mut v as *mut u32 as *mut _),
+                Some(&mut len),
+            )
         };
         r.is_ok().then_some(v)
     }

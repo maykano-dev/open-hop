@@ -68,17 +68,21 @@ fn open_viewer(handle: &AppHandle, stream: u64, origin: &str, title: &str, w: i3
     vw *= k;
     vh *= k;
     let url = format!("viewer.html?s={stream}&o={}&t={}", enc(origin), enc(title));
+    // No frame of our own: the picture already has the window's own title
+    // bar, so it looks (and moves) like the original.
     let mut b = WebviewWindowBuilder::new(handle, &label, WebviewUrl::App(url.into()))
         .title(title)
         .inner_size(vw, vh)
-        .min_inner_size(240.0, 160.0)
+        .min_inner_size(160.0, 100.0)
+        .decorations(false)
+        .shadow(true)
         .focused(true);
     b = match at {
         // Dragged across: put its title bar under the pointer, as if still held.
         Some((x, y)) => {
             let (lx, ly) = to_logical(handle, x, y);
-            let x = (lx - vw / 2.0).clamp(0.0, (mw - vw).max(0.0));
-            let y = (ly - 16.0).clamp(0.0, (mh - vh).max(0.0));
+            let x = (lx - vw / 2.0).clamp(-vw + 80.0, (mw - 80.0).max(0.0));
+            let y = (ly - 14.0).clamp(0.0, (mh - 40.0).max(0.0));
             b.position(x, y)
         }
         None => b.center(),
@@ -89,7 +93,9 @@ fn open_viewer(handle: &AppHandle, stream: u64, origin: &str, title: &str, w: i3
 }
 
 fn show_fx(handle: &AppHandle, x: i32, y: i32, payload: serde_json::Value) {
-    let Some(w) = handle.get_webview_window("fx") else { return };
+    let Some(w) = handle.get_webview_window("fx") else {
+        return;
+    };
     let (lx, ly) = to_logical(handle, x, y);
     let _ = w.set_position(LogicalPosition::new(lx - FX_SIZE / 2.0, ly - FX_SIZE / 2.0));
     let _ = w.show();
@@ -202,7 +208,8 @@ pub fn win_input(app: State<App>, stream: String, ev: WinEvent) {
 
 /// The next updates of a live window, as bytes (little-endian):
 /// kind u8 (0 updates, 1 paused, 2 closed, 3 nothing new), then for kind 0:
-/// count u16, and per update: seq u64, w u32, h u32, title (u16 length +
+/// count u16, and per update: seq u64, w u32, h u32, title bar height u32,
+/// title (u16 length +
 /// UTF-8), patch count u16, per patch x, y, w, h, length (u32) + JPEG.
 /// Kind 1 carries the pause reason as a u16-length string.
 #[tauri::command]
@@ -224,6 +231,7 @@ pub async fn win_frame(app: State<'_, App>, stream: String, after: String) -> Re
                 out.extend_from_slice(&f.seq.to_le_bytes());
                 out.extend_from_slice(&f.w.to_le_bytes());
                 out.extend_from_slice(&f.h.to_le_bytes());
+                out.extend_from_slice(&f.bar.to_le_bytes());
                 text(&mut out, &f.title);
                 out.extend_from_slice(&(f.patches.len() as u16).to_le_bytes());
                 for p in f.patches.iter() {
@@ -276,7 +284,21 @@ pub fn dock_hide(handle: AppHandle) {
     }
 }
 
+fn stream_of(window: &tauri::WebviewWindow) -> Option<u64> {
+    window.label().strip_prefix("view-").and_then(|s| s.parse().ok())
+}
+
+/// A live window is being picked up by its title bar (`on`), or was put
+/// down. While it's held, carrying it off the screen moves it to the next
+/// computer (or back home).
 #[tauri::command]
-pub fn play_sound(kind: String, volume: u32) {
-    openhop_core::extras::sound::play(&kind, volume);
+pub fn viewer_drag(app: State<App>, window: tauri::WebviewWindow, on: bool) {
+    if let (Some(hub), Some(s)) = (hub(&app), stream_of(&window)) {
+        hub.viewer_drag(s, on);
+    }
+    if on {
+        if let Err(e) = window.start_dragging() {
+            log::debug!("couldn't move the live window: {e}");
+        }
+    }
 }

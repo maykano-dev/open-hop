@@ -97,10 +97,10 @@ mod imp {
         AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, KeyButMask, PropMode, SelectionNotifyEvent, WindowClass,
         SELECTION_NOTIFY_EVENT,
     };
-    use x11rb::wrapper::ConnectionExt as _;
     use x11rb::protocol::xtest::ConnectionExt as _;
     use x11rb::protocol::Event;
     use x11rb::rust_connection::RustConnection;
+    use x11rb::wrapper::ConnectionExt as _;
     use x11rb::{CURRENT_TIME, NONE};
 
     struct X {
@@ -164,12 +164,7 @@ mod imp {
     pub fn left_button_down() -> bool {
         let Some(x) = x() else { return false };
         let x = x.lock();
-        x.conn
-            .query_pointer(x.root)
-            .ok()
-            .and_then(|c| c.reply().ok())
-            .map(|r| u16::from(r.mask) & u16::from(KeyButMask::BUTTON1) != 0)
-            .unwrap_or(false)
+        x.conn.query_pointer(x.root).ok().and_then(|c| c.reply().ok()).map(|r| u16::from(r.mask) & u16::from(KeyButMask::BUTTON1) != 0).unwrap_or(false)
     }
 
     pub fn drag_files() -> Option<Vec<PathBuf>> {
@@ -201,7 +196,6 @@ mod imp {
         }
         None
     }
-
 
     fn atoms(conn: &RustConnection, names: &[&str]) -> Option<Vec<u32>> {
         let cookies: Vec<_> = names.iter().map(|n| conn.intern_atom(false, n.as_bytes())).collect::<Result<_, _>>().ok()?;
@@ -240,15 +234,34 @@ mod imp {
     }
 
     pub fn drop_files(files: &[PathBuf]) -> bool {
-        let Ok((conn, n)) = x11rb::connect(None) else { return false };
+        let Ok((conn, n)) = x11rb::connect(None) else {
+            return false;
+        };
         let root = conn.setup().roots[n].root;
         let names = [
-            "XdndAware", "XdndProxy", "XdndSelection", "XdndEnter", "XdndPosition", "XdndStatus", "XdndDrop", "XdndFinished",
-            "XdndLeave", "XdndActionCopy", "text/uri-list", "TARGETS", "x-special/gnome-copied-files",
+            "XdndAware",
+            "XdndProxy",
+            "XdndSelection",
+            "XdndEnter",
+            "XdndPosition",
+            "XdndStatus",
+            "XdndDrop",
+            "XdndFinished",
+            "XdndLeave",
+            "XdndActionCopy",
+            "text/uri-list",
+            "TARGETS",
+            "x-special/gnome-copied-files",
         ];
-        let Some(a) = atoms(&conn, &names) else { return false };
-        let [aware, proxy, selection, enter, position, status, drop, finished, leave, copy, uri_list, targets, gnome] = a[..] else { return false };
-        let Ok(win) = conn.generate_id() else { return false };
+        let Some(a) = atoms(&conn, &names) else {
+            return false;
+        };
+        let [aware, proxy, selection, enter, position, status, drop, finished, leave, copy, uri_list, targets, gnome] = a[..] else {
+            return false;
+        };
+        let Ok(win) = conn.generate_id() else {
+            return false;
+        };
         if conn.create_window(0, win, root, -10, -10, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &CreateWindowAux::new()).is_err() {
             return false;
         }
@@ -263,7 +276,9 @@ mod imp {
             log::debug!("no drop target under the pointer");
             return done(false);
         };
-        let Some(p) = conn.query_pointer(root).ok().and_then(|c| c.reply().ok()) else { return done(false) };
+        let Some(p) = conn.query_pointer(root).ok().and_then(|c| c.reply().ok()) else {
+            return done(false);
+        };
         let (x, y) = (p.root_x as u32 & 0xffff, p.root_y as u32 & 0xffff);
         let uris: String = files.iter().map(|f| format!("{}\r\n", crate::clipboard::file_uri(f))).collect();
         log::debug!("XDND drop on window {target:#x} (version {version})");
@@ -286,7 +301,9 @@ mod imp {
                     "xdnd: request for {:?}",
                     conn.get_atom_name(r.target).ok().and_then(|c| c.reply().ok()).map(|r| String::from_utf8_lossy(&r.name).into_owned())
                 ),
-                Event::ClientMessage(m) => log::trace!("xdnd: message {} {:?}", m.type_, m.data.as_data32()),
+                Event::ClientMessage(m) => {
+                    log::trace!("xdnd: message {} {:?}", m.type_, m.data.as_data32())
+                }
                 _ => {}
             }
             match ev {
@@ -352,7 +369,9 @@ mod imp {
         let screen = &conn.setup().roots[n];
         let root = screen.root;
         let a = atoms(&conn, &["XdndAware", "XdndSelection", "XdndPosition", "XdndStatus", "text/uri-list", "OPENHOP_DND"])?;
-        let [aware, selection, position, status, uri_list, prop] = a[..] else { return None };
+        let [aware, selection, position, status, uri_list, prop] = a[..] else {
+            return None;
+        };
         let win = conn.generate_id().ok()?;
         let size = 24u16;
         conn.create_window(
@@ -514,8 +533,7 @@ mod imp {
     use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, MOUSEINPUT,
-        MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
     };
     use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
     use windows::Win32::UI::WindowsAndMessaging::*;
@@ -594,7 +612,14 @@ mod imp {
                         class,
                         w!("OpenHop drop"),
                         WS_POPUP,
-                        0, 0, 1, 1, None, None, Some(hinst), None,
+                        0,
+                        0,
+                        1,
+                        1,
+                        None,
+                        None,
+                        Some(hinst),
+                        None,
                     ) else {
                         let _ = tx.send(None);
                         return;
@@ -684,7 +709,6 @@ mod imp {
     }
 }
 
-
 // ------------------------------------------------------------------ Windows drop
 #[cfg(windows)]
 mod win_drop {
@@ -698,7 +722,9 @@ mod win_drop {
     use windows::core::{implement, BOOL, HRESULT, HSTRING};
     use windows::Win32::Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK};
     use windows::Win32::System::Com::IDataObject;
-    use windows::Win32::System::Ole::{DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE};
+    use windows::Win32::System::Ole::{
+        DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE,
+    };
     use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
     use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT, MOUSE_EVENT_FLAGS};
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
@@ -792,9 +818,13 @@ mod win_drop {
     pub fn drop_files(files: &[PathBuf]) -> bool {
         let files = files.to_vec();
         let (tx, rx) = crossbeam_channel::bounded(1);
-        if std::thread::Builder::new().name("ole-drop".into()).spawn(move || {
-            let _ = tx.send(run(files));
-        }).is_err() {
+        if std::thread::Builder::new()
+            .name("ole-drop".into())
+            .spawn(move || {
+                let _ = tx.send(run(files));
+            })
+            .is_err()
+        {
             return false;
         }
         rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false)

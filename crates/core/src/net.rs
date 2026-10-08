@@ -96,8 +96,7 @@ pub fn handshake(mut stream: TcpStream, psk: &[u8; 32], initiator: bool) -> Resu
         let n = hs.write_message(&[], &mut msg)?;
         write_frame(&mut stream, &msg[..n])?;
         read_frame(&mut stream, &mut frame)?;
-        hs.read_message(&frame, &mut payload)
-            .map_err(|_| anyhow!("handshake failed: passphrase does not match"))?;
+        hs.read_message(&frame, &mut payload).map_err(|_| anyhow!("handshake failed: passphrase does not match"))?;
     } else {
         read_frame(&mut stream, &mut frame)?;
         hs.read_message(&frame, &mut payload)?;
@@ -185,10 +184,7 @@ impl SecureReceiver {
                 }
             }
             read_frame(&mut self.stream, &mut frame).context("connection closed")?;
-            let n = self
-                .transport
-                .read_message(self.nonce, &frame, &mut buf)
-                .map_err(|_| anyhow!("decryption failed"))?;
+            let n = self.transport.read_message(self.nonce, &frame, &mut buf).map_err(|_| anyhow!("decryption failed"))?;
             self.nonce += 1;
             self.plain.extend_from_slice(&buf[..n]);
         }

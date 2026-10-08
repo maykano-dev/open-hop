@@ -58,7 +58,7 @@ function render(snap) {
 async function refresh() {
   try {
     const s = await invoke("snapshot");
-    window.OpenHopTheme.apply(s.config.ui_appearance, s.config.ui_accent);
+    window.OpenHopTheme.apply(null, s.config.ui_accent, s.system_dark);
     render(s);
   } catch (e) { console.warn(e); }
 }
@@ -75,7 +75,7 @@ refresh();
 setInterval(refresh, 1000);
 
 function demo() {
-  const snap = { config: { ui_appearance: "system", ui_accent: "blue" }, status: { name: "desk-pc", windows: [
+  const snap = { config: { ui_accent: "blue" }, status: { name: "desk-pc", windows: [
     { name: "desk-pc", windows: [{ id: 1, title: "Inbox — Mail", app: "Thunderbird" }, { id: 2, title: "main.rs — open-hop", app: "Code" }] },
     { name: "macbook", windows: [{ id: 3, title: "Design review.key", app: "Keynote" }, { id: 4, title: "Spotify", app: "Spotify" }, { id: 5, title: "Safari — OpenHop", app: "Safari" }] },
     { name: "ubuntu-box", windows: [{ id: 6, title: "Terminal", app: "gnome-terminal" }, { id: 7, title: "Files", app: "Nautilus" }] },

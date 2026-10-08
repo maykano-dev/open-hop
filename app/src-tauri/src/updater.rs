@@ -51,11 +51,7 @@ struct Asset {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(30)))
-        .user_agent(format!("OpenHop/{}", current()))
-        .build()
-        .into()
+    ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(30))).user_agent(format!("OpenHop/{}", current())).build().into()
 }
 
 /// How this copy of OpenHop was installed, which decides the installer to fetch.
@@ -79,9 +75,7 @@ fn install_kind() -> Kind {
         return Kind::AppImage;
     }
     let exe = std::env::current_exe().unwrap_or_default();
-    let owned_by = |tool: &str, args: &[&str]| {
-        std::process::Command::new(tool).args(args).arg(&exe).output().map(|o| o.status.success()).unwrap_or(false)
-    };
+    let owned_by = |tool: &str, args: &[&str]| std::process::Command::new(tool).args(args).arg(&exe).output().map(|o| o.status.success()).unwrap_or(false);
     if owned_by("dpkg", &["-S"]) {
         Kind::LinuxDeb
     } else if owned_by("rpm", &["-qf"]) {
@@ -111,11 +105,7 @@ fn newer(latest: &str, current: &str) -> bool {
 }
 
 fn fetch_release() -> Result<Release> {
-    let mut resp = agent()
-        .get(LATEST)
-        .header("Accept", "application/vnd.github+json")
-        .call()
-        .context("couldn't reach GitHub")?;
+    let mut resp = agent().get(LATEST).header("Accept", "application/vnd.github+json").call().context("couldn't reach GitHub")?;
     Ok(resp.body_mut().read_json::<Release>()?)
 }
 
@@ -205,14 +195,7 @@ fn launch_installer(kind: Kind, file: &Path) -> Result<()> {
             use std::os::windows::process::CommandExt;
             // Wait for OpenHop to quit, install silently, then reopen it.
             let script = file.with_extension("cmd");
-            std::fs::write(
-                &script,
-                format!(
-                    "@echo off\r\ntimeout /t 2 /nobreak >nul\r\n\"{}\" /S\r\nstart \"\" \"{}\"\r\n",
-                    file.display(),
-                    exe.display()
-                ),
-            )?;
+            std::fs::write(&script, format!("@echo off\r\ntimeout /t 2 /nobreak >nul\r\n\"{}\" /S\r\nstart \"\" \"{}\"\r\n", file.display(), exe.display()))?;
             std::process::Command::new("cmd").arg("/C").arg(&script).creation_flags(0x08000000).spawn()?;
             Ok(())
         }
@@ -238,11 +221,8 @@ fn launch_installer(kind: Kind, file: &Path) -> Result<()> {
                 "dnf install -y"
             };
             // pkexec shows the system's password prompt.
-            let script = format!(
-                "sleep 1; pkexec sh -c '{pm} \"$0\"' {pkg} && (setsid {exe} >/dev/null 2>&1 &)",
-                pkg = shell_quote(file),
-                exe = shell_quote(&exe)
-            );
+            let script =
+                format!("sleep 1; pkexec sh -c '{pm} \"$0\"' {pkg} && (setsid {exe} >/dev/null 2>&1 &)", pkg = shell_quote(file), exe = shell_quote(&exe));
             std::process::Command::new("sh").arg("-c").arg(script).spawn()?;
             Ok(())
         }

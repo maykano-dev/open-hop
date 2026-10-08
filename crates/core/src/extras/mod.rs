@@ -1,11 +1,10 @@
 //! Features beyond sharing the keyboard and mouse: live windows from other
-//! computers, a shared window list, dark mode and Do Not Disturb sync,
-//! battery saving, sounds and arrival animations.
+//! computers, a shared window list, dark mode and Do Not Disturb sync, and
+//! arrival animations.
 //!
 //! The [`Hub`] lives next to the engine. It talks to other computers with
 //! [`Ext`] messages addressed by computer name (the server forwards them).
 
-pub mod sound;
 pub mod system;
 
 use crate::platform::InjectOp;
@@ -23,12 +22,30 @@ use std::time::{Duration, Instant};
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UiEvent {
     /// Files dragged here from another computer are on their way.
-    Incoming { x: i32, y: i32, label: String, from: String },
+    Incoming {
+        x: i32,
+        y: i32,
+        label: String,
+        from: String,
+    },
     /// They arrived (and were dropped where the pointer is).
-    Landed { x: i32, y: i32, label: String },
+    Landed {
+        x: i32,
+        y: i32,
+        label: String,
+    },
     /// Show a live window from another computer.
-    OpenViewer { stream: u64, origin: String, title: String, w: i32, h: i32, at: Option<(i32, i32)> },
-    CloseViewer { stream: u64 },
+    OpenViewer {
+        stream: u64,
+        origin: String,
+        title: String,
+        w: i32,
+        h: i32,
+        at: Option<(i32, i32)>,
+    },
+    CloseViewer {
+        stream: u64,
+    },
 }
 
 /// An update to a live window's picture.
@@ -37,6 +54,8 @@ pub struct Frame {
     pub seq: u64,
     pub w: u32,
     pub h: u32,
+    /// Title bar height (top of the picture).
+    pub bar: u32,
     pub title: String,
     pub patches: Arc<Vec<Patch>>,
 }
@@ -62,9 +81,6 @@ pub enum FrameWait {
 pub struct Settings {
     pub theme_sync: bool,
     pub dnd_sync: bool,
-    pub sound: String,
-    pub sound_volume: u32,
-    pub battery_saver: bool,
     pub quality: String,
     pub swap_cmd_ctrl: bool,
     pub window_drag: bool,
@@ -75,9 +91,6 @@ impl Settings {
         Settings {
             theme_sync: c.theme_sync,
             dnd_sync: c.dnd_sync,
-            sound: c.sound.clone(),
-            sound_volume: c.sound_volume,
-            battery_saver: c.battery_saver,
             quality: c.stream_quality.clone(),
             swap_cmd_ctrl: c.swap_cmd_ctrl,
             window_drag: c.window_drag,
@@ -92,6 +105,8 @@ pub type Inject = Box<dyn FnMut(&[InjectOp]) + Send>;
 
 struct Viewer {
     origin: String,
+    /// The window on `origin`.
+    window: u64,
     /// Updates not shown yet.
     queue: Vec<Frame>,
     paused: Option<String>,
@@ -112,6 +127,8 @@ struct Source {
     /// quickly for a moment) instead of waiting for the next regular look.
     busy_until: Mutex<Instant>,
     poke: Condvar,
+    /// The window was dragged back here: show it under the pointer.
+    returning: AtomicBool,
 }
 
 impl Source {
@@ -137,6 +154,10 @@ struct InputState {
     last_activate: Option<Instant>,
     last_move: Option<Instant>,
     buttons: u8,
+    /// A press held back until its release (see `Hub::set_injector`):
+    /// (button, where it went down), and where the pointer is now.
+    press: Option<(MouseButton, (i32, i32))>,
+    at: (i32, i32),
 }
 
 pub struct Hub {
@@ -154,12 +175,18 @@ pub struct Hub {
     dnd_before: Mutex<Option<bool>>,
     /// A dark mode change we made ourselves (not to be sent back).
     theme_expect: Mutex<Option<bool>>,
-    low_battery: AtomicBool,
     /// A live window of ours that has the keyboard focus on another computer:
     /// (that computer, window).
     focused: Mutex<Option<(String, u64, u64)>>,
     /// Send our window list again now (we just connected).
     resend: AtomicBool,
+    /// Clicks are injected whole (press and release together) when the
+    /// release comes: see `set_injector`.
+    whole_clicks: AtomicBool,
+    /// A live window being dragged by its title bar here: (stream, since).
+    dragging: Mutex<Option<(u64, Instant)>>,
+    /// This computer's desktop (to keep windows coming back on it).
+    screen: Mutex<Option<crate::protocol::Rect>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -187,9 +214,11 @@ impl Hub {
             quiet_from: Mutex::new(BTreeSet::new()),
             dnd_before: Mutex::new(None),
             theme_expect: Mutex::new(None),
-            low_battery: AtomicBool::new(false),
             focused: Mutex::new(None),
             resend: AtomicBool::new(true),
+            whole_clicks: AtomicBool::new(false),
+            dragging: Mutex::new(None),
+            screen: Mutex::new(None),
             stop: Arc::new(AtomicBool::new(false)),
         });
         let h = hub.clone();
@@ -236,8 +265,24 @@ impl Hub {
         }
     }
 
-    pub fn set_injector(&self, inject: Inject) {
+    /// How input from live views of this computer's windows gets in.
+    /// `whole_clicks`: a press can't be injected on its own (on X11 the
+    /// physical mouse is held by OpenHop's grab and a pressed button would
+    /// keep the grab from coming back), so a click is injected in one go
+    /// when its release arrives, as a short drag if the mouse moved.
+    pub fn set_injector(&self, inject: Inject, whole_clicks: bool) {
         *self.inject.lock() = Some(inject);
+        self.whole_clicks.store(whole_clicks, Ordering::SeqCst);
+    }
+
+    /// This computer's desktop bounds.
+    pub fn set_screen(&self, r: crate::protocol::Rect) {
+        *self.screen.lock() = Some(r);
+    }
+
+    /// Send an [`Ext`] to another computer.
+    pub fn tell(&self, to: &str, ext: Ext) {
+        self.send(to, ext)
     }
 
     fn send(&self, to: &str, ext: Ext) {
@@ -293,11 +338,6 @@ impl Hub {
         }
     }
 
-    pub fn play(&self, _why: &str) {
-        let s = self.settings.read();
-        sound::play(&s.sound, s.sound_volume);
-    }
-
     // ------------------------------------------------------ arrivals
 
     pub fn incoming(&self, label: &str, from: &str) {
@@ -310,7 +350,6 @@ impl Hub {
         if let Some((x, y)) = crate::platform::cursor_pos() {
             self.ui(UiEvent::Landed { x, y, label: label.into() });
         }
-        self.play("landed");
     }
 
     // ------------------------------------------------------ connections
@@ -378,14 +417,10 @@ impl Hub {
         let (title, w, h) = info.map(|i| (i.title, i.w, i.h)).unwrap_or_else(|| ("Window".into(), 960, 640));
         // Fits in a JavaScript number.
         let stream = crate::files::new_id() & ((1 << 52) - 1);
-        self.viewers.lock().insert(stream, Viewer { origin: origin.into(), queue: vec![], paused: None, closed: false });
+        self.viewers.lock().insert(stream, Viewer { origin: origin.into(), window, queue: vec![], paused: None, closed: false });
         self.send(origin, Ext::WinOpen { stream, window, os: Os::current() });
         self.ui(UiEvent::OpenViewer { stream, origin: origin.into(), title, w, h, at });
-        self.play("window");
         log::info!("opening a live window from {origin}");
-        if self.low_battery.load(Ordering::SeqCst) {
-            self.send(origin, Ext::WinPause { stream, paused: true, reason: low_battery_reason() });
-        }
         Some(stream)
     }
 
@@ -442,6 +477,42 @@ impl Hub {
         }
     }
 
+    /// A live window shown here started being dragged by its title bar.
+    pub fn viewer_drag(&self, stream: u64, on: bool) {
+        let mut d = self.dragging.lock();
+        if on {
+            *d = Some((stream, Instant::now()));
+        } else if d.map(|x| x.0) == Some(stream) {
+            *d = None;
+        }
+    }
+
+    /// The live window being dragged here right now (left button held).
+    pub fn dragged_viewer(&self) -> Option<u64> {
+        let d = *self.dragging.lock();
+        let (stream, since) = d?;
+        let alive = self.viewers.lock().contains_key(&stream);
+        (alive && since.elapsed() < Duration::from_secs(300) && crate::platform::dnd::left_button_down()).then_some(stream)
+    }
+
+    /// A live window shown here was dragged onto `to`'s screen: move it
+    /// there. If that's the computer it belongs to, it simply goes back.
+    pub fn move_viewer(&self, stream: u64, to: &str) {
+        let Some((origin, window)) = self.viewers.lock().get(&stream).map(|v| (v.origin.clone(), v.window)) else {
+            return;
+        };
+        if to == origin {
+            log::info!("live window dragged back to {origin}");
+            self.send(&origin, Ext::WinReturn { stream });
+        } else {
+            log::info!("live window from {origin} dragged on to {to}");
+            self.offer_window(to, &origin, window);
+            self.send(&origin, Ext::WinClose { stream });
+        }
+        self.viewer_drag(stream, false);
+        self.viewer_closed(stream);
+    }
+
     fn viewer_closed(&self, stream: u64) {
         if let Some(v) = self.viewers.lock().get_mut(&stream) {
             v.closed = true;
@@ -485,13 +556,13 @@ impl Hub {
                 self.open(&origin, window, crate::platform::cursor_pos());
             }
             Ext::WinOpen { stream, window, os } => self.start_source(from, stream, window, os),
-            Ext::WinFrame { stream, seq, w, h, title, patches } => {
+            Ext::WinFrame { stream, seq, w, h, bar, title, patches } => {
                 log::trace!("{} got update {seq}", ms());
                 let known = {
                     let mut viewers = self.viewers.lock();
                     match viewers.get_mut(&stream) {
                         Some(v) => {
-                            let f = Frame { seq, w, h, title, patches: Arc::new(patches) };
+                            let f = Frame { seq, w, h, bar, title, patches: Arc::new(patches) };
                             if f.is_full() {
                                 v.queue.clear();
                             }
@@ -531,6 +602,14 @@ impl Hub {
                     self.viewer_closed(stream);
                 }
             }
+            Ext::WinMoveTo { stream, to } => self.move_viewer(stream, &to),
+            Ext::WinReturn { stream } => {
+                if let Some(s) = self.sources.lock().remove(&stream) {
+                    s.returning.store(true, Ordering::SeqCst);
+                    s.stop.store(true, Ordering::SeqCst);
+                    s.poke.notify_all();
+                }
+            }
             Ext::WinPause { stream, paused, reason } => {
                 if let Some(s) = self.sources.lock().get(&stream) {
                     *s.remote_pause.lock() = paused.then_some(reason.clone());
@@ -562,6 +641,7 @@ impl Hub {
             input: Mutex::new(InputState::default()),
             busy_until: Mutex::new(Instant::now()),
             poke: Condvar::new(),
+            returning: AtomicBool::new(false),
         });
         self.sources.lock().insert(stream, src.clone());
         // It has moved to the other screen: hide it here (it keeps running).
@@ -570,9 +650,16 @@ impl Hub {
         let _ = std::thread::Builder::new().name("live-window".into()).spawn(move || {
             hub.stream_loop(stream, &src);
             hub.sources.lock().remove(&stream);
-            // Back on this screen, unless it's still open somewhere else.
-            if !hub.sources.lock().values().any(|s| s.window == src.window) {
-                wins::set_hidden(src.window, false);
+            if src.returning.load(Ordering::SeqCst) {
+                hub.welcome_back(src.window);
+            } else {
+                // It may be moving on to another computer (opened again there
+                // in a moment): wait before showing it here.
+                std::thread::sleep(Duration::from_millis(1500));
+                // Back on this screen, unless it's still open somewhere else.
+                if !hub.sources.lock().values().any(|s| s.window == src.window) {
+                    wins::set_hidden(src.window, false);
+                }
             }
             let mut f = hub.focused.lock();
             if f.as_ref().map(|x| x.1) == Some(stream) {
@@ -581,8 +668,38 @@ impl Hub {
         });
     }
 
+    /// A window of ours was dragged back from another screen: show it under
+    /// the pointer, still following the mouse while the button is held.
+    fn welcome_back(&self, window: u64) {
+        let Some(g) = wins::geometry(window) else {
+            wins::set_hidden(window, false);
+            return;
+        };
+        let bar = wins::bar_height(window).max(20);
+        if let Some((px, py)) = crate::platform::cursor_pos() {
+            let (mut x, mut y) = (px - g.w / 2, py - bar / 2);
+            // Keep it on the screen (it arrives at the edge).
+            if let Some(s) = *self.screen.lock() {
+                x = x.clamp(s.x, (s.x + s.w - g.w).max(s.x));
+                y = y.clamp(s.y, (s.y + s.h - bar).max(s.y));
+            }
+            wins::move_to(window, x, y);
+        }
+        wins::set_hidden(window, false);
+        wins::activate(window);
+        let held = crate::platform::dnd::left_button_down();
+        log::info!("window back on this screen{}", if held { "; following the mouse" } else { "" });
+        if held {
+            std::thread::sleep(Duration::from_millis(60));
+            if let Some((px, py)) = crate::platform::cursor_pos() {
+                wins::begin_move(window, px, py);
+            }
+        }
+    }
+
     fn stream_loop(&self, stream: u64, src: &Source) {
         let (fps, q, max_w, full_colour) = quality(&self.settings.read().quality);
+        let mut bar = (wins::bar_height(src.window).max(0) as u32, Instant::now());
         let interval = Duration::from_millis(1000 / fps as u64);
         let mut seq = 0u64;
         // The last picture sent (after scaling), to find what changed.
@@ -591,8 +708,7 @@ impl Hub {
         let mut sent_at = Instant::now();
         let mut paused_sent = false;
         while !src.stop.load(Ordering::SeqCst) && !self.stop.load(Ordering::SeqCst) {
-            let local = self.low_battery.load(Ordering::SeqCst).then(low_battery_reason);
-            let pause = local.or_else(|| src.remote_pause.lock().clone());
+            let pause = src.remote_pause.lock().clone();
             if let Some(reason) = pause {
                 if !paused_sent {
                     self.send(&src.viewer, Ext::WinPause { stream, paused: true, reason });
@@ -633,10 +749,8 @@ impl Hub {
                 src.nap(wait.saturating_sub(started.elapsed()).max(Duration::from_millis(4)));
                 continue;
             }
-            let patches: Vec<Patch> = rects
-                .into_iter()
-                .filter_map(|(x, y, w, h)| encode_patch(&pic, (x, y, w, h), q, full_colour).map(|jpeg| Patch { x, y, w, h, jpeg }))
-                .collect();
+            let patches: Vec<Patch> =
+                rects.into_iter().filter_map(|(x, y, w, h)| encode_patch(&pic, (x, y, w, h), q, full_colour).map(|jpeg| Patch { x, y, w, h, jpeg })).collect();
             if patches.is_empty() {
                 std::thread::sleep(interval);
                 continue;
@@ -648,12 +762,22 @@ impl Hub {
             prev = Some(pic);
             seq += 1;
             let title = self.lists.lock().get(&self.me).and_then(|l| l.iter().find(|w| w.id == src.window).map(|w| w.title.clone())).unwrap_or_default();
+            if bar.1.elapsed() > Duration::from_secs(3) {
+                bar = (wins::bar_height(src.window).max(0) as u32, Instant::now());
+            }
+            let bar_px = (bar.0 as u64 * fh as u64 / oh.max(1) as u64) as u32;
             let len: usize = patches.iter().map(|p| p.jpeg.len()).sum();
             if seq == 1 || seq.is_multiple_of(200) {
-                log::debug!("live window: update {seq} ({fw}x{fh}, {} patch(es), {} KB, {} ms) -> {}", patches.len(), len / 1024, started.elapsed().as_millis(), src.viewer);
+                log::debug!(
+                    "live window: update {seq} ({fw}x{fh}, {} patch(es), {} KB, {} ms) -> {}",
+                    patches.len(),
+                    len / 1024,
+                    started.elapsed().as_millis(),
+                    src.viewer
+                );
             }
             log::trace!("{} send update {seq} ({} bytes, took {} ms)", ms(), len, started.elapsed().as_millis());
-            self.send(&src.viewer, Ext::WinFrame { stream, seq, w: fw, h: fh, title, patches });
+            self.send(&src.viewer, Ext::WinFrame { stream, seq, w: fw, h: fh, bar: bar_px, title, patches });
             crate::files::pace(len);
             sent_at = Instant::now();
             let wait = if src.busy() { Duration::from_millis(8) } else { interval };
@@ -662,7 +786,9 @@ impl Hub {
     }
 
     fn inject_for(&self, stream: u64, src: &Source, ev: WinEvent) {
-        let Some(g) = wins::geometry(src.window) else { return };
+        let Some(g) = wins::geometry(src.window) else {
+            return;
+        };
         let (fw, fh, ow, oh) = *src.scale.lock();
         let map = |x: i32, y: i32| {
             let x = (x as i64 * ow as i64 / fw.max(1) as i64) as i32;
@@ -700,10 +826,15 @@ impl Hub {
                 }
             }
             WinEvent::Move { x, y } => {
-                // Hover moves are thinned out; drags go through in full.
+                let (ax, ay) = map(x, y);
+                st.at = (ax, ay);
+                // Hover moves are thinned out; drags go through in full
+                // (or, with whole clicks, at the release).
                 let busy = st.buttons != 0;
-                if busy || st.last_move.map(|t| t.elapsed() > Duration::from_millis(50)).unwrap_or(true) {
-                    let (ax, ay) = map(x, y);
+                // With whole clicks, moving our pointer would mean letting go of
+                // the mouse for a moment each time: only clicks and scrolls move it.
+                let whole = self.whole_clicks.load(Ordering::SeqCst);
+                if !whole && (busy || st.last_move.map(|t| t.elapsed() > Duration::from_millis(50)).unwrap_or(true)) {
                     ops.push(InjectOp::MoveTo(ax, ay));
                     st.last_move = Some(Instant::now());
                 }
@@ -711,6 +842,9 @@ impl Hub {
             WinEvent::Button { button, down, x, y } => {
                 if down {
                     activate(&mut st);
+                    // Hidden windows are kept at the back while the mouse is
+                    // used here: bring it up so the click lands on it.
+                    wins::raise(src.window);
                 }
                 let bit = match button {
                     MouseButton::Left => 1,
@@ -725,10 +859,36 @@ impl Hub {
                     st.buttons &= !bit;
                 }
                 let (ax, ay) = map(x, y);
-                ops.push(InjectOp::MoveTo(ax, ay));
-                ops.push(InjectOp::Button(button, down));
+                st.at = (ax, ay);
+                if self.whole_clicks.load(Ordering::SeqCst) {
+                    if down {
+                        if st.press.is_none() {
+                            st.press = Some((button, (ax, ay)));
+                        }
+                    } else if let Some((b, (dx, dy))) = st.press.filter(|p| p.0 == button) {
+                        st.press = None;
+                        ops.push(InjectOp::MoveTo(dx, dy));
+                        ops.push(InjectOp::Button(b, true));
+                        if (ax - dx).abs() > 2 || (ay - dy).abs() > 2 {
+                            // A drag (selecting text, moving a slider): replay it.
+                            for i in 1..=6 {
+                                ops.push(InjectOp::MoveTo(dx + (ax - dx) * i / 6, dy + (ay - dy) * i / 6));
+                            }
+                        }
+                        ops.push(InjectOp::Button(b, false));
+                    } else {
+                        // Another button while one is held: just click it.
+                        ops.push(InjectOp::MoveTo(ax, ay));
+                        ops.push(InjectOp::Button(button, true));
+                        ops.push(InjectOp::Button(button, false));
+                    }
+                } else {
+                    ops.push(InjectOp::MoveTo(ax, ay));
+                    ops.push(InjectOp::Button(button, down));
+                }
             }
             WinEvent::Wheel { dx, dy, x, y } => {
+                wins::raise(src.window);
                 let (ax, ay) = map(x, y);
                 ops.push(InjectOp::MoveTo(ax, ay));
                 ops.push(InjectOp::Wheel(dx, dy));
@@ -807,15 +967,6 @@ impl Hub {
                     last_quiet = quiet;
                 }
             }
-            // Battery.
-            let low = s.battery_saver && system::battery_low();
-            if low != self.low_battery.swap(low, Ordering::SeqCst) {
-                log::info!("battery {}: live windows {}", if low { "low" } else { "ok" }, if low { "paused" } else { "resumed" });
-                let viewers: Vec<(u64, String)> = self.viewers.lock().iter().map(|(k, v)| (*k, v.origin.clone())).collect();
-                for (stream, origin) in viewers {
-                    self.send(&origin, Ext::WinPause { stream, paused: low, reason: if low { low_battery_reason() } else { String::new() } });
-                }
-            }
         }
     }
 
@@ -845,10 +996,6 @@ impl Hub {
 /// Milliseconds clock for timing traces.
 fn ms() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() % 100_000).unwrap_or(0)
-}
-
-fn low_battery_reason() -> String {
-    "Paused to save battery".into()
 }
 
 /// Shrink pictures wider than `max_w` (keeps BGRA order).
@@ -965,12 +1112,23 @@ mod tests {
     #[test]
     fn viewer_waits_for_frames() {
         let hub = Hub::new("me".into(), Settings::from_config(&crate::Config::default()));
-        hub.viewers.lock().insert(7, Viewer { origin: "pc".into(), queue: vec![], paused: None, closed: false });
+        hub.viewers.lock().insert(7, Viewer { origin: "pc".into(), window: 1, queue: vec![], paused: None, closed: false });
         assert!(matches!(hub.frame(7, 0, Duration::from_millis(20)), FrameWait::Timeout));
         let h2 = hub.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(30));
-            h2.handle("pc", Ext::WinFrame { stream: 7, seq: 1, w: 2, h: 2, title: "t".into(), patches: vec![Patch { x: 0, y: 0, w: 2, h: 2, jpeg: vec![1, 2, 3] }] });
+            h2.handle(
+                "pc",
+                Ext::WinFrame {
+                    stream: 7,
+                    seq: 1,
+                    w: 2,
+                    h: 2,
+                    bar: 0,
+                    title: "t".into(),
+                    patches: vec![Patch { x: 0, y: 0, w: 2, h: 2, jpeg: vec![1, 2, 3] }],
+                },
+            );
         });
         match hub.frame(7, 0, Duration::from_secs(2)) {
             FrameWait::Frames(f) => assert_eq!((f[0].seq, f[0].patches[0].jpeg.len()), (1, 3)),

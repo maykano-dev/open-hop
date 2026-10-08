@@ -14,7 +14,7 @@ use crate::files::{self, Finished, Inbox, Outbox, TransferInfo};
 use crate::keys;
 use crate::layout::{apply_delta, edge_fraction, entry_point, touching_edge, Layout, Side, SERVER};
 use crate::net::{derive_psk, handshake, Link, SecureReceiver, CHUNK};
-use crate::platform::{self, dnd, Capture, InputEvent, Injector};
+use crate::platform::{self, dnd, Capture, Injector, InputEvent};
 use crate::protocol::{ClipData, Ext, FileMeta, MouseButton, Msg, OfferKind, Os, Rect, WinInfo, DEFAULT_PORT, PROTOCOL_VERSION};
 use crate::wol;
 use anyhow::{anyhow, bail, Context, Result};
@@ -79,8 +79,6 @@ pub struct Status {
     pub windows: Vec<ComputerWindows>,
     /// Computers in Do Not Disturb or presenting right now.
     pub quiet_from: Vec<String>,
-    /// This computer's battery (percent, charging), if it has one.
-    pub battery: Option<(u8, bool)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,9 +130,15 @@ enum Control {
     Stop,
     SetLayout(Layout),
     /// Client: pair with the server whose device id is given, using its code.
-    Pair { device: String, code: String },
+    Pair {
+        device: String,
+        code: String,
+    },
     /// Client: pair with the server at this address (when it isn't discovered).
-    PairAddr { addr: String, code: String },
+    PairAddr {
+        addr: String,
+        code: String,
+    },
     /// Forget a paired computer.
     Forget(String),
 }
@@ -216,7 +220,6 @@ impl Engine {
             addresses: local_addresses(),
             windows: vec![],
             quiet_from: vec![],
-            battery: None,
         }));
         // The server binds first so discovery can announce the port it really got.
         let listeners = match cfg.role {
@@ -231,9 +234,7 @@ impl Engine {
             Role::Client => None,
         };
         let announce_port = listeners.as_ref().map(|l| l.2).unwrap_or(cfg.port);
-        let discovery = Arc::new(
-            Discovery::start(cfg.device_id.clone(), cfg.name.clone(), cfg.role, announce_port).context("starting network discovery")?,
-        );
+        let discovery = Arc::new(Discovery::start(cfg.device_id.clone(), cfg.name.clone(), cfg.role, announce_port).context("starting network discovery")?);
         let stop = Arc::new(AtomicBool::new(false));
         let (ctl_tx, ctl_rx) = crossbeam_channel::unbounded();
         let notes: Arc<Mutex<Vec<Note>>> = Default::default();
@@ -291,11 +292,10 @@ impl Engine {
         s.transfers = self.inbox.history();
         s.windows = self.hub.windows().into_iter().map(|(name, windows)| ComputerWindows { name, windows }).collect();
         s.quiet_from = self.hub.quiet_from();
-        s.battery = extras::system::battery();
         s
     }
 
-    /// Live windows, sounds, animations, theme and Do Not Disturb sync.
+    /// Live windows, animations, theme and Do Not Disturb sync.
     pub fn hub(&self) -> Arc<Hub> {
         self.hub.clone()
     }
@@ -361,6 +361,11 @@ fn bind_v4_listener(port: u16) -> Result<(TcpListener, u16)> {
         s.listen(16)?;
         Ok(s.into())
     };
+    // Port taken by an older OpenHop (a leftover background copy): close it
+    // and take the port over. Anything else keeps it; we use another one.
+    if matches!(try_bind(port), Err(ref e) if e.kind() == std::io::ErrorKind::AddrInUse) && crate::portfree::close_old_openhop(port) {
+        log::info!("closed an older OpenHop that held port {port}");
+    }
     // Give a previous run a moment to let go of the port...
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -508,9 +513,7 @@ fn clip_messages(origin: &str, data: ClipData) -> Vec<Msg> {
         ClipData::Png(p) if p.len() > CHUNK => {
             let id = files::new_id();
             let total = p.len() as u64;
-            p.chunks(CHUNK)
-                .map(|c| Msg::ClipPart { origin: origin.to_string(), id, total, data: c.to_vec() })
-                .collect()
+            p.chunks(CHUNK).map(|c| Msg::ClipPart { origin: origin.to_string(), id, total, data: c.to_vec() }).collect()
         }
         data => vec![Msg::Clip { origin: origin.to_string(), data }],
     }
@@ -687,7 +690,8 @@ impl Common {
                         actions.push(action("Open", "open_path", first.clone()));
                     }
                     actions.push(action("Show in folder", "reveal", first));
-                    let pasteable = clip.map(|c| c.send(ClipData::Files(kept.iter().map(|p| p.to_string_lossy().into_owned()).collect())).is_ok()).unwrap_or(false);
+                    let pasteable =
+                        clip.map(|c| c.send(ClipData::Files(kept.iter().map(|p| p.to_string_lossy().into_owned()).collect())).is_ok()).unwrap_or(false);
                     let body = if pasteable {
                         format!("From {origin}. Saved to Downloads › OpenHop and copied: paste it where you want it.")
                     } else {
@@ -703,9 +707,21 @@ impl Common {
 // ---------------------------------------------------------------- server
 
 enum NetEvent {
-    Connected { id: u64, name: String, os: Os, screen: Rect, addr: SocketAddr, link: Link, device: Option<String> },
+    Connected {
+        id: u64,
+        name: String,
+        os: Os,
+        screen: Rect,
+        addr: SocketAddr,
+        link: Link,
+        device: Option<String>,
+    },
     /// A computer just paired with the code; remember its key.
-    Paired { device: String, name: String, key: String },
+    Paired {
+        device: String,
+        name: String,
+        key: String,
+    },
     Msg(u64, Msg),
     Disconnected(u64),
     Finished(Finished),
@@ -779,11 +795,7 @@ impl Server {
             ctx.hub.set_out(Some(Box::new(move |to: &str, ext: Ext| {
                 let bulk = matches!(ext, Ext::WinFrame { .. } | Ext::Windows { .. });
                 let msg = Msg::Ext { to: to.to_string(), from: me.clone(), ext };
-                let links: Vec<Link> = if to == "*" {
-                    routes.lock().values().cloned().collect()
-                } else {
-                    routes.lock().get(to).cloned().into_iter().collect()
-                };
+                let links: Vec<Link> = if to == "*" { routes.lock().values().cloned().collect() } else { routes.lock().get(to).cloned().into_iter().collect() };
                 for l in links {
                     if bulk {
                         l.send_bulk_wait(msg.clone());
@@ -796,17 +808,21 @@ impl Server {
             // inject here, letting our own events past the capture.
             if let Ok(mut inj) = platform::create_injector(ctx.cfg.screen, "x11") {
                 let cap = capture.clone();
-                ctx.hub.set_injector(Box::new(move |ops: &[platform::InjectOp]| {
-                    let pointer = ops.iter().any(|o| !matches!(o, platform::InjectOp::Key(..)));
-                    let was = cap.suspend(pointer);
-                    for op in ops {
-                        let _ = platform::apply(inj.as_mut(), *op);
-                    }
-                    inj.sync();
-                    if was {
-                        cap.resume();
-                    }
-                }));
+                let whole = capture.whole_clicks();
+                ctx.hub.set_injector(
+                    Box::new(move |ops: &[platform::InjectOp]| {
+                        let pointer = ops.iter().any(|o| !matches!(o, platform::InjectOp::Key(..)));
+                        let was = cap.suspend(pointer);
+                        for op in ops {
+                            let _ = platform::apply(inj.as_mut(), *op);
+                        }
+                        inj.sync();
+                        if was {
+                            cap.resume();
+                        }
+                    }),
+                    whole,
+                );
             }
         }
         let mut s = Server {
@@ -823,6 +839,7 @@ impl Server {
             key_pass: None,
         };
         s.update_status();
+        s.ctx.hub.set_screen(s.capture.screen());
         let pinger = tick(Duration::from_secs(3));
         let fast = tick(Duration::from_millis(100));
         loop {
@@ -865,11 +882,7 @@ impl Server {
 
     fn update_status(&self) {
         let mut st = self.ctx.status.lock();
-        st.peers = self
-            .peers
-            .values()
-            .map(|p| PeerStatus { name: p.name.clone(), os: p.os, addr: p.addr.ip().to_string(), screen: p.screen })
-            .collect();
+        st.peers = self.peers.values().map(|p| PeerStatus { name: p.name.clone(), os: p.os, addr: p.addr.ip().to_string(), screen: p.screen }).collect();
         st.peers.sort_by(|a, b| a.name.cmp(&b.name));
         st.active = self.active.and_then(|(id, _, _)| self.peers.get(&id)).map(|p| p.name.clone()).unwrap_or_default();
         st.pairing_code = Some(self.ctx.pair.lock().code.clone());
@@ -1014,7 +1027,9 @@ impl Server {
     }
 
     fn on_peer_msg(&mut self, id: u64, msg: Msg) {
-        let Some(from) = self.peers.get(&id).map(|p| p.name.clone()) else { return };
+        let Some(from) = self.peers.get(&id).map(|p| p.name.clone()) else {
+            return;
+        };
         let here = self.active.is_none();
         match msg {
             Msg::Screen(r) => {
@@ -1050,6 +1065,7 @@ impl Server {
             }
             Msg::DragReply { id: q, offer, files } => self.on_drag_reply(q, offer, files),
             Msg::DragWindow { id: q, window } => self.on_drag_window(q, window),
+            Msg::DragViewer { id: q, stream } => self.on_drag_viewer(q, stream),
             Msg::Mac(mac) => {
                 if wol::parse_mac(&mac).is_some() && self.ctx.cfg.macs.get(&from) != Some(&mac) {
                     self.ctx.cfg.macs.insert(from, mac);
@@ -1094,16 +1110,24 @@ impl Server {
         match (ev, self.active) {
             (InputEvent::LocalMove { x, y }, None) => {
                 let screen = self.capture.screen();
-                let Some(side) = touching_edge(&screen, x, y) else { return };
-                let Some(target) = self.ctx.cfg.layout.neighbor(SERVER, side).map(str::to_string) else { return };
+                let Some(side) = touching_edge(&screen, x, y) else {
+                    return;
+                };
+                let Some(target) = self.ctx.cfg.layout.neighbor(SERVER, side).map(str::to_string) else {
+                    return;
+                };
                 let frac = edge_fraction(&screen, side, x, y);
                 match self.peer_by_name(&target) {
                     Some(id) => {
                         self.start_local_drag_if_any();
-                        let window = self.local_window_drag(x, y);
+                        // A live window from another computer, dragged by its title bar?
+                        let viewer = self.local_viewer_drag();
+                        let window = if viewer.is_none() { self.local_window_drag(x, y) } else { None };
                         self.enter(id, side, frac);
-                        if let (Some(w), Some((a, _, _))) = (window, self.active) {
-                            if a == id {
+                        if matches!(self.active, Some((a, _, _)) if a == id) {
+                            if let Some(stream) = viewer {
+                                self.ctx.hub.move_viewer(stream, &target);
+                            } else if let Some(w) = window {
                                 let me = self.me();
                                 self.ctx.hub.offer_window(&target, &me, w);
                             }
@@ -1184,7 +1208,9 @@ impl Server {
         if !self.ctx.cfg.wake_on_lan {
             return;
         }
-        let Some(mac) = self.ctx.cfg.macs.get(name).cloned() else { return };
+        let Some(mac) = self.ctx.cfg.macs.get(name).cloned() else {
+            return;
+        };
         if self.last_wake.get(name).map(|t| t.elapsed() < Duration::from_secs(20)).unwrap_or(false) {
             return;
         }
@@ -1277,12 +1303,15 @@ impl Server {
         if !dnd::left_button_down() {
             return None;
         }
-        let Some(paths) = dnd::drag_files() else { return None };
+        let Some(paths) = dnd::drag_files() else {
+            return None;
+        };
         let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         if let Some(Msg::FileOffer { offer, files, .. }) = self.common.offer_local_files(&paths, OfferKind::Drop) {
             log::info!("carrying a drag of {} across", files::label_for(&files));
             dnd::cancel_drag();
-            self.drag = Some(Drag { origin: self.me(), offer: Some((offer, files)), query: None, dropped_on: None, to: String::new(), started: Instant::now() });
+            self.drag =
+                Some(Drag { origin: self.me(), offer: Some((offer, files)), query: None, dropped_on: None, to: String::new(), started: Instant::now() });
             return None;
         }
         None
@@ -1302,6 +1331,33 @@ impl Server {
             dnd::cancel_drag();
         }
         Some(w)
+    }
+
+    /// Leaving this computer while dragging a live window (shown here) by its
+    /// title bar: it goes on to the other screen.
+    fn local_viewer_drag(&mut self) -> Option<u64> {
+        if self.drag.is_some() {
+            return None;
+        }
+        let stream = self.ctx.hub.dragged_viewer()?;
+        // Let the window manager let go of the mouse.
+        if !cfg!(target_os = "macos") {
+            dnd::cancel_drag();
+        }
+        Some(stream)
+    }
+
+    /// A client says one of the live windows it shows was dragged across.
+    fn on_drag_viewer(&mut self, q: u64, stream: u64) {
+        let Some(d) = self.drag.take() else { return };
+        if d.query != Some(q) {
+            self.drag = Some(d);
+            return;
+        }
+        let to = if d.to == SERVER { self.me() } else { d.to.clone() };
+        if !to.is_empty() && to != d.origin {
+            self.ctx.hub.tell(&d.origin, Ext::WinMoveTo { stream, to });
+        }
     }
 
     /// Leaving a client with the left button held there: ask it what's being dragged.
@@ -1360,7 +1416,9 @@ impl Server {
     }
 
     fn drop_drag(&mut self, target: String) {
-        let Some(mut d) = self.drag.take() else { return };
+        let Some(mut d) = self.drag.take() else {
+            return;
+        };
         let Some((offer, files)) = d.offer.clone() else {
             // Still waiting to hear what was dragged.
             d.dropped_on = Some(target);
@@ -1381,13 +1439,7 @@ impl Server {
     }
 }
 
-fn spawn_acceptor(
-    listener: TcpListener,
-    ctx: Ctx,
-    routes: Routes,
-    net_tx: Sender<NetEvent>,
-    stop: Arc<AtomicBool>,
-) -> Result<std::thread::JoinHandle<()>> {
+fn spawn_acceptor(listener: TcpListener, ctx: Ctx, routes: Routes, net_tx: Sender<NetEvent>, stop: Arc<AtomicBool>) -> Result<std::thread::JoinHandle<()>> {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
     listener.set_nonblocking(true)?;
     Ok(std::thread::Builder::new().name("acceptor".into()).spawn(move || {
@@ -1447,12 +1499,7 @@ fn spawn_acceptor(
 /// Work out which secret the connecting computer must prove, run the
 /// handshake, and (for a pairing) hand it a key of its own.
 #[allow(clippy::type_complexity)]
-fn accept_peer(
-    mut stream: TcpStream,
-    ctx: &Ctx,
-    id: u64,
-    net_tx: Sender<NetEvent>,
-) -> Result<(Link, SecureReceiver, String, Os, Rect, Option<String>)> {
+fn accept_peer(mut stream: TcpStream, ctx: &Ctx, id: u64, net_tx: Sender<NetEvent>) -> Result<(Link, SecureReceiver, String, Os, Rect, Option<String>)> {
     let auth = crate::net::read_auth(&mut stream)?;
     let me = ctx.cfg.name.clone();
     match auth {
@@ -1568,13 +1615,7 @@ fn route_or_handle(m: Msg, me: &str, inbox: &Inbox, routes: &Routes, emit: impl 
     }
 }
 
-fn server_handshake(
-    stream: TcpStream,
-    psk: &[u8; 32],
-    my_name: &str,
-    id: u64,
-    net_tx: Sender<NetEvent>,
-) -> Result<(Link, SecureReceiver, String, Os, Rect)> {
+fn server_handshake(stream: TcpStream, psk: &[u8; 32], my_name: &str, id: u64, net_tx: Sender<NetEvent>) -> Result<(Link, SecureReceiver, String, Os, Rect)> {
     let (tx, mut rx) = handshake(stream, psk, false)?;
     rx.set_timeout(Some(Duration::from_secs(10)))?;
     let hello = rx.recv().context("client did not say hello (wrong passphrase?)")?;
@@ -1609,6 +1650,8 @@ struct Client {
     here: bool,
     /// Where the pointer is (desktop coordinates), when it's here.
     pos: (i32, i32),
+    /// Last keyboard or mouse input from the server.
+    last_input: Instant,
 }
 
 /// Where and how the client connects.
@@ -1647,11 +1690,14 @@ impl Client {
         // A second injector for controlling this computer's windows from a
         // live view on another one.
         if let Ok(mut inj) = platform::create_injector(ctx.cfg.screen, &ctx.cfg.linux_backend) {
-            ctx.hub.set_injector(Box::new(move |ops: &[platform::InjectOp]| {
-                for op in ops {
-                    let _ = platform::apply(inj.as_mut(), *op);
-                }
-            }));
+            ctx.hub.set_injector(
+                Box::new(move |ops: &[platform::InjectOp]| {
+                    for op in ops {
+                        let _ = platform::apply(inj.as_mut(), *op);
+                    }
+                }),
+                false,
+            );
         }
         let mut c = Client {
             common: Common::new(ctx.clone(), clip_set),
@@ -1661,6 +1707,7 @@ impl Client {
             held_buttons: HashSet::new(),
             here: false,
             pos: (0, 0),
+            last_input: Instant::now(),
         };
         let mut last_failed: HashMap<SocketAddr, Instant> = HashMap::new();
         let mut pending_pair: Option<(PairWith, String)> = None;
@@ -1675,11 +1722,8 @@ impl Client {
                     let mut st = c.ctx.status.lock();
                     st.needs_pairing = needs;
                     st.paired = paired_list(&c.ctx.cfg.trusted);
-                    st.message = if needs {
-                        "Not paired yet: choose the computer to pair with below".into()
-                    } else {
-                        "Looking for the sharing computer…".into()
-                    };
+                    st.message =
+                        if needs { "Not paired yet: choose the computer to pair with below".into() } else { "Looking for the sharing computer…".into() };
                 }
                 match ctl_rx.recv_timeout(Duration::from_secs(1)) {
                     Ok(Control::Stop) => break,
@@ -1722,7 +1766,7 @@ impl Client {
                     match ctl_rx.recv_timeout(Duration::from_secs(2)) {
                         Ok(Control::Stop) => break,
                         Ok(Control::Pair { device, code }) => pending_pair = Some((PairWith::Device(device), code)),
-                    Ok(Control::PairAddr { addr, code }) => pending_pair = Some((PairWith::Addr(addr), code)),
+                        Ok(Control::PairAddr { addr, code }) => pending_pair = Some((PairWith::Addr(addr), code)),
                         Ok(Control::Forget(d)) => c.forget(&d),
                         _ => {}
                     }
@@ -1799,7 +1843,8 @@ impl Client {
             PairWith::Addr(a) => {
                 let resolved = parse_addr(a);
                 let Some(addr) = resolved else {
-                    self.ctx.status.lock().pair_error = Some(format!("\"{a}\" isn't a valid address. Use the address shown on the other computer, like 192.168.1.20."));
+                    self.ctx.status.lock().pair_error =
+                        Some(format!("\"{a}\" isn't a valid address. Use the address shown on the other computer, like 192.168.1.20."));
                     return None;
                 };
                 // Remember it: on this network discovery may not work, so reconnect by address.
@@ -1816,6 +1861,7 @@ impl Client {
         crate::net::write_auth(&mut stream, &t.auth)?;
         let (tx, mut rx) = handshake(stream, &t.psk, true)?;
         let mut screen = self.injector.screen();
+        self.ctx.hub.set_screen(screen);
         tx.send(&Msg::Hello { version: PROTOCOL_VERSION, name: self.ctx.cfg.name.clone(), os: Os::current(), screen })?;
         rx.set_timeout(Some(Duration::from_secs(10)))?;
         let refused = match t.auth {
@@ -1825,7 +1871,9 @@ impl Client {
         };
         let (server_name, server_os) = match rx.recv().map_err(|_| anyhow!(refused))? {
             Msg::Welcome { version, name, os } if version == PROTOCOL_VERSION => (name, os),
-            Msg::Welcome { version, .. } => bail!("the server runs OpenHop protocol v{version}, this computer runs v{PROTOCOL_VERSION}: update both to the same version"),
+            Msg::Welcome { version, .. } => {
+                bail!("the server runs OpenHop protocol v{version}, this computer runs v{PROTOCOL_VERSION}: update both to the same version")
+            }
             _ => bail!("unexpected reply"),
         };
         rx.set_timeout(Some(PEER_TIMEOUT))?;
@@ -1894,6 +1942,12 @@ impl Client {
         }
 
         let ticker = tick(Duration::from_secs(2));
+        // Wi-Fi adapters doze between packets to save power and then hold
+        // incoming packets for up to a few hundred milliseconds: typing
+        // (sparse packets, unlike mouse movement) would lag. A tiny packet
+        // every 40 ms while the keyboard and mouse are here keeps the
+        // connection awake on both ends.
+        let awake = tick(Duration::from_millis(40));
         let result = loop {
             select! {
                 recv(ev_rx) -> ev => match ev {
@@ -1925,10 +1979,16 @@ impl Client {
                     }
                     Ok(Control::SetLayout(_)) => {}
                 },
+                recv(awake) -> _ => {
+                    if self.here && self.last_input.elapsed() < Duration::from_secs(30) {
+                        link.send(Msg::Ping);
+                    }
+                },
                 recv(ticker) -> _ => {
                     let now = self.injector.screen();
                     if now != screen {
                         screen = now;
+                        self.ctx.hub.set_screen(now);
                         self.ctx.status.lock().screen = Some(now);
                         link.send(Msg::Screen(now));
                     }
@@ -1944,6 +2004,9 @@ impl Client {
     }
 
     fn on_msg(&mut self, m: Msg, screen: Rect, link: &Link, server: &str) {
+        if matches!(m, Msg::Enter { .. } | Msg::Move { .. } | Msg::Button { .. } | Msg::Wheel { .. } | Msg::Key { .. }) {
+            self.last_input = Instant::now();
+        }
         let r = match m {
             Msg::Enter { x, y } => {
                 self.here = true;
@@ -2026,7 +2089,8 @@ impl Client {
                 let mut nudge = |dx: i32| {
                     let _ = injector.move_to(px + dx.max(0), py);
                 };
-                let found = dnd::drag_files_at(self.pos, &mut nudge);
+                let viewer = self.ctx.hub.dragged_viewer();
+                let found = if viewer.is_some() { None } else { dnd::drag_files_at(self.pos, &mut nudge) };
                 let reply = match found {
                     Some(paths) => {
                         let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
@@ -2040,6 +2104,15 @@ impl Client {
                             }
                             _ => Msg::DragReply { id, offer: None, files: vec![] },
                         }
+                    }
+                    None if viewer.is_some() => {
+                        // A live window shown here, dragged by its title bar.
+                        let stream = viewer.unwrap_or_default();
+                        if !cfg!(target_os = "macos") {
+                            let _ = self.injector.key(ESC, true);
+                            let _ = self.injector.key(ESC, false);
+                        }
+                        Msg::DragViewer { id, stream }
                     }
                     None => {
                         // Not files: a window dragged by its title bar?

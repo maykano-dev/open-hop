@@ -59,22 +59,17 @@ pub struct Config {
     /// Silence notifications here while another computer is in Do Not
     /// Disturb or presenting.
     pub dnd_sync: bool,
-    /// Sound when files or windows arrive: "off", "swoosh", "pop" or "chime".
-    pub sound: String,
-    /// 0-100.
-    pub sound_volume: u32,
-    /// Pause live windows when a laptop is below 20% and not charging.
-    pub battery_saver: bool,
-    /// Live window picture quality: "low", "balanced" or "high".
+    /// Live window picture quality (always "high").
     pub stream_quality: String,
     /// Dragging a window by its title bar onto another screen opens it there live.
     pub window_drag: bool,
-    /// The OpenHop window's look: "system", "light" or "dark".
-    pub ui_appearance: String,
     /// Accent colour name.
     pub ui_accent: String,
     /// Start OpenHop (in the background) when you log in.
     pub open_at_login: bool,
+    /// OpenHop is switched on. Connect once: it stays on (across restarts,
+    /// with the window closed) until it's switched off in the app.
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,14 +121,11 @@ impl Default for Config {
             server_device: None,
             theme_sync: true,
             dnd_sync: true,
-            sound: "swoosh".into(),
-            sound_volume: 60,
-            battery_saver: true,
-            stream_quality: "balanced".into(),
+            stream_quality: "high".into(),
             window_drag: true,
-            ui_appearance: "system".into(),
             ui_accent: "blue".into(),
             open_at_login: true,
+            enabled: true,
         }
     }
 }
@@ -172,11 +164,29 @@ impl Config {
         } else {
             Config::default()
         };
+        let before = toml::to_string(&cfg).unwrap_or_default();
+        cfg.normalize();
         if cfg.device_id.is_empty() {
             cfg.device_id = random_hex(8);
+        }
+        if path.exists() && toml::to_string(&cfg).unwrap_or_default() != before || !path.exists() {
             let _ = cfg.save(path);
         }
         Ok(cfg)
+    }
+
+    /// Features that are simply always on (they used to be options).
+    /// Only the transfer speed limit and the accent colour are choices.
+    pub fn normalize(&mut self) {
+        self.swap_cmd_ctrl = true;
+        self.clipboard_sync = true;
+        self.wake_on_lan = true;
+        self.notifications = true;
+        self.theme_sync = true;
+        self.dnd_sync = true;
+        self.stream_quality = "high".into();
+        self.window_drag = true;
+        self.open_at_login = true;
     }
 
     pub fn save(&self, path: &PathBuf) -> Result<()> {
@@ -203,6 +213,10 @@ mod tests {
         let partial: Config = toml::from_str("role = \"client\"\npassphrase = \"abc\"").unwrap();
         assert_eq!(partial.role, Role::Client);
         assert!(partial.swap_cmd_ctrl);
+        assert!(partial.enabled);
+        // Old files with options that no longer exist still load.
+        let old: Config = toml::from_str("sound = \"pop\"\nbattery_saver = true\nui_appearance = \"dark\"").unwrap();
+        assert!(old.enabled);
         let k = random_hex(32);
         assert_eq!(hex_key(&k).map(|b| b.len()), Some(32));
         assert!(hex_key("zz").is_none());

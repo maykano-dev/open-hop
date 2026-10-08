@@ -86,20 +86,7 @@ fn atoms(conn: &RustConnection) -> Option<Atoms> {
 fn make_window(conn: &RustConnection, screen: usize) -> Option<Window> {
     let root = conn.setup().roots[screen].root;
     let win = conn.generate_id().ok()?;
-    conn.create_window(
-        0,
-        win,
-        root,
-        -10,
-        -10,
-        1,
-        1,
-        0,
-        WindowClass::INPUT_ONLY,
-        0,
-        &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
-    )
-    .ok()?;
+    conn.create_window(0, win, root, -10, -10, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE)).ok()?;
     conn.flush().ok()?;
     Some(win)
 }
@@ -122,10 +109,7 @@ pub fn set(contents: Contents) -> Result<(), String> {
     if OWNER_TX.get().is_none() {
         let (tx, rx) = crossbeam_channel::unbounded();
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
-        std::thread::Builder::new()
-            .name("x11-clip-owner".into())
-            .spawn(move || owner_thread(rx, ready_tx))
-            .map_err(|e| e.to_string())?;
+        std::thread::Builder::new().name("x11-clip-owner".into()).spawn(move || owner_thread(rx, ready_tx)).map_err(|e| e.to_string())?;
         let win = ready_rx.recv_timeout(Duration::from_secs(3)).ok().flatten();
         let _ = OWNER_WIN.set(win);
         if win.is_none() {
@@ -133,7 +117,9 @@ pub fn set(contents: Contents) -> Result<(), String> {
         }
         let _ = OWNER_TX.set(tx);
     }
-    let (Some(tx), Some(_)) = (OWNER_TX.get(), owner_window()) else { return Err("no X11 clipboard".into()) };
+    let (Some(tx), Some(_)) = (OWNER_TX.get(), owner_window()) else {
+        return Err("no X11 clipboard".into());
+    };
     let gen = GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     tx.send((gen, contents)).map_err(|e| e.to_string())?;
     // Wait until the owner thread has taken the selection.
@@ -215,7 +201,8 @@ fn owner_thread(rx: Receiver<(u64, Contents)>, ready: Sender<Option<Window>>) {
                                 answered = prop;
                             } else if let Some(bytes) = names.get(&r.target).and_then(|n| c.bytes_for(n)) {
                                 if bytes.len() > chunk {
-                                    let _ = conn.change_window_attributes(r.requestor, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE));
+                                    let _ =
+                                        conn.change_window_attributes(r.requestor, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE));
                                     let _ = conn.change_property32(PropMode::REPLACE, r.requestor, prop, a.incr, &[bytes.len() as u32]);
                                     transfers.push(Transfer { requestor: r.requestor, prop, kind: r.target, data: bytes, offset: 0, started: Instant::now() });
                                 } else {

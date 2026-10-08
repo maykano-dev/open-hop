@@ -4,10 +4,9 @@ use super::Picture;
 use crate::protocol::{Rect, WinInfo};
 use windows::core::BOOL;
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
-    ClientToScreen, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
-    DIB_RGB_COLORS,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
@@ -34,7 +33,9 @@ fn app_name(h: HWND) -> String {
     unsafe {
         let mut pid = 0u32;
         GetWindowThreadProcessId(h, Some(&mut pid));
-        let Ok(p) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return String::new() };
+        let Ok(p) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return String::new();
+        };
         let mut buf = vec![0u16; 1024];
         let mut len = buf.len() as u32;
         let ok = QueryFullProcessImageNameW(p, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
@@ -92,18 +93,81 @@ pub fn list() -> Vec<WinInfo> {
         .collect()
 }
 
-/// The client area (what's captured and what input maps onto), on screen.
-pub fn geometry(id: u64) -> Option<Rect> {
+/// (whole window rectangle including invisible resize borders, the part you see).
+fn rects(h: HWND) -> Option<(RECT, RECT)> {
     unsafe {
-        let h = hwnd(id);
         if !IsWindow(Some(h)).as_bool() {
             return None;
         }
-        let mut r = RECT::default();
-        GetClientRect(h, &mut r).ok()?;
-        let mut p = POINT { x: 0, y: 0 };
-        let _ = ClientToScreen(h, &mut p);
-        Some(Rect { x: p.x, y: p.y, w: r.right - r.left, h: r.bottom - r.top })
+        let mut wr = RECT::default();
+        GetWindowRect(h, &mut wr).ok()?;
+        let mut vis = RECT::default();
+        let ok = DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &mut vis as *mut RECT as *mut _, std::mem::size_of::<RECT>() as u32).is_ok();
+        if !ok || vis.right <= vis.left || vis.bottom <= vis.top {
+            vis = wr;
+        }
+        Some((wr, vis))
+    }
+}
+
+/// The window as you see it (title bar included), on screen. That's what's
+/// captured and what input maps onto.
+pub fn geometry(id: u64) -> Option<Rect> {
+    let (_, v) = rects(hwnd(id))?;
+    Some(Rect { x: v.left, y: v.top, w: v.right - v.left, h: v.bottom - v.top })
+}
+
+/// The title bar's height: ask the window what's at each height down its middle.
+pub fn bar_height(id: u64) -> i32 {
+    let Some(g) = geometry(id) else { return 0 };
+    let h = hwnd(id);
+    let x = g.x + g.w / 2;
+    let mut last = -1;
+    let mut y = 1;
+    while y < 120.min(g.h) {
+        let (px, py) = (x, g.y + y);
+        let lp = LPARAM((((py as i16) as u16 as isize) << 16) | ((px as i16) as u16 as isize));
+        let mut hit = 0usize;
+        unsafe {
+            let _ = SendMessageTimeoutW(h, WM_NCHITTEST, WPARAM(0), lp, SMTO_ABORTIFHUNG, 30, Some(&mut hit));
+        }
+        // HTCAPTION, or the window's top resize border.
+        if hit == 2 || hit == 12 {
+            last = y;
+        } else if last >= 0 {
+            break;
+        }
+        y += 2;
+    }
+    if last >= 0 {
+        last + 2
+    } else {
+        0
+    }
+}
+
+pub fn raise(id: u64) {
+    unsafe {
+        let _ = SetWindowPos(hwnd(id), Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+}
+
+pub fn move_to(id: u64, x: i32, y: i32) {
+    let h = hwnd(id);
+    let Some((wr, v)) = rects(h) else { return };
+    // The invisible resize border sits outside what you see.
+    let (dx, dy) = (v.left - wr.left, v.top - wr.top);
+    unsafe {
+        let _ = SetWindowPos(h, None, x - dx, y - dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+pub fn begin_move(id: u64, _x: i32, _y: i32) {
+    unsafe {
+        // SC_MOVE | HTCAPTION: the window follows the mouse while the button is held.
+        let h = hwnd(id);
+        let _ = SetForegroundWindow(h);
+        let _ = PostMessageW(Some(h), WM_SYSCOMMAND, WPARAM(0xF012), LPARAM(0));
     }
 }
 
@@ -113,11 +177,15 @@ pub fn capture(id: u64) -> Option<Picture> {
         if IsIconic(h).as_bool() {
             return None;
         }
-        let g = geometry(id)?;
-        let (w, hgt) = (g.w, g.h);
+        let (wr, v) = rects(h)?;
+        // The whole window is drawn (title bar and invisible borders
+        // included), then cut to the part you see.
+        let (w, hgt) = (wr.right - wr.left, wr.bottom - wr.top);
         if w <= 0 || hgt <= 0 {
             return None;
         }
+        let (cx, cy) = ((v.left - wr.left).clamp(0, w - 1), (v.top - wr.top).clamp(0, hgt - 1));
+        let (cw, ch) = ((v.right - v.left).min(w - cx), (v.bottom - v.top).min(hgt - cy));
         let screen = GetDC(None);
         let dc = CreateCompatibleDC(Some(screen));
         let mut bi = BITMAPINFO::default();
@@ -134,14 +202,18 @@ pub fn capture(id: u64) -> Option<Picture> {
         let out = match bmp {
             Ok(bmp) if !bits.is_null() => {
                 let old = SelectObject(dc, bmp.into());
-                // PW_CLIENTONLY | PW_RENDERFULLCONTENT: works for covered windows
-                // and for apps drawn with DirectX (browsers, Electron).
-                let ok = PrintWindow(h, dc, PRINT_WINDOW_FLAGS(1 | 2)).as_bool();
+                // PW_RENDERFULLCONTENT: works for covered windows and for
+                // apps drawn with DirectX (browsers, Electron).
+                let ok = PrintWindow(h, dc, PRINT_WINDOW_FLAGS(2)).as_bool();
                 let px = std::slice::from_raw_parts(bits as *const u8, (w * hgt * 4) as usize);
-                let bgra: Vec<u8> = px.to_vec();
+                let mut bgra: Vec<u8> = Vec::with_capacity((cw * ch * 4) as usize);
+                for row in cy..cy + ch {
+                    let start = ((row * w + cx) * 4) as usize;
+                    bgra.extend_from_slice(&px[start..start + (cw * 4) as usize]);
+                }
                 SelectObject(dc, old);
                 let _ = DeleteObject(bmp.into());
-                ok.then_some(Picture { w: w as u32, h: hgt as u32, bgra })
+                ok.then_some(Picture { w: cw as u32, h: ch as u32, bgra })
             }
             _ => None,
         };
@@ -161,7 +233,9 @@ pub fn activate(id: u64) {
         // tap of Alt counts as input, which allows the switch.
         let alt = |up: bool| INPUT {
             r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(0x12), wScan: 0, dwFlags: KEYBD_EVENT_FLAGS(if up { 2 } else { 0 }), time: 0, dwExtraInfo: 0 } },
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT { wVk: VIRTUAL_KEY(0x12), wScan: 0, dwFlags: KEYBD_EVENT_FLAGS(if up { 2 } else { 0 }), time: 0, dwExtraInfo: 0 },
+            },
         };
         SendInput(&[alt(false), alt(true)], std::mem::size_of::<INPUT>() as i32);
         let _ = SetForegroundWindow(h);
@@ -227,13 +301,10 @@ pub fn lower(id: u64) {
 pub fn resize(id: u64, w: i32, h: i32) {
     unsafe {
         let hw = hwnd(id);
-        let (mut wr, mut cr) = (RECT::default(), RECT::default());
-        if GetWindowRect(hw, &mut wr).is_err() || GetClientRect(hw, &mut cr).is_err() {
-            return;
-        }
-        // Add the frame around the content area.
-        let dw = (wr.right - wr.left) - (cr.right - cr.left);
-        let dh = (wr.bottom - wr.top) - (cr.bottom - cr.top);
+        let Some((wr, v)) = rects(hw) else { return };
+        // `w`×`h` is what you see; add the invisible resize borders.
+        let dw = (wr.right - wr.left) - (v.right - v.left);
+        let dh = (wr.bottom - wr.top) - (v.bottom - v.top);
         let _ = SetWindowPos(hw, None, 0, 0, w + dw, h + dh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }

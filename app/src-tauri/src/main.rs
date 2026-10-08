@@ -35,6 +35,8 @@ struct Snapshot {
     wayland: bool,
     version: &'static str,
     update: updater::UpdateState,
+    /// The computer's own light/dark setting, when OpenHop can read it.
+    system_dark: Option<bool>,
 }
 
 /// Close other OpenHop app processes. The single-instance check only knows
@@ -48,7 +50,9 @@ fn close_older_copies() {
     if let Ok(dir) = std::fs::read_dir("/proc") {
         let uid = std::fs::metadata("/proc/self").map(|m| std::os::unix::fs::MetadataExt::uid(&m)).ok();
         for e in dir.flatten() {
-            let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
+            let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+                continue;
+            };
             let comm = std::fs::read_to_string(e.path().join("comm")).unwrap_or_default();
             let same_user = std::fs::metadata(e.path()).map(|m| Some(std::os::unix::fs::MetadataExt::uid(&m)) == uid).unwrap_or(false);
             if pid != me && comm.trim() == name && same_user {
@@ -63,10 +67,8 @@ fn close_older_copies() {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        if let Ok(out) = std::process::Command::new("tasklist")
-            .args(["/FI", &format!("IMAGENAME eq {name}"), "/FO", "CSV", "/NH"])
-            .creation_flags(0x08000000)
-            .output()
+        if let Ok(out) =
+            std::process::Command::new("tasklist").args(["/FI", &format!("IMAGENAME eq {name}"), "/FO", "CSV", "/NH"]).creation_flags(0x08000000).output()
         {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 if let Some(pid) = line.split(',').nth(1).and_then(|p| p.trim_matches('"').parse::<u32>().ok()) {
@@ -91,6 +93,20 @@ fn close_older_copies() {
         // Give them a moment to release the port.
         std::thread::sleep(std::time::Duration::from_millis(800));
     }
+}
+
+/// Reading the OS setting runs a small program on some systems: cache it.
+fn system_dark() -> Option<bool> {
+    static CACHE: Mutex<Option<(std::time::Instant, Option<bool>)>> = Mutex::new(None);
+    let mut c = CACHE.lock();
+    if let Some((at, v)) = *c {
+        if at.elapsed() < std::time::Duration::from_secs(2) {
+            return v;
+        }
+    }
+    let v = openhop_core::extras::system::dark_mode();
+    *c = Some((std::time::Instant::now(), v));
+    v
 }
 
 fn wayland() -> bool {
@@ -122,6 +138,7 @@ fn snapshot(app: State<App>) -> Snapshot {
         wayland: wayland(),
         version: env!("CARGO_PKG_VERSION"),
         update: updater::state(),
+        system_dark: system_dark(),
     }
 }
 
@@ -156,7 +173,9 @@ fn merge_engine_fields(mut config: Config, path: &PathBuf) -> Config {
         config.layout = disk.layout;
         config.macs = disk.macs;
         config.last_ips = disk.last_ips;
+        config.enabled = disk.enabled;
     }
+    config.normalize();
     config
 }
 
@@ -172,15 +191,15 @@ fn save_config(app: State<App>, config: Config, restart: bool) -> Result<(), Str
     Ok(())
 }
 
-/// Settings that apply straight away (no restart): sync, sounds, live
-/// windows, look, open at login. `prefs` holds just the changed fields.
+/// Settings that apply straight away (no restart): the accent colour.
+/// `prefs` holds just the changed fields.
 #[tauri::command]
 fn update_prefs(handle: AppHandle, app: State<App>, prefs: serde_json::Value) -> Result<(), String> {
     let cfg = {
         let mut cfg = app.config.lock();
         let mut v = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
         if let (Some(obj), Some(p)) = (v.as_object_mut(), prefs.as_object()) {
-            for k in ["theme_sync", "dnd_sync", "sound", "sound_volume", "battery_saver", "stream_quality", "window_drag", "ui_appearance", "ui_accent", "open_at_login"] {
+            for k in ["ui_accent"] {
                 if let Some(x) = p.get(k) {
                     obj.insert(k.into(), x.clone());
                 }
@@ -195,7 +214,7 @@ fn update_prefs(handle: AppHandle, app: State<App>, prefs: serde_json::Value) ->
     if let Some(e) = app.engine.lock().as_ref() {
         e.hub().set_settings(openhop_core::extras::Settings::from_config(&cfg));
     }
-    apply_login(&handle, cfg.open_at_login);
+    apply_login(&handle, true);
     Ok(())
 }
 
@@ -212,17 +231,42 @@ fn apply_login(handle: &AppHandle, on: bool) {
     }
 }
 
-#[tauri::command]
-fn start(app: State<App>) -> Result<(), String> {
-    start_engine(&app)
+/// Remember whether OpenHop is on, so it comes back the same way after the
+/// window is closed, the app restarts or the computer is switched off.
+fn remember_enabled(app: &App, on: bool) {
+    let mut cfg = merge_engine_fields(app.config.lock().clone(), &app.path);
+    cfg.enabled = on;
+    if let Err(e) = cfg.save(&app.path) {
+        log::warn!("couldn't save the on/off state: {e}");
+    }
+    *app.config.lock() = cfg;
 }
 
 #[tauri::command]
-fn stop(app: State<App>) {
+fn start(handle: AppHandle, app: State<App>) -> Result<(), String> {
+    remember_enabled(&app, true);
+    let r = start_engine(&app);
+    update_tray(&handle, true);
+    r
+}
+
+#[tauri::command]
+fn stop(handle: AppHandle, app: State<App>) {
+    remember_enabled(&app, false);
     if let Some(e) = app.engine.lock().take() {
         e.stop();
     }
+    update_tray(&handle, false);
 }
+
+/// The tray's on/off item follows the switch in the window.
+fn update_tray(handle: &AppHandle, on: bool) {
+    if let Some(item) = handle.try_state::<TrayToggle>() {
+        let _ = item.0.set_text(if on { "Turn OpenHop Off" } else { "Turn OpenHop On" });
+    }
+}
+
+struct TrayToggle(MenuItem<tauri::Wry>);
 
 #[tauri::command]
 fn set_layout(app: State<App>, layout: Layout) -> Result<(), String> {
@@ -292,6 +336,7 @@ fn note_action(handle: AppHandle, kind: String, target: String) -> Result<(), St
 #[tauri::command]
 fn pair(app: State<App>, device: String, code: String) -> Result<(), String> {
     if app.engine.lock().is_none() {
+        remember_enabled(&app, true);
         start_engine(&app)?;
     }
     match app.engine.lock().as_ref() {
@@ -307,6 +352,7 @@ fn pair(app: State<App>, device: String, code: String) -> Result<(), String> {
 #[tauri::command]
 fn pair_addr(app: State<App>, addr: String, code: String) -> Result<(), String> {
     if app.engine.lock().is_none() {
+        remember_enabled(&app, true);
         start_engine(&app)?;
     }
     match app.engine.lock().as_ref() {
@@ -387,15 +433,10 @@ fn main() {
         log::warn!("{e:#}; using defaults");
         Config::default()
     });
-    // Always start: the host shows its pairing code and others appear right away.
-    let autostart = true;
-    let state = App {
-        path,
-        config: Mutex::new(config),
-        engine: Mutex::new(None),
-        last_error: Mutex::new(None),
-        toasts: Mutex::new(VecDeque::new()),
-    };
+    // Connect once: OpenHop starts (and reconnects) on its own every time,
+    // until it's switched off in the app.
+    let autostart = config.enabled;
+    let state = App { path, config: Mutex::new(config), engine: Mutex::new(None), last_error: Mutex::new(None), toasts: Mutex::new(VecDeque::new()) };
 
     tauri::Builder::default()
         // Only one copy may run (it owns the network port); opening OpenHop
@@ -443,7 +484,7 @@ fn main() {
             live::fx_done,
             live::dock_toggle,
             live::dock_hide,
-            live::play_sound,
+            live::viewer_drag,
             live::viewer_fit,
             live::viewer_title
         ])
@@ -451,8 +492,11 @@ fn main() {
             // Keep sharing in the background: closing the window hides it to the tray.
             let show = MenuItem::with_id(app, "show", "Open OpenHop", true, None::<&str>)?;
             let dock = MenuItem::with_id(app, "dock", "Windows on All Computers (Ctrl+Alt+Space)", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &dock, &quit])?;
+            let on = app.state::<App>().config.lock().enabled;
+            let toggle = MenuItem::with_id(app, "toggle", if on { "Turn OpenHop Off" } else { "Turn OpenHop On" }, true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit (starts again at login)", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &dock, &toggle, &quit])?;
+            app.manage(TrayToggle(toggle.clone()));
             TrayIconBuilder::with_id("tray")
                 .icon(app.default_window_icon().cloned().expect("icon"))
                 .tooltip("OpenHop")
@@ -465,6 +509,15 @@ fn main() {
                         }
                     }
                     "dock" => live::toggle_dock(app),
+                    "toggle" => {
+                        let state = app.state::<App>();
+                        let running = state.engine.lock().is_some();
+                        if running {
+                            stop(app.clone(), state);
+                        } else {
+                            let _ = start(app.clone(), state);
+                        }
+                    }
                     "quit" => {
                         if let Some(e) = app.state::<App>().engine.lock().take() {
                             e.stop();
@@ -508,7 +561,8 @@ fn main() {
                     let _ = w.hide();
                 }
             }
-            apply_login(app.handle(), app.state::<App>().config.lock().open_at_login);
+            // Always started at login (in the background).
+            apply_login(app.handle(), true);
             // Move notifications from the engine to the toast window.
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {

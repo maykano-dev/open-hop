@@ -28,7 +28,9 @@ fn text(d: &CFDictionary<CFString, CFType>, key: &str) -> String {
 }
 
 fn windows(option: CGWindowListOption, rel: u32) -> Vec<Info> {
-    let Some(arr) = copy_window_info(option, rel) else { return vec![] };
+    let Some(arr) = copy_window_info(option, rel) else {
+        return vec![];
+    };
     let mut out = vec![];
     for item in arr.iter() {
         let d: CFDictionary<CFString, CFType> = unsafe { CFDictionary::wrap_under_get_rule(*item as CFDictionaryRef) };
@@ -100,7 +102,9 @@ pub fn capture(id: u64) -> Option<Picture> {
 
 pub fn activate(id: u64) {
     use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
-    let Some(w) = windows(kCGWindowListOptionIncludingWindow, id as u32).into_iter().find(|w| w.id as u64 == id) else { return };
+    let Some(w) = windows(kCGWindowListOptionIncludingWindow, id as u32).into_iter().find(|w| w.id as u64 == id) else {
+        return;
+    };
     if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(w.pid) {
         #[allow(deprecated)]
         app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps);
@@ -122,3 +126,11 @@ pub fn set_hidden(_: u64, _: bool) {}
 pub fn lower(_: u64) {}
 pub fn resize(_: u64, _: i32, _: i32) {}
 pub fn restore_all() {}
+pub fn raise(_: u64) {}
+pub fn move_to(_: u64, _: i32, _: i32) {}
+pub fn begin_move(_: u64, _: i32, _: i32) {}
+
+/// Pictures include the window's title bar (28 points on current macOS).
+pub fn bar_height(_: u64) -> i32 {
+    28
+}

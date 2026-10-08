@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.5.0
+
+**Update every computer** (protocol 6).
+
+### Changed
+- **Live windows look and act like the real window.** They show the window's own title bar and borders, with no second frame around them. Drag the title bar to move it, click its buttons, drag an edge to resize it.
+- **Drag a live window back.** Carry it by its title bar off the screen edge and it goes home (still following your mouse there), or on to another computer.
+- **Clicks in live windows work** when the window belongs to a Linux computer sharing its keyboard and mouse. Before, the first click could leave that computer's mouse stuck for up to 20 seconds.
+- **Typing on other computers is instant on Wi-Fi.** Wi-Fi adapters doze between packets to save power and held keystrokes for up to a few hundred milliseconds; OpenHop now keeps the connection awake while you use another computer, and the Linux installer turns Wi-Fi power saving off (NetworkManager).
+- **Typing into a live window goes straight to the real window** from the moment it opens (it sometimes went through the slow path and dropped letters).
+- **Connect once.** OpenHop remembers that it's on: it starts by itself at sign-in, keeps running with its window closed, and stays on after restarts until you switch it off in its window or tray menu (*Turn OpenHop Off*).
+- **No more toggles.** ⌃/⌘ swapping, clipboard and files, notifications, Wake-on-LAN, dragging windows across, dark mode and Do Not Disturb sync, best picture quality and starting at sign-in are always on. Only the transfer **Speed Limit** remains. Settings now have **General** and **Look** tabs.
+- **The port is automatic.** If an older OpenHop holds it, that copy is closed and the port taken over; if another program has it, OpenHop quietly uses the next free one. The Port field is gone.
+- **Light and dark follow your computer's setting** (no separate switch).
+- The Nearby radar shows only the blue pulsing circles.
+
+### Removed
+- Battery saver: everything works the same on battery.
+- Arrival sounds and their volume.
+
 ## v0.4.1
 
 **Update every computer** (protocol 5).

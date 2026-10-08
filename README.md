@@ -86,12 +86,12 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 📋 **Clipboard sync** | Copy text, an image or a screenshot on one computer and paste it on another. Images arrive pixel-perfect. |
 | 📁 **Copy & paste files** | Copy files, folders or videos in Explorer, Finder or Files, hop over, and paste: the real files arrive, not a path. A copied picture file pastes as a picture too, into chats, documents and image editors. |
 | 🫳 **Drag & drop files across screens** | Drag files off one computer's screen and drop them into a folder or app on another's, just like a local drag. |
-| 🪟 **Windows from any computer** | A dock (**Ctrl+Alt+Space**) shows the open windows of every computer. Click one and it opens live on the computer you're using: you see it update and can click, scroll and type in it. Or just drag a window by its title bar off the screen edge. |
+| 🪟 **Windows from any computer** | A dock (**Ctrl+Alt+Space**) shows the open windows of every computer. Click one and it opens live on the computer you're using, with its own title bar: you see it update and can click, scroll and type in it. Or just drag a window by its title bar off the screen edge, and drag it back the same way. |
 | 🌙 **Dark mode sync** | Switch dark mode on one computer and the others follow. |
 | 🔕 **Do Not Disturb sync** | While one computer is presenting, in a full-screen call or in Do Not Disturb, the others go quiet too. |
-| 🔋 **Battery saver** | Live windows pause when a laptop drops below 20% and isn't charging. Mouse and keyboard sharing keeps working. |
-| 🔊 **Sounds & animation** | A soft swoosh, pop or chime (your choice) and a landing animation when files or windows arrive. |
-| 🎨 **Themes** | Light, dark or automatic, with six accent colours. |
+| ✨ **Landing animation** | A short animation where files or windows arrive. |
+| 🎨 **Looks right** | Light or dark following your computer's own setting, with six accent colours. |
+| 🔁 **Connect once** | Turn OpenHop on once and it stays on: with its window closed, after restarts and after the computer is switched off and on, until you switch it off. |
 | 🔗 **Smart link prompts** | Copy a link on one computer, move to another, and a notification offers to open it there in the default browser. |
 | 💤 **Wake-on-LAN** | Move the pointer toward a computer that's asleep and OpenHop sends it a wake-up packet. |
 | 🔒 **End-to-end encryption** | Every keystroke, mouse movement and clipboard item is encrypted with the [Noise protocol](https://noiseprotocol.org) (X25519, ChaCha20-Poly1305, BLAKE2s). There is no plaintext mode. |
@@ -149,9 +149,10 @@ flowchart LR
 | Live windows (view and control) | ✅ | ✅ | ✅ | ✅ |
 | Dark mode sync | ✅ | ✅ (asks to control System Events once) | ✅ GNOME | ✅ GNOME |
 | Do Not Disturb sync | best effort | via two Shortcuts* | ✅ GNOME | ✅ GNOME |
-| Battery saver | ✅ | ✅ | ✅ | ✅ |
 
 \* macOS has no public switch for Focus. In the Shortcuts app, make two shortcuts named **OpenHop Focus On** and **OpenHop Focus Off**, each with one *Set Focus* action, and OpenHop runs them.
+
+> **Test status (v0.5.0).** Tested end to end on Linux (two X servers, the app on one side and the command-line version on the other, both ways round): clicking and fast typing into a live window of the computer sharing its keyboard and mouse, moving a live window by its own title bar, dragging it back home (it keeps following the mouse) and from the other side, the on/off state surviving a restart, and taking over the port from an older copy. Windows and macOS build and pass the automated tests but haven't been tried on real machines.
 
 > **Test status (v0.4.0).** The v0.4 features were tested end to end on Linux: the window dock, opening a live window, clicking and typing into it from both computers' keyboards, dragging a window by its title bar onto another computer, dark mode and Do Not Disturb sync in both directions, and the arrival animation. The Windows and macOS versions build and pass the automated tests, but haven't been tried on real machines yet.
 
@@ -279,10 +280,10 @@ Update **every computer** to the same version: computers only connect to others 
 </p>
 
 - **Links:** copy a web link on one computer. When you move to another, a notification offers to open it there.
-- **Waking a sleeping computer:** when **Wake Sleeping Computers** is on, pushing the pointer toward a computer that's asleep sends it a Wake-on-LAN packet. Its tile shows **Asleep** in the arrangement. Wake-on-LAN must be enabled on that computer: in the BIOS/UEFI and network adapter settings on PCs, or with **Wake for network access** on Macs (works when plugged in). It works best over Ethernet.
-- **Running in the background:** you don't need to keep the window open. Closing it hides OpenHop to the tray or menu bar and sharing carries on. Choose **Quit** from the tray icon to stop OpenHop completely.
-- **Start automatically:** **Open at Login** (on by default) starts OpenHop quietly in the background when you sign in, already connected.
-- **Windows from other computers:** press **Ctrl+Alt+Space** (or click the tray icon › *Windows on All Computers*) for the window dock. Click a window from any computer and it moves here: it looks and behaves like a normal window (same size and title; resize it and the real one follows), while the app keeps running on its own computer, where the original is hidden until you close it here (macOS can't hide another app's window, so there it stays visible). You can also grab a window by its title bar and drag it off the screen edge onto another computer: it opens there under your pointer and snaps back into place on its own screen.
+- **Waking a sleeping computer:** pushing the pointer toward a computer that's asleep sends it a Wake-on-LAN packet. Its tile shows **Asleep** in the arrangement. Wake-on-LAN must be enabled on that computer: in the BIOS/UEFI and network adapter settings on PCs, or with **Wake for network access** on Macs (works when plugged in). It works best over Ethernet.
+- **Connect once:** you don't need to keep the window open, or open OpenHop again after a restart. Closing the window hides OpenHop to the tray or menu bar and sharing carries on, and it starts by itself (in the background, already connected) every time you sign in. It stays that way until you switch it off with the switch at the top of its window (or **Turn OpenHop Off** in the tray menu).
+- **Nothing to set up:** clipboard and file sync, ⌃/⌘ swapping, dragging windows across screens, dark mode and Do Not Disturb sync, notifications and Wake-on-LAN are simply always on. The network port is chosen automatically: if an older OpenHop still holds it, that copy is closed; if another program has it, OpenHop uses the next free one. The only option is the transfer **Speed Limit**; the **Look** tab has the accent colour.
+- **Windows from other computers:** press **Ctrl+Alt+Space** (or click the tray icon › *Windows on All Computers*) for the window dock. Click a window from any computer and it moves here: it looks and behaves like a normal window, with its own title bar (drag it to move it, click its buttons, drag an edge to resize it and the real one follows), while the app keeps running on its own computer, where the original is hidden until it comes back (macOS can't hide another app's window, so there it stays visible). You can also grab a window by its title bar and drag it off the screen edge onto another computer: it opens there under your pointer. Drag it by its title bar back across the edge and it's home again, still following your mouse.
 - **Something feels stuck?** Move the pointer back to the server. Leaving a screen always releases every key and mouse button that was held there. If a computer stops responding (asleep, Wi-Fi dropped), OpenHop drops it within about 10 seconds, returns the pointer to you, and reconnects it automatically when it's back, in the same spot in your arrangement.
 
 ---
@@ -290,10 +291,10 @@ Update **every computer** to the same version: computers only connect to others 
 ## FAQ
 
 **Can I drag an app window from one computer onto another?**
-Yes. Drag it by its title bar off the screen edge and it opens live on the other computer. A Windows app can't really run on a Mac (or the other way round), so the window keeps running where it is and you get a live view of it that you can click and type into, like Windows' *RemoteApp*. Only the parts of a window that change are sent, so typing and clicking use very little bandwidth; video playing in a window uses a few Mbps. Pick **Low** under *Live Window Quality* to save Wi-Fi.
+Yes. Drag it by its title bar off the screen edge and it opens live on the other computer. A Windows app can't really run on a Mac (or the other way round), so the window keeps running where it is and you get a live view of it that you can click and type into, like Windows' *RemoteApp*. Only the parts of a window that change are sent, so typing and clicking use very little bandwidth; video playing in a window uses a few Mbps. Drag it back across the edge to bring it home.
 
 **Do I have to keep OpenHop open on every computer?**
-It has to be running, but not on screen. Close the window and it keeps working from the tray (menu bar on a Mac). With **Open at Login** on (the default) it starts by itself when you sign in.
+No. Turn it on once: it keeps working with its window closed, starts by itself when you sign in (even after the computer was switched off), and reconnects on its own. It only stops when you switch it off in its window or tray menu.
 
 <p align="center">
   <img src="docs/screenshots/dock-light.png" width="90%" alt="The window dock: windows from every computer">
@@ -528,7 +529,9 @@ open-hop/
 
 ## Roadmap
 
-**Done in v0.4:** live windows from other computers (window dock, drag a window across), dark mode sync, Do Not Disturb sync, battery saver, arrival sounds and animation, themes, open at login.
+**Done in v0.5:** live windows with their own title bar that you drag back home, connect once (always on until switched off), no toggles to set, automatic port, instant typing over Wi-Fi.
+
+**Done in v0.4:** live windows from other computers (window dock, drag a window across), dark mode sync, Do Not Disturb sync, arrival animation, themes.
 
 **Done in v0.3:** AirDrop-style pairing with a 6-digit code, direct-cable connections (no router), transfer speed limit, Check for Updates, single-instance app and the restart fix.
 
@@ -547,7 +550,6 @@ open-hop/
 **Phase 2: window streaming**
 
 - [x] Stream individual windows across, with a window dock and drag-to-teleport (v0.4)
-- [x] **Battery-aware streaming** (v0.4)
 - [ ] Hardware video encoding (H.264) for smoother live windows on slow Wi-Fi
 - [ ] Show another computer's whole desktop as an extra monitor
 

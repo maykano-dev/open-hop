@@ -204,9 +204,7 @@ fn main() -> Result<()> {
             pair_request = None;
         }
         if let Some((code, name)) = &pair_request {
-            let server = s.discovered.iter().find(|d| {
-                d.role == Role::Server && name.as_ref().map(|n| n == &d.name).unwrap_or(true)
-            });
+            let server = s.discovered.iter().find(|d| d.role == Role::Server && name.as_ref().map(|n| n == &d.name).unwrap_or(true));
             if let Some(d) = server {
                 log::info!("pairing with {}…", d.name);
                 engine.pair(d.device.clone(), code.clone());

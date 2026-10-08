@@ -256,7 +256,6 @@ select.value option { color: #000; }
 .radar .ring:nth-child(3) { animation-delay: 2.4s; }
 .radar.idle .ring { animation: none; opacity: 0; }
 @keyframes sonar { 0% { transform: scale(.25); opacity: 0; } 12% { opacity: 1; } 100% { transform: scale(1.25); opacity: 0; } }
-.radar .guide { position: absolute; left: 50%; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--label) 7%, transparent); transform: translate(-50%, -50%); pointer-events: none; }
 .radar svg.links { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
 .radar svg.links line { stroke: var(--green); stroke-width: 2; stroke-linecap: round; stroke-dasharray: 2 7; opacity: .7; animation: flow 1.2s linear infinite; }
 @keyframes flow { to { stroke-dashoffset: -18; } }
@@ -297,9 +296,11 @@ select.value option { color: #000; }
 .alert .field-label { display: block; text-align: left; margin: 6px 16px 2px; font-size: 12px; color: var(--secondary); }
 .alert input.addr { font: 500 17px ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 0; }
 
-/* ---------- look & sound */
+/* ---------- look */
 .accents { display: flex; gap: 9px; margin-left: auto; }
 .accents button { width: 22px; height: 22px; border-radius: 50%; border: 0; padding: 0; cursor: pointer; box-shadow: inset 0 0 0 0.5px rgba(0,0,0,.15); }
 .accents button[aria-checked="true"] { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--blue); }
 .slider { margin-left: auto; width: 46%; accent-color: var(--blue); }
-#appearance { grid-template-columns: 1fr 1fr 1fr; }
+.tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; margin: 4px 0 6px; border-radius: 9px; background: var(--fill, rgba(118,118,128,.12)); }
+.tabs button { border: 0; background: transparent; color: var(--label); font: inherit; font-size: 13px; font-weight: 500; padding: 6px 0; border-radius: 7px; cursor: pointer; }
+.tabs button.on { background: var(--card, #fff); box-shadow: 0 1px 3px rgba(0,0,0,.12), 0 0 0 .5px rgba(0,0,0,.04); font-weight: 600; }

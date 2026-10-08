@@ -1,6 +1,6 @@
 //! Windows backend: low-level hooks for capture, SendInput for injection.
 
-use super::{Capture, InputEvent, Injector};
+use super::{Capture, Injector, InputEvent};
 use crate::keys;
 use crate::protocol::{MouseButton, Rect};
 use anyhow::{anyhow, Result};
@@ -12,11 +12,10 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, MOUSEINPUT,
-    MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -132,11 +131,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
                 let scan = (info.scanCode & 0xFF) as u16;
                 let native = if flags & LLKHF_EXTENDED != 0 { 0xE000 | scan } else { scan };
                 // AltGr's fake Ctrl has scanCode 0x21D; it maps to nothing and is dropped.
-                let hid = if info.scanCode > 0xFF {
-                    None
-                } else {
-                    keys::hid_from_win(native).or_else(|| keys::hid_from_win(scan))
-                };
+                let hid = if info.scanCode > 0xFF { None } else { keys::hid_from_win(native).or_else(|| keys::hid_from_win(scan)) };
                 if let Some(key) = hid {
                     let mut pressed = GRAB_KEYS.lock();
                     if down {
@@ -338,18 +333,14 @@ fn send_inputs(inputs: &[INPUT]) -> Result<()> {
 fn mouse_input(dx: i32, dy: i32, data: i32, flags: u32) -> INPUT {
     INPUT {
         r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 {
-            mi: MOUSEINPUT { dx, dy, mouseData: data as u32, dwFlags: MOUSE_EVENT_FLAGS(flags), time: 0, dwExtraInfo: 0 },
-        },
+        Anonymous: INPUT_0 { mi: MOUSEINPUT { dx, dy, mouseData: data as u32, dwFlags: MOUSE_EVENT_FLAGS(flags), time: 0, dwExtraInfo: 0 } },
     }
 }
 
 fn key_input(vk: u16, scan: u16, flags: u32) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), wScan: scan, dwFlags: KEYBD_EVENT_FLAGS(flags), time: 0, dwExtraInfo: 0 },
-        },
+        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), wScan: scan, dwFlags: KEYBD_EVENT_FLAGS(flags), time: 0, dwExtraInfo: 0 } },
     }
 }
 
@@ -404,7 +395,9 @@ impl Injector for WinInjector {
             0x48 => key_input(0x13, 0, up),
             0x53 => key_input(0x90, 0, up | KEYEVENTF_EXTENDEDKEY),
             _ => {
-                let Some(code) = keys::win_from_hid(hid) else { return Ok(()) };
+                let Some(code) = keys::win_from_hid(hid) else {
+                    return Ok(());
+                };
                 let ext = if code & 0xFF00 == 0xE000 { KEYEVENTF_EXTENDEDKEY } else { 0 };
                 key_input(0, code & 0xFF, KEYEVENTF_SCANCODE | ext | up)
             }

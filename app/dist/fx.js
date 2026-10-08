@@ -25,7 +25,7 @@ function done() {
 }
 if (T) {
   T.event.listen("fx", (e) => play(e.payload));
-  T.core.invoke("snapshot").then((s) => window.OpenHopTheme.apply(s.config.ui_appearance, s.config.ui_accent)).catch(() => {});
+  T.core.invoke("snapshot").then((s) => window.OpenHopTheme.apply(null, s.config.ui_accent, s.system_dark)).catch(() => {});
 } else {
   play({ kind: "incoming", label: "holiday.mp4", from: "macbook" });
   setTimeout(() => play({ kind: "landed", label: "holiday.mp4" }), 2200);

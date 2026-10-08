@@ -282,7 +282,9 @@ impl Inbox {
     pub fn keep(&self, tops: &[PathBuf]) -> Vec<PathBuf> {
         let mut out = Vec::new();
         for t in tops {
-            let Some(name) = t.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+            let Some(name) = t.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                continue;
+            };
             let dest = self.root.join(unique(&self.root, &name));
             match std::fs::rename(t, &dest) {
                 Ok(()) => out.push(dest),
@@ -300,7 +302,9 @@ impl Inbox {
     /// Forget dropped files once the app they were dropped into has had
     /// plenty of time to copy or upload them.
     pub fn discard_later(&self, tops: &[PathBuf]) {
-        let Some(dir) = tops.first().and_then(|t| t.parent()).map(Path::to_path_buf) else { return };
+        let Some(dir) = tops.first().and_then(|t| t.parent()).map(Path::to_path_buf) else {
+            return;
+        };
         if !dir.starts_with(self.root.join(DROPS)) {
             return;
         }
@@ -351,16 +355,7 @@ impl Inbox {
         let label = label_for(&files);
         let mut st = self.inner.lock();
         st.history.retain(|h| h.offer != offer);
-        st.history.push(TransferInfo {
-            offer,
-            label,
-            peer: origin.to_string(),
-            incoming: true,
-            done: 0,
-            total,
-            finished: false,
-            error: None,
-        });
+        st.history.push(TransferInfo { offer, label, peer: origin.to_string(), incoming: true, done: 0, total, finished: false, error: None });
         if st.history.len() > 20 {
             st.history.remove(0);
         }
@@ -370,7 +365,9 @@ impl Inbox {
 
     pub fn data(&self, offer: u64, index: u32, data: &[u8]) -> Result<(), String> {
         let mut st = self.inner.lock();
-        let Some(d) = st.active.get_mut(&offer) else { return Ok(()) };
+        let Some(d) = st.active.get_mut(&offer) else {
+            return Ok(());
+        };
         let i = index as usize;
         if i >= d.targets.len() {
             return Err("bad file index".into());

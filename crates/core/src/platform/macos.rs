@@ -1,7 +1,7 @@
 //! macOS backend: CGEventTap for capture, CGEvent posting for injection.
 //! Requires Accessibility permission (System Settings > Privacy & Security).
 
-use super::{Capture, InputEvent, Injector};
+use super::{Capture, Injector, InputEvent};
 use crate::keys;
 use crate::protocol::{MouseButton, Rect};
 use anyhow::{anyhow, Result};
@@ -13,8 +13,8 @@ use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::display::CGDisplay;
 use core_graphics::event::{
-    CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
-    CGMouseButton, CallbackResult, EventField, ScrollEventUnit,
+    CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType, CGMouseButton, CallbackResult, EventField,
+    ScrollEventUnit,
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
@@ -208,8 +208,20 @@ impl MacCapture {
         std::thread::Builder::new().name("mac-event-tap".into()).spawn(move || {
             use CGEventType::*;
             let events = vec![
-                MouseMoved, LeftMouseDragged, RightMouseDragged, OtherMouseDragged, LeftMouseDown, LeftMouseUp,
-                RightMouseDown, RightMouseUp, OtherMouseDown, OtherMouseUp, ScrollWheel, KeyDown, KeyUp, FlagsChanged,
+                MouseMoved,
+                LeftMouseDragged,
+                RightMouseDragged,
+                OtherMouseDragged,
+                LeftMouseDown,
+                LeftMouseUp,
+                RightMouseDown,
+                RightMouseUp,
+                OtherMouseDown,
+                OtherMouseUp,
+                ScrollWheel,
+                KeyDown,
+                KeyUp,
+                FlagsChanged,
             ];
             let tap = CGEventTap::new(
                 CGEventTapLocation::HID,
@@ -334,8 +346,7 @@ impl Injector for MacInjector {
             (CGEventType::MouseMoved, MouseButton::Left)
         };
         let (cgb, num) = cg_button(btn);
-        let ev = CGEvent::new_mouse_event(Self::source()?, etype, CGPoint::new(nx, ny), cgb)
-            .map_err(|_| anyhow!("mouse event"))?;
+        let ev = CGEvent::new_mouse_event(Self::source()?, etype, CGPoint::new(nx, ny), cgb).map_err(|_| anyhow!("mouse event"))?;
         ev.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_X, (nx - self.pos.0) as i64);
         ev.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y, (ny - self.pos.1) as i64);
         if matches!(etype, CGEventType::OtherMouseDragged) {
@@ -370,8 +381,7 @@ impl Injector for MacInjector {
             self.buttons.remove(&button);
             self.last_click.map(|(_, _, n)| n).unwrap_or(1)
         };
-        let ev = CGEvent::new_mouse_event(Self::source()?, etype, CGPoint::new(self.pos.0, self.pos.1), cgb)
-            .map_err(|_| anyhow!("mouse event"))?;
+        let ev = CGEvent::new_mouse_event(Self::source()?, etype, CGPoint::new(self.pos.0, self.pos.1), cgb).map_err(|_| anyhow!("mouse event"))?;
         ev.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, clicks);
         ev.set_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER, num);
         ev.set_flags(self.flags());
@@ -386,14 +396,15 @@ impl Injector for MacInjector {
         if v == 0 && h == 0 {
             return Ok(());
         }
-        let ev = CGEvent::new_scroll_event(Self::source()?, ScrollEventUnit::PIXEL, 2, v, h, 0)
-            .map_err(|_| anyhow!("scroll event"))?;
+        let ev = CGEvent::new_scroll_event(Self::source()?, ScrollEventUnit::PIXEL, 2, v, h, 0).map_err(|_| anyhow!("scroll event"))?;
         ev.post(CGEventTapLocation::HID);
         Ok(())
     }
 
     fn key(&mut self, hid: u16, down: bool) -> Result<()> {
-        let Some(code) = keys::mac_from_hid(hid) else { return Ok(()) };
+        let Some(code) = keys::mac_from_hid(hid) else {
+            return Ok(());
+        };
         if keys::is_modifier(hid) {
             if down {
                 if !self.mods.contains(&hid) {

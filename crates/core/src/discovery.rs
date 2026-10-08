@@ -167,8 +167,12 @@ impl Discovery {
             std::thread::Builder::new().name("discovery-rx".into()).spawn(move || {
                 let mut buf = [0u8; 1500];
                 while !stop.load(Ordering::Relaxed) {
-                    let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
-                    let Ok(b) = bincode::deserialize::<Beacon>(&buf[..n]) else { continue };
+                    let Ok((n, from)) = sock.recv_from(&mut buf) else {
+                        continue;
+                    };
+                    let Ok(b) = bincode::deserialize::<Beacon>(&buf[..n]) else {
+                        continue;
+                    };
                     if b.magic != MAGIC || b.id == id {
                         continue;
                     }
@@ -254,7 +258,8 @@ mod tests {
     #[test]
     fn prefers_routable_v4_then_link_local_v6() {
         let peers: Mutex<HashMap<u64, Discovered>> = Default::default();
-        let b = Beacon { magic: MAGIC, version: PROTOCOL_VERSION, id: 7, device: "d".into(), name: "mac".into(), os: Os::MacOs, role: Role::Server, port: 24850 };
+        let b =
+            Beacon { magic: MAGIC, version: PROTOCOL_VERSION, id: 7, device: "d".into(), name: "mac".into(), os: Os::MacOs, role: Role::Server, port: 24850 };
         let v6: SocketAddr = "[fe80::1%3]:5000".parse().unwrap();
         record(&peers, b.clone(), v6);
         let p = peers.lock()[&7].clone();

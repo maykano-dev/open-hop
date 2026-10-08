@@ -16,4 +16,13 @@ if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>
   firewall-cmd --permanent --add-port=24851/udp >/dev/null 2>&1 || true
   firewall-cmd --reload >/dev/null 2>&1 || true
 fi
+
+# Wi-Fi power saving makes the adapter doze between packets, which delays
+# keystrokes by up to a few hundred milliseconds. Turn it off (NetworkManager).
+if [ -d /etc/NetworkManager/conf.d ]; then
+  printf '[connection]\n# Added by OpenHop: keeps typing on other computers instant.\nwifi.powersave = 2\n' > /etc/NetworkManager/conf.d/60-openhop-wifi-powersave.conf
+  if command -v iw >/dev/null 2>&1; then
+    for dev in $(iw dev 2>/dev/null | awk '/Interface/ {print $2}'); do iw dev "$dev" set power_save off 2>/dev/null || true; done
+  fi
+fi
 exit 0

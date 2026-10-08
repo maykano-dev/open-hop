@@ -39,11 +39,6 @@ function fillForm(cfg) {
   $("name").value = form.name;
   $("passphrase").value = form.passphrase;
   $("serverAddr").value = form.server_addr || "";
-  $("swap").checked = form.swap_cmd_ctrl;
-  $("clip").checked = form.clipboard_sync;
-  $("notify").checked = form.notifications;
-  $("wol").checked = form.wake_on_lan;
-  $("port").value = form.port;
   $("speed").value = String(form.transfer_limit_mbps || 0);
   renderRole();
   fillPrefs(cfg);
@@ -54,16 +49,10 @@ function fillForm(cfg) {
 const PREF_ACCENTS = ["blue", "purple", "pink", "orange", "green", "graphite"];
 
 function fillPrefs(cfg) {
-  for (const n of document.querySelectorAll("[data-pref]")) {
-    const v = cfg[n.dataset.pref];
-    if (n.type === "checkbox") n.checked = !!v;
-    else n.value = String(v ?? "");
-  }
-  renderLook(cfg.ui_appearance, cfg.ui_accent);
+  renderLook(cfg.ui_accent);
 }
 
-function renderLook(appearance, accent) {
-  for (const b of document.querySelectorAll("#appearance button")) b.setAttribute("aria-checked", String(b.dataset.appearance === appearance));
+function renderLook(accent) {
   const box = $("accents");
   if (!box.children.length) {
     for (const a of PREF_ACCENTS) {
@@ -73,34 +62,34 @@ function renderLook(appearance, accent) {
     }
   }
   for (const b of box.children) b.setAttribute("aria-checked", String(b.dataset.accent === accent));
-  window.OpenHopTheme.apply(appearance, accent);
+  window.OpenHopTheme.apply(null, accent, snap ? snap.system_dark : undefined);
 }
 
 async function setPref(patch) {
   Object.assign(form, patch);
   if (snap) Object.assign(snap.config, patch);
-  renderLook(form.ui_appearance, form.ui_accent);
+  renderLook(form.ui_accent);
   try { await invoke("update_prefs", { prefs: patch }); } catch (e) { showBanner(String(e)); }
 }
 
-for (const n of document.querySelectorAll("[data-pref]")) {
-  n.addEventListener("change", () => {
-    let v = n.type === "checkbox" ? n.checked : n.value;
-    if (n.type === "range") v = parseInt(n.value, 10);
-    setPref({ [n.dataset.pref]: v });
-    if (n.dataset.pref === "sound" || n.dataset.pref === "sound_volume") invoke("play_sound", { kind: form.sound, volume: form.sound_volume });
+$("openDock").addEventListener("click", () => invoke("dock_toggle"));
+
+// General | Look tabs.
+for (const t of document.querySelectorAll("#tabs button")) {
+  t.addEventListener("click", () => {
+    for (const o of document.querySelectorAll("#tabs button")) {
+      const on = o === t;
+      o.classList.toggle("on", on);
+      o.setAttribute("aria-selected", String(on));
+      $("pane-" + o.dataset.tab).hidden = !on;
+    }
   });
 }
-for (const b of document.querySelectorAll("#appearance button")) {
-  b.addEventListener("click", () => setPref({ ui_appearance: b.dataset.appearance }));
-}
-$("soundTest").addEventListener("click", (e) => { e.preventDefault(); invoke("play_sound", { kind: form.sound === "off" ? "swoosh" : form.sound, volume: form.sound_volume }); });
-$("openDock").addEventListener("click", () => invoke("dock_toggle"));
 
 function renderRole() {
   document.body.classList.toggle("role-server", form.role === "server");
   document.body.classList.toggle("role-client", form.role === "client");
-  for (const b of document.querySelectorAll(".seg button")) {
+  for (const b of document.querySelectorAll(".seg button[data-role]")) {
     b.setAttribute("aria-checked", String(b.dataset.role === form.role));
   }
   $("roleHint").textContent = form.role === "server"
@@ -112,18 +101,13 @@ function readForm() {
   form.name = $("name").value.trim() || form.name;
   form.passphrase = $("passphrase").value;
   form.server_addr = $("serverAddr").value.trim() || null;
-  form.swap_cmd_ctrl = $("swap").checked;
-  form.clipboard_sync = $("clip").checked;
-  form.notifications = $("notify").checked;
-  form.wake_on_lan = $("wol").checked;
-  form.port = parseInt($("port").value, 10) || 24850;
   form.transfer_limit_mbps = parseInt($("speed").value, 10) || 0;
 }
 
-for (const id of ["name", "passphrase", "serverAddr", "swap", "clip", "notify", "wol", "port", "speed"]) {
+for (const id of ["name", "passphrase", "serverAddr", "speed"]) {
   $(id).addEventListener("input", () => { readForm(); setDirty(true); });
 }
-for (const b of document.querySelectorAll(".seg button")) {
+for (const b of document.querySelectorAll(".seg button[data-role]")) {
   b.addEventListener("click", () => { form.role = b.dataset.role; renderRole(); setDirty(true); render(); });
 }
 $("reveal").addEventListener("click", () => {
@@ -378,11 +362,8 @@ function renderRadar() {
   if (key === radarKey) return;
   radarKey = key;
   radar.classList.toggle("idle", !running);
-  radar.querySelectorAll(".peer, .me, .guide, .caption, svg.links").forEach((n) => n.remove());
+  radar.querySelectorAll(".peer, .me, .caption, svg.links").forEach((n) => n.remove());
   const h = 300, cx = w / 2, cy = h * 0.46;
-  for (const r of [86, 132]) {
-    radar.append(el("span", { class: "guide", style: `width:${r * 2.6}px;height:${r * 1.56}px;top:${cy}px` }));
-  }
   const me = el("div", { class: "me", style: `top:${cy}px` }, el("div", { class: "avatar" }, deviceIcon(snap.os)), el("span", {}, form.name || "This computer"));
   radar.append(me);
   const n = items.length;
@@ -605,8 +586,9 @@ async function refresh() {
   if (!form) fillForm(snap.config);
   else {
     // Instant settings are saved as they change; keep them in step.
-    for (const k of ["theme_sync", "dnd_sync", "sound", "sound_volume", "battery_saver", "stream_quality", "window_drag", "ui_appearance", "ui_accent", "open_at_login"]) form[k] = snap.config[k];
+    form.ui_accent = snap.config.ui_accent;
   }
+  window.OpenHopTheme.apply(null, form.ui_accent, snap.system_dark);
   if (form && !dirty) {
     // Pick up layout changes the server made (newly connected computers).
     form.layout = snap.config.layout;
@@ -626,8 +608,8 @@ function mockInvoke() {
     swap_cmd_ctrl: true, clipboard_sync: true, screen: null, linux_backend: "auto",
     notifications: true, wake_on_lan: true, macs: {}, last_ips: {}, download_dir: null,
     transfer_limit_mbps: 50, device_id: "a1", trusted: {}, server_device: null,
-    theme_sync: true, dnd_sync: true, sound: "swoosh", sound_volume: 60, battery_saver: true, stream_quality: "balanced",
-    window_drag: true, ui_appearance: "system", ui_accent: "blue", open_at_login: true,
+    theme_sync: true, dnd_sync: true, stream_quality: "high",
+    window_drag: true, ui_accent: "blue", open_at_login: true, enabled: true,
   };
   let running = true;
   if (location.search.includes("client")) {

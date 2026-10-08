@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -95,58 +95,131 @@ pub enum OfferKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Msg {
     /// First message from a client after the encrypted handshake.
-    Hello { version: u32, name: String, os: Os, screen: Rect },
+    Hello {
+        version: u32,
+        name: String,
+        os: Os,
+        screen: Rect,
+    },
     /// Server's reply.
-    Welcome { version: u32, name: String, os: Os },
+    Welcome {
+        version: u32,
+        name: String,
+        os: Os,
+    },
     /// Client's desktop size changed (monitor plugged/unplugged).
     Screen(Rect),
     /// Cursor enters this client at (x, y), coordinates relative to the client's screen origin.
-    Enter { x: i32, y: i32 },
+    Enter {
+        x: i32,
+        y: i32,
+    },
     /// Cursor left this client; release anything held.
     Leave,
     /// Absolute cursor position, relative to the client's screen origin.
-    Move { x: i32, y: i32 },
-    Button { button: MouseButton, down: bool },
+    Move {
+        x: i32,
+        y: i32,
+    },
+    Button {
+        button: MouseButton,
+        down: bool,
+    },
     /// Scroll amount in 1/120ths of a notch (Windows WHEEL_DELTA units). Positive = up / right.
-    Wheel { dx: i32, dy: i32 },
+    Wheel {
+        dx: i32,
+        dy: i32,
+    },
     /// USB HID usage id.
-    Key { key: u16, down: bool },
+    Key {
+        key: u16,
+        down: bool,
+    },
     /// Clipboard contents copied on `origin`.
-    Clip { origin: String, data: ClipData },
+    Clip {
+        origin: String,
+        data: ClipData,
+    },
     /// Part of a large clipboard image (PNG), reassembled by the receiver.
-    ClipPart { origin: String, id: u64, total: u64, data: Vec<u8> },
+    ClipPart {
+        origin: String,
+        id: u64,
+        total: u64,
+        data: Vec<u8>,
+    },
     Ping,
     Pong,
 
     // ---- file transfer (relayed by the server between clients) ----
     /// `origin` has files available as `offer`.
-    FileOffer { offer: u64, origin: String, kind: OfferKind, files: Vec<FileMeta> },
+    FileOffer {
+        offer: u64,
+        origin: String,
+        kind: OfferKind,
+        files: Vec<FileMeta>,
+    },
     /// `requester` wants `offer` from `origin`.
-    FileRequest { offer: u64, origin: String, requester: String },
+    FileRequest {
+        offer: u64,
+        origin: String,
+        requester: String,
+    },
     /// Next chunk of file number `index` (files are streamed in order).
-    FileData { offer: u64, dest: String, index: u32, data: Vec<u8> },
-    FileEnd { offer: u64, dest: String, error: Option<String> },
+    FileData {
+        offer: u64,
+        dest: String,
+        index: u32,
+        data: Vec<u8>,
+    },
+    FileEnd {
+        offer: u64,
+        dest: String,
+        error: Option<String>,
+    },
 
     // ---- drag and drop ----
     /// Server -> client: the cursor is leaving you with the left button held.
     /// Reply with the files being dragged, if any.
-    DragQuery { id: u64 },
-    DragReply { id: u64, offer: Option<u64>, files: Vec<FileMeta> },
+    DragQuery {
+        id: u64,
+    },
+    DragReply {
+        id: u64,
+        offer: Option<u64>,
+        files: Vec<FileMeta>,
+    },
     /// Server -> client: the drag was carried to another screen; cancel it locally.
     DragCancel,
 
     /// Client -> server: details used for Wake-on-LAN.
     Mac(String),
     /// Server -> client after pairing with a code: the key to use from now on.
-    Paired { server_device: String, key: String },
+    Paired {
+        server_device: String,
+        key: String,
+    },
     /// Client -> server, answering a [`Msg::DragQuery`] when a *window* (not
     /// files) was being dragged by its title bar: it can be opened live on
     /// the computer it was dragged to.
-    DragWindow { id: u64, window: u64 },
+    DragWindow {
+        id: u64,
+        window: u64,
+    },
+    /// Client -> server, answering a [`Msg::DragQuery`] when a *live window*
+    /// (shown on the client) was being dragged by its title bar: it goes on
+    /// to the computer it was dragged to (or home, if that's its own).
+    DragViewer {
+        id: u64,
+        stream: u64,
+    },
 
     /// Everything beyond keyboard, mouse, clipboard and files, addressed by
     /// computer name. `to` is "*" for everyone. The server forwards these.
-    Ext { to: String, from: String, ext: Ext },
+    Ext {
+        to: String,
+        from: String,
+        ext: Ext,
+    },
 }
 
 /// A window open on some computer.
@@ -162,16 +235,35 @@ pub struct WinInfo {
 /// Input aimed at a live window, in the streamed picture's pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum WinEvent {
-    Move { x: i32, y: i32 },
-    Button { button: MouseButton, down: bool, x: i32, y: i32 },
-    Wheel { dx: i32, dy: i32, x: i32, y: i32 },
-    Key { key: u16, down: bool },
+    Move {
+        x: i32,
+        y: i32,
+    },
+    Button {
+        button: MouseButton,
+        down: bool,
+        x: i32,
+        y: i32,
+    },
+    Wheel {
+        dx: i32,
+        dy: i32,
+        x: i32,
+        y: i32,
+    },
+    Key {
+        key: u16,
+        down: bool,
+    },
     /// The viewer window got the focus: bring the real window forward.
     Focus,
     /// The viewer window lost the focus.
     Blur,
     /// The viewer window was resized: resize the real one to match.
-    Resize { w: i32, h: i32 },
+    Resize {
+        w: i32,
+        h: i32,
+    },
 }
 
 /// Part of a live window's picture (JPEG) at (x, y). Only what changed is
@@ -188,25 +280,71 @@ pub struct Patch {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Ext {
     /// Dark mode was turned on or off on the sender.
-    Theme { dark: bool },
+    Theme {
+        dark: bool,
+    },
     /// The sender is in Do Not Disturb or presenting (or stopped being).
-    Quiet { on: bool },
+    Quiet {
+        on: bool,
+    },
     /// The windows open on the sender (sent when they change).
-    Windows { list: Vec<WinInfo> },
+    Windows {
+        list: Vec<WinInfo>,
+    },
     /// Viewer -> owner: stream `window` to me as `stream`.
-    WinOpen { stream: u64, window: u64, os: Os },
+    WinOpen {
+        stream: u64,
+        window: u64,
+        os: Os,
+    },
     /// Ask a computer to open `origin`'s window here (a window dragged across).
-    WinOffer { origin: String, window: u64 },
+    WinOffer {
+        origin: String,
+        window: u64,
+    },
     /// Owner -> viewer: what changed in the window. `w`×`h` is the whole
-    /// picture; a patch covering all of it starts afresh.
-    WinFrame { stream: u64, seq: u64, w: u32, h: u32, title: String, patches: Vec<Patch> },
+    /// picture (the window with its own title bar); a patch covering all of
+    /// it starts afresh. The top `bar` pixels are the title bar.
+    WinFrame {
+        stream: u64,
+        seq: u64,
+        w: u32,
+        h: u32,
+        bar: u32,
+        title: String,
+        patches: Vec<Patch>,
+    },
     /// Viewer -> owner: picture received; send the next one.
-    WinAck { stream: u64, seq: u64 },
-    WinInput { stream: u64, ev: WinEvent },
+    WinAck {
+        stream: u64,
+        seq: u64,
+    },
+    WinInput {
+        stream: u64,
+        ev: WinEvent,
+    },
     /// Either side: the live window was closed.
-    WinClose { stream: u64 },
-    /// Either side: pause or resume the picture (e.g. low battery).
-    WinPause { stream: u64, paused: bool, reason: String },
+    WinClose {
+        stream: u64,
+    },
+    /// Either side: pause or resume the picture.
+    WinPause {
+        stream: u64,
+        paused: bool,
+        reason: String,
+    },
+    /// Server -> the computer showing live window `stream`: it was dragged
+    /// onto computer `to`'s screen; move it there.
+    WinMoveTo {
+        stream: u64,
+        to: String,
+    },
+    /// Viewer -> owner: the window was dragged back home. Stop streaming,
+    /// show it again under the pointer (and keep it moving with the mouse
+    /// if the button is still held).
+    WinReturn {
+        stream: u64,
+    },
 }
 
 impl Msg {
@@ -237,12 +375,7 @@ mod tests {
     use super::*;
     #[test]
     fn roundtrip() {
-        let m = Msg::Hello {
-            version: 1,
-            name: "pc".into(),
-            os: Os::Linux,
-            screen: Rect { x: 0, y: 0, w: 1920, h: 1080 },
-        };
+        let m = Msg::Hello { version: 1, name: "pc".into(), os: Os::Linux, screen: Rect { x: 0, y: 0, w: 1920, h: 1080 } };
         assert_eq!(decode(&encode(&m)).unwrap(), m);
         // Mouse moves are the hot path: keep them tiny.
         assert!(encode(&Msg::Move { x: 100, y: 200 }).len() <= 12);

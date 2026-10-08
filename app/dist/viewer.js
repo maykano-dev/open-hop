@@ -1,7 +1,9 @@
 "use strict";
 // A live window from another computer. It should feel like the window
-// itself: same size, sharp, and your clicks and typing go to it. Only the
-// parts of the picture that change are sent and redrawn.
+// itself: same size, sharp, its own title bar, and your clicks and typing go
+// to it. Only the parts of the picture that change are sent and redrawn.
+// Drag it by its title bar to move it; carry it off the edge of the screen
+// to send it on to another computer, or back home.
 
 const invoke = window.__TAURI__ ? window.__TAURI__.core.invoke : null;
 const q = new URLSearchParams(location.search);
@@ -11,6 +13,7 @@ const canvas = document.getElementById("view");
 const ctx = canvas.getContext("2d", { alpha: false });
 const pill = document.getElementById("pill");
 let fw = 0, fh = 0;          // picture size (the other computer's pixels)
+let bar = 0;                 // title bar height, in picture pixels
 let closed = false;
 let shown = false;
 let title = "";
@@ -44,7 +47,7 @@ async function apply(buf) {
   let last = null;
   for (let i = 0; i < count; i++) {
     const seq = dv.getBigUint64(o, true); o += 8;
-    const w = u32(dv, o), h = u32(dv, o + 4); o += 8;
+    const w = u32(dv, o), h = u32(dv, o + 4), b = u32(dv, o + 8); o += 12;
     const tl = dv.getUint16(o, true); o += 2;
     const t = new TextDecoder().decode(new Uint8Array(buf, o, tl)); o += tl;
     const n = dv.getUint16(o, true); o += 2;
@@ -58,6 +61,7 @@ async function apply(buf) {
     // Decode all patches first, then draw together (no half-drawn frames).
     const bitmaps = await Promise.all(patches.map((p) => createImageBitmap(p.blob).catch(() => null)));
     if (w !== fw || h !== fh) resizeTo(w, h);
+    bar = b;
     patches.forEach((p, k) => {
       if (bitmaps[k]) { ctx.drawImage(bitmaps[k], p.x, p.y); bitmaps[k].close(); }
     });
@@ -104,6 +108,9 @@ async function loop() {
         status("");
         canvas.focus();
         fitIfNeeded();
+        // Focused before the first picture came: say so now (typing goes
+        // straight to the window from then on).
+        if (document.hasFocus()) focusNow();
       } else {
         status("");
       }
@@ -151,24 +158,87 @@ function send(ev) {
 }
 const BUTTONS = ["Left", "Middle", "Right", "Back", "Forward"];
 
+// ---- moving and resizing the view itself
+
+const win = window.__TAURI__ && window.__TAURI__.window ? window.__TAURI__.window.getCurrentWindow() : null;
+const EDGE = 5; // px around the view that resize it
+// Pressed on the title bar: a click goes to the window (its buttons work),
+// a drag moves the view.
+let barPress = null;
+let moving = false;
+
+function edgeAt(e) {
+  const w = window.innerWidth, h = window.innerHeight;
+  const l = e.clientX < EDGE, r = e.clientX >= w - EDGE, t = e.clientY < EDGE, b = e.clientY >= h - EDGE;
+  return (t ? "North" : b ? "South" : "") + (l ? "West" : r ? "East" : "") || null;
+}
+const CURSORS = { North: "ns-resize", South: "ns-resize", East: "ew-resize", West: "ew-resize", NorthWest: "nwse-resize", SouthEast: "nwse-resize", NorthEast: "nesw-resize", SouthWest: "nesw-resize" };
+
+function inBar(p) {
+  // Unknown title bar (0): the top 32 pixels still move the view.
+  const h = bar > 0 ? bar : Math.round(32 * fh / Math.max(1, box().h));
+  return p.inside && p.y < h;
+}
+
+function stopMoving() {
+  if (moving) {
+    moving = false;
+    if (invoke) invoke("viewer_drag", { on: false }).catch(() => {});
+  }
+}
+
+// ---- input
+
 let pendingMove = null;
 canvas.addEventListener("mousemove", (e) => {
+  if (e.buttons === 0) stopMoving();
+  const edge = edgeAt(e);
+  canvas.style.cursor = edge ? CURSORS[edge] : "default";
   const p = toFrame(e);
+  if (barPress) {
+    if (!moving && (e.buttons & 1) && Math.hypot(e.clientX - barPress.cx, e.clientY - barPress.cy) > 4) {
+      moving = true;
+      barPress = null;
+      if (invoke) invoke("viewer_drag", { on: true }).catch(() => {});
+    }
+    return;
+  }
   if (!p.inside) return;
   if (!pendingMove) requestAnimationFrame(() => { send({ Move: pendingMove }); pendingMove = null; });
   pendingMove = { x: p.x, y: p.y };
 });
 canvas.addEventListener("mousedown", (e) => {
+  stopMoving();
+  if (!focusSent) focusNow();
   const p = toFrame(e);
-  if (!p.inside) return;
   canvas.focus();
   e.preventDefault();
+  const edge = edgeAt(e);
+  if (edge && e.button === 0 && win) {
+    win.startResizeDragging(edge).catch(() => {});
+    return;
+  }
+  if (!p.inside) return;
+  if (e.button === 0 && inBar(p)) {
+    barPress = { cx: e.clientX, cy: e.clientY, x: p.x, y: p.y };
+    return;
+  }
   send({ Button: { button: BUTTONS[e.button] || "Left", down: true, x: p.x, y: p.y } });
 });
 window.addEventListener("mouseup", (e) => {
+  stopMoving();
+  if (barPress) {
+    // A click on the title bar (or its buttons): pass it on.
+    const { x, y } = barPress;
+    barPress = null;
+    send({ Button: { button: "Left", down: true, x, y } });
+    send({ Button: { button: "Left", down: false, x, y } });
+    return;
+  }
   const p = toFrame(e);
   send({ Button: { button: BUTTONS[e.button] || "Left", down: false, x: p.x, y: p.y } });
 });
+canvas.addEventListener("dblclick", (e) => e.preventDefault());
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
@@ -180,6 +250,7 @@ canvas.addEventListener("wheel", (e) => {
 
 const held = new Set();
 window.addEventListener("keydown", (e) => {
+  if (!focusSent) focusNow();
   const key = window.HID[e.code];
   if (key == null) return;
   e.preventDefault();
@@ -195,8 +266,16 @@ window.addEventListener("keyup", (e) => {
   held.delete(key);
   send({ Key: { key, down: false } });
 });
-window.addEventListener("focus", () => send("Focus"));
+// Typing goes to the real window while this view has the focus.
+let focusSent = false;
+function focusNow() {
+  if (!fw) return;
+  focusSent = true;
+  send("Focus");
+}
+window.addEventListener("focus", () => { stopMoving(); focusNow(); });
 window.addEventListener("blur", () => {
+  focusSent = false;
   send("Blur");
   // Don't leave keys stuck down on the other computer.
   for (const key of held) send({ Key: { key, down: false } });
@@ -204,5 +283,5 @@ window.addEventListener("blur", () => {
 });
 
 if (invoke) {
-  invoke("snapshot").then((s) => window.OpenHopTheme.apply(s.config.ui_appearance, s.config.ui_accent)).catch(() => {});
+  invoke("snapshot").then((s) => window.OpenHopTheme.apply(null, s.config.ui_accent, s.system_dark)).catch(() => {});
 }

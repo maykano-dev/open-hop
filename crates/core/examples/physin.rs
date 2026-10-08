@@ -37,7 +37,17 @@ fn main() {
             let home = "asdfghjkl";
             let low = "zxcvbnm";
             for c in args[2].chars() {
-                let k: u8 = if c == ' ' { 65 } else if let Some(i) = row.find(c) { 24 + i as u8 } else if let Some(i) = home.find(c) { 38 + i as u8 } else if let Some(i) = low.find(c) { 52 + i as u8 } else { continue };
+                let k: u8 = if c == ' ' {
+                    65
+                } else if let Some(i) = row.find(c) {
+                    24 + i as u8
+                } else if let Some(i) = home.find(c) {
+                    38 + i as u8
+                } else if let Some(i) = low.find(c) {
+                    52 + i as u8
+                } else {
+                    continue;
+                };
                 fake(2, k, 0, 0, kbd);
                 fake(3, k, 0, 0, kbd);
                 std::thread::sleep(std::time::Duration::from_millis(60));
