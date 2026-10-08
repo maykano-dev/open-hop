@@ -6,6 +6,7 @@
 // to send it on to another computer, or back home.
 
 const invoke = window.__TAURI__ ? window.__TAURI__.core.invoke : null;
+window.OPENHOP_DEBUG = false;
 const q = new URLSearchParams(location.search);
 const stream = q.get("s");
 const origin = q.get("o") || "the other computer";
@@ -62,9 +63,11 @@ async function apply(buf) {
     const bitmaps = await Promise.all(patches.map((p) => createImageBitmap(p.blob).catch(() => null)));
     if (w !== fw || h !== fh) resizeTo(w, h);
     bar = b;
+    let drawn = 0;
     patches.forEach((p, k) => {
-      if (bitmaps[k]) { ctx.drawImage(bitmaps[k], p.x, p.y); bitmaps[k].close(); }
+      if (bitmaps[k]) { ctx.drawImage(bitmaps[k], p.x, p.y); bitmaps[k].close(); drawn++; }
     });
+    if (window.OPENHOP_DEBUG) invoke("viewer_log", { msg: `update ${seq} ${w}x${h}: ${drawn}/${patches.length} drawn, canvas ${canvas.width}x${canvas.height}, view ${innerWidth}x${innerHeight}` }).catch(() => {});
     if (t && t !== title) {
       title = t;
       document.title = t;
@@ -76,11 +79,27 @@ async function apply(buf) {
 }
 
 // The picture changed size (the real window was resized over there).
+// Maximized on this screen (the window's own maximize button or a double
+// click on its title bar): the view fills the screen and the real window
+// takes this size, like an app opened here.
+let maxed = false;
+// Right after maximizing or restoring, pictures at the old size are still on
+// their way: don't let them size the view.
+let settleUntil = 0;
+if (window.__TAURI__) window.__TAURI__.event.listen("maximized", (e) => {
+  maxed = !!e.payload;
+  settleUntil = Date.now() + 1500;
+  // Tell the real window this view's new size.
+  setTimeout(() => { asked = null; fitIfNeeded(true); }, 350);
+});
+
 function resizeTo(w, h) {
   fw = w; fh = h;
   canvas.width = w; canvas.height = h;
-  const ours = asked && Math.abs(asked.w - w) <= 3 && Math.abs(asked.h - h) <= 3;
-  if (!ours && shown && invoke) {
+  // Ours: the size we asked for, or the same shape smaller (the real window
+  // can't be bigger than its own screen; the view then shows it larger).
+  const ours = asked && Math.abs(asked.w / asked.h - w / h) < 0.03 && w <= asked.w + 3;
+  if (!ours && !maxed && Date.now() > settleUntil && shown && invoke) {
     // Follow it, so the view stays the same size as the window.
     invoke("viewer_fit", { w, h }).catch(() => {});
   }
@@ -132,10 +151,10 @@ loop().catch((e) => status("Something went wrong", String(e)));
 // When this view is resized, resize the real window to match, so the
 // picture stays sharp (1:1) instead of being stretched.
 let resizeTimer = null;
-function fitIfNeeded() {
+function fitIfNeeded(force) {
   if (!fw) return;
   const w = Math.round(window.innerWidth), h = Math.round(window.innerHeight);
-  if (Math.abs(w - fw) > 3 || Math.abs(h - fh) > 3) {
+  if (force || Math.abs(w - fw) > 3 || Math.abs(h - fh) > 3) {
     asked = { w, h };
     send({ Resize: { w, h } });
   }
@@ -240,12 +259,25 @@ window.addEventListener("mouseup", (e) => {
 });
 canvas.addEventListener("dblclick", (e) => e.preventDefault());
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+// Scrolling: a touchpad sends dozens of tiny steps a second; add them up
+// and send once per screen refresh.
+let wheel = null;
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   const p = toFrame(e);
   const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
-  const dy = -Math.round(e.deltaY * unit * 1.2), dx = Math.round(e.deltaX * unit * 1.2);
-  if (dx || dy) send({ Wheel: { dx, dy, x: p.x, y: p.y } });
+  if (!wheel) {
+    wheel = { dx: 0, dy: 0, x: p.x, y: p.y };
+    requestAnimationFrame(() => {
+      const w = wheel;
+      wheel = null;
+      const dx = Math.round(w.dx), dy = Math.round(w.dy);
+      if (dx || dy) send({ Wheel: { dx, dy, x: w.x, y: w.y } });
+    });
+  }
+  wheel.dy += -e.deltaY * unit * 1.2;
+  wheel.dx += e.deltaX * unit * 1.2;
+  wheel.x = p.x; wheel.y = p.y;
 }, { passive: false });
 
 const held = new Set();

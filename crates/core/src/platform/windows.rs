@@ -37,6 +37,7 @@ const M_SYSKEYDOWN: u32 = 0x104;
 const M_SYSKEYUP: u32 = 0x105;
 const APP_GRAB: u32 = 0x8000 + 1;
 const APP_RELEASE: u32 = 0x8000 + 2;
+const APP_IDLE: u32 = 0x8000 + 3;
 
 const LLMHF_INJECTED: u32 = 0x1;
 const LLKHF_EXTENDED: u32 = 0x1;
@@ -46,6 +47,9 @@ static TX: OnceLock<Sender<InputEvent>> = OnceLock::new();
 static GRABBED: AtomicBool = AtomicBool::new(false);
 /// Grabbed, but letting OpenHop's own input through to control a window.
 static SUSPENDED: AtomicBool = AtomicBool::new(false);
+/// The pointer is hidden (by the cover window) while the shared pointer is
+/// on another screen; this computer's own mouse moving shows it again.
+static IDLE_HIDDEN: AtomicBool = AtomicBool::new(false);
 static BLANK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static CX: AtomicI32 = AtomicI32::new(0);
 static CY: AtomicI32 = AtomicI32::new(0);
@@ -112,6 +116,12 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                 }
                 return LRESULT(1); // swallow: the cursor stays parked locally
             } else if msg == M_MOUSEMOVE {
+                if IDLE_HIDDEN.swap(false, Ordering::SeqCst) {
+                    let h = BLANK.load(Ordering::SeqCst);
+                    if h != 0 {
+                        let _ = ShowWindow(HWND(h as *mut _), SW_HIDE);
+                    }
+                }
                 send(InputEvent::LocalMove { x: info.pt.x, y: info.pt.y });
             }
         }
@@ -216,6 +226,7 @@ impl WinCapture {
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                 match msg.message {
                     APP_GRAB => {
+                        IDLE_HIDDEN.store(false, Ordering::SeqCst);
                         GRAB_KEYS.lock().clear();
                         let r = virtual_screen();
                         let (cx, cy) = r.center();
@@ -226,6 +237,18 @@ impl WinCapture {
                         CY.store(cy, Ordering::Relaxed);
                         let _ = SetCursorPos(cx, cy);
                         GRABBED.store(true, Ordering::SeqCst);
+                    }
+                    APP_IDLE => {
+                        let hide = msg.wParam.0 != 0 && !GRABBED.load(Ordering::SeqCst);
+                        if let Some(h) = blank {
+                            if hide {
+                                let r = virtual_screen();
+                                let _ = SetWindowPos(h, Some(HWND_TOPMOST), r.x, r.y, r.w, r.h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                            } else if IDLE_HIDDEN.load(Ordering::SeqCst) {
+                                let _ = ShowWindow(h, SW_HIDE);
+                            }
+                        }
+                        IDLE_HIDDEN.store(hide, Ordering::SeqCst);
                     }
                     APP_RELEASE => {
                         GRABBED.store(false, Ordering::SeqCst);
@@ -303,6 +326,9 @@ impl Capture for WinCapture {
     }
     fn grab(&self) -> bool {
         self.post(APP_GRAB, 0, 0)
+    }
+    fn idle_cursor(&self, hidden: bool) {
+        let _ = self.post(APP_IDLE, hidden as usize, 0);
     }
     fn release(&self, x: i32, y: i32) {
         let _ = self.post(APP_RELEASE, x as isize as usize, y as isize);

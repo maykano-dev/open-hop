@@ -162,6 +162,17 @@ pub fn move_to(id: u64, x: i32, y: i32) {
     }
 }
 
+pub fn is_maximized(id: u64) -> bool {
+    unsafe { IsZoomed(hwnd(id)).as_bool() }
+}
+
+pub fn unmaximize(id: u64) {
+    unsafe {
+        let _ = ShowWindow(hwnd(id), SW_SHOWNOACTIVATE);
+        let _ = ShowWindow(hwnd(id), SW_RESTORE);
+    }
+}
+
 pub fn begin_move(id: u64, _x: i32, _y: i32) {
     unsafe {
         // SC_MOVE | HTCAPTION: the window follows the mouse while the button is held.

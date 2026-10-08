@@ -50,6 +50,7 @@ enum Cmd {
     Suspend(Sender<bool>, bool),
     Resume,
     KeyboardPass(bool),
+    IdleCursor(bool),
 }
 
 /// Carrying a file drag to another screen. The drag source (a file manager)
@@ -165,6 +166,9 @@ impl Capture for X11Capture {
     fn keyboard_passthrough(&self, on: bool) {
         let _ = self.cmd.send(Cmd::KeyboardPass(on));
     }
+    fn idle_cursor(&self, hidden: bool) {
+        let _ = self.cmd.send(Cmd::IdleCursor(hidden));
+    }
     fn whole_clicks(&self) -> bool {
         // The core grab is shared by the physical mouse and our own (XTEST)
         // one; with XInput 2 per-device grabs they're separate.
@@ -237,6 +241,8 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
         conn.xinput_xi_query_version(2, 2).ok().and_then(|c| c.reply().ok()).map(|r| r.major_version >= 2).unwrap_or(false)
     };
     let mut last = (i32::MIN, i32::MIN);
+    // The pointer is hidden because the shared pointer is on another screen.
+    let mut idle_hidden = false;
     let mut held: std::collections::HashSet<u8> = Default::default();
     let atom = |n: &[u8]| -> Result<u32> { Ok(conn.intern_atom(false, n)?.reply()?.atom) };
     let xa = XdndAtoms {
@@ -249,7 +255,13 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
     loop {
         // Commands from the engine.
         loop {
-            match cmd_rx.try_recv() {
+            let next = cmd_rx.try_recv();
+            if matches!(next, Ok(Cmd::Grab(..))) && idle_hidden {
+                // The grab hides the pointer itself.
+                conn.xfixes_show_cursor(root)?;
+                idle_hidden = false;
+            }
+            match next {
                 Ok(Cmd::Grab(reply, drag))
                     if !grabbed && carry.is_none() && !drag && xi_ok && {
                         xi = xi_grab(&conn, root, (cx, cy)).unwrap_or_default();
@@ -295,6 +307,24 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
                 Ok(Cmd::Grab(reply, _)) => {
                     let _ = reply.send(true);
                 }
+                Ok(Cmd::IdleCursor(hide)) => {
+                    if !grabbed && carry.is_none() && hide != idle_hidden {
+                        if hide {
+                            conn.xfixes_hide_cursor(root)?;
+                            // Moves from here on are the user's own.
+                            last = conn
+                                .query_pointer(root)
+                                .map(|c| c.reply().map(|p| (p.root_x as i32, p.root_y as i32)))
+                                .ok()
+                                .and_then(|r| r.ok())
+                                .unwrap_or(last);
+                        } else {
+                            conn.xfixes_show_cursor(root)?;
+                        }
+                        conn.flush()?;
+                        idle_hidden = hide;
+                    }
+                }
                 Ok(Cmd::KeyboardPass(on)) => {
                     if grabbed && xi.is_empty() && on != key_pass {
                         if on {
@@ -330,8 +360,9 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
                 }
                 Ok(Cmd::Resume) => {
                     if let Some(pointer) = suspended.take() {
-                        // The injected events must land before we grab again.
-                        std::thread::sleep(Duration::from_millis(8));
+                        // The injected events must land before we grab again
+                        // (the injector already waited for the X server).
+                        std::thread::sleep(Duration::from_millis(2));
                         let _ = conn.get_input_focus()?.reply();
                         if pointer {
                             // Our own clicks are whole (pressed and released
@@ -455,6 +486,12 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
             let pos = (p.root_x as i32, p.root_y as i32);
             if pos != last {
                 last = pos;
+                if idle_hidden {
+                    // This computer's own mouse moved: show its pointer again.
+                    conn.xfixes_show_cursor(root)?;
+                    conn.flush()?;
+                    idle_hidden = false;
+                }
                 let _ = tx.try_send(InputEvent::LocalMove { x: pos.0, y: pos.1 });
             }
             while conn.poll_for_event()?.is_some() {}

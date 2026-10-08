@@ -45,17 +45,11 @@
           <span class="label">Name</span>
           <input id="name" class="value" autocomplete="off" spellcheck="false">
         </label>
-        <div class="row stacked">
-          <div class="seg" role="radiogroup" aria-label="Role">
-            <button data-role="server" role="radio">Control Others</button>
-            <button data-role="client" role="radio">Be Controlled</button>
-          </div>
-        </div>
       </div>
-      <p class="footer" id="roleHint"></p>
+      <p class="footer">Use this computer's keyboard and mouse on the others, or theirs on this one: just move the pointer off a screen edge.</p>
 
-      <div class="server-only">
-        <h2 class="section">Pair a Computer</h2>
+      <div>
+        <h2 class="section">Add a Computer</h2>
         <div class="group">
           <div class="row code-row">
             <span class="label">Pairing Code</span>
@@ -66,7 +60,7 @@
             <span id="myAddr" class="value">–</span>
           </div>
         </div>
-        <p class="footer">On the other computer, open OpenHop, choose <b>Be Controlled</b>, then tap this computer in the Nearby radar and type this code.</p>
+        <p class="footer" id="pairHint">On the other computer, open OpenHop, tap this computer in Nearby and type this code.</p>
       </div>
 
       <div id="pairedBlock" hidden>
@@ -88,11 +82,11 @@
         <h2 class="section">Connection</h2>
         <div class="group">
           <label class="row">
-            <span class="label">Server</span>
+            <span class="label">Connect Through</span>
             <input id="serverAddr" class="value" autocomplete="off" spellcheck="false" placeholder="Automatic">
           </label>
         </div>
-        <p class="footer">Leave on Automatic to find the sharing computer on your network.</p>
+        <p class="footer">Leave on Automatic to find your other computers on your network.</p>
       </div>
 
       <h2 class="section">Options</h2>
@@ -150,7 +144,7 @@
         <div id="radar" class="radar" aria-label="Computers nearby">
           <span class="ring"></span><span class="ring"></span><span class="ring"></span>
         </div>
-        <div class="below-radar client-only">
+        <div class="below-radar">
           <button id="byAddr" class="link" type="button">Don't see it? Connect by address</button>
         </div>
       </div>

@@ -86,15 +86,13 @@ for (const t of document.querySelectorAll("#tabs button")) {
   });
 }
 
+// Every computer can use the others' screens. Internally one of them keeps
+// the group together (the "hub": the others connect to it); that's decided
+// when computers are paired, not chosen here.
 function renderRole() {
-  document.body.classList.toggle("role-server", form.role === "server");
-  document.body.classList.toggle("role-client", form.role === "client");
-  for (const b of document.querySelectorAll(".seg button[data-role]")) {
-    b.setAttribute("aria-checked", String(b.dataset.role === form.role));
-  }
-  $("roleHint").textContent = form.role === "server"
-    ? "This computer has the keyboard and mouse you want to use everywhere."
-    : "Another computer's keyboard and mouse will control this one.";
+  const role = snap?.status?.role || form.role;
+  document.body.classList.toggle("role-server", role === "server");
+  document.body.classList.toggle("role-client", role === "client");
 }
 
 function readForm() {
@@ -106,9 +104,6 @@ function readForm() {
 
 for (const id of ["name", "passphrase", "serverAddr", "speed"]) {
   $(id).addEventListener("input", () => { readForm(); setDirty(true); });
-}
-for (const b of document.querySelectorAll(".seg button[data-role]")) {
-  b.addEventListener("click", () => { form.role = b.dataset.role; renderRole(); setDirty(true); render(); });
 }
 $("reveal").addEventListener("click", () => {
   const p = $("passphrase");
@@ -162,8 +157,8 @@ function renderBanner() {
   }
   const err = s.error || s.status?.error;
   if (err) return showBanner(err);
-  if (form.role === "server" && s.wayland) {
-    return showBanner("This Linux desktop runs Wayland. Sharing its keyboard and mouse needs an Xorg session; it can still be controlled as a client.");
+  if (s.wayland) {
+    return showBanner("This Linux desktop runs Wayland: your other computers can use its screen, but its own keyboard and mouse can't hop to them. Log in with an Xorg session for that.");
   }
   $("banner").hidden = true;
 }
@@ -186,7 +181,7 @@ function placeIn(layout, name, x, y) {
 
 function renderGrid() {
   const st = snap.status;
-  const layout = (st && st.role === "server") ? st.layout : form.layout;
+  const layout = st ? st.layout : form.layout;
   const peers = new Map((st?.peers || []).map((p) => [p.name, p]));
   const cells = [{ name: SERVER, x: 0, y: 0 }, ...layout.screens];
   const xs = cells.map((c) => c.x), ys = cells.map((c) => c.y);
@@ -208,19 +203,26 @@ function renderGrid() {
 }
 
 function tile(name, peers, st) {
-  const self = name === SERVER;
-  const p = peers.get(name);
-  const active = st?.running && ((self && !st.active) || st.active === name);
+  // On a computer that joined another one's group, the arrangement is the
+  // hub's: the hub sits at the centre (SERVER) and this computer is a tile.
+  const joined = st?.role === "client";
+  const hub = joined ? (st.hub || st.peers?.[0]?.name || "") : "";
+  const self = joined ? name === form.name : name === SERVER;
+  const p = peers.get(name === SERVER ? hub : name);
+  const active = st?.running && (joined ? (self && st.active === form.name) : ((self && !st.active) || st.active === name));
   const os = self ? snap.os : p?.os;
-  const cls = ["tile", self ? "self" : "", os ? `os-${os}` : "", !self && !p ? "offline" : "", active && peers.size ? "active" : ""].join(" ");
+  const offline = !joined && !self && !p;
+  const cls = ["tile", self ? "self" : "", os ? `os-${os}` : "", offline ? "offline" : "", active && peers.size ? "active" : ""].join(" ");
   const screen = self ? st?.screen : p?.screen;
+  const label = self ? `${form.name} (this)` : name === SERVER ? hub : name;
   const t = el("div", { class: cls },
     el("span", { class: "os" }, OS_LABEL[os] || ""),
     active && peers.size ? el("span", { class: "here", title: "Cursor is here" }) : null,
-    el("b", {}, self ? `${form.name} (this)` : name),
-    el("small", {}, screen && screen.w ? `${screen.w}×${screen.h}` : (self ? "" : (st?.wakeable || []).includes(name) ? "Asleep" : "Offline")),
+    el("b", {}, label),
+    el("small", {}, screen && screen.w ? `${screen.w}×${screen.h}` : (self || joined ? "" : (st?.wakeable || []).includes(name) ? "Asleep" : "Offline")),
   );
-  if (!self) t.addEventListener("pointerdown", (e) => startDrag(e, t, name));
+  // The hub stays in the middle; everything else can be moved around it.
+  if (name !== SERVER) t.addEventListener("pointerdown", (e) => startDrag(e, t, name));
   return t;
 }
 
@@ -251,7 +253,7 @@ function startDrag(e, t, name) {
       target.classList.remove("drop");
       const x = +target.dataset.x, y = +target.dataset.y;
       const st = snap.status;
-      const current = (st && st.role === "server") ? st.layout : form.layout;
+      const current = st ? st.layout : form.layout;
       const next = placeIn(current, name, x, y);
       form.layout = next;
       if (st) st.layout = next;
@@ -274,21 +276,11 @@ function renderStatus() {
   dot.className = "dot " + (running ? (st.peers.length ? "on" : "busy") : "");
   $("statusText").textContent = running ? st.message : "Off";
 
-  const isClient = form.role === "client";
-  $("grid").hidden = isClient;
-  $("clientView").hidden = !isClient;
-  $("stageTitle").textContent = isClient ? "Status" : "Arrangement";
-  $("stageHint").textContent = isClient
-    ? "Screens are arranged on the computer that shares its keyboard and mouse."
-    : "Drag screens to match where they sit on your desk, then move the pointer off an edge to hop across.";
-  if (isClient) {
-    const server = st?.peers?.[0];
-    const here = running && st.active;
-    $("clientView").querySelector(".display").classList.toggle("active", !!here);
-    $("clientLine").textContent = !running ? "Not running"
-      : server ? (here ? `Controlled by ${server.name} right now` : `Connected to ${server.name}`)
-      : st.message;
-  }
+  $("grid").hidden = false;
+  $("clientView").hidden = true;
+  $("stageTitle").textContent = "Arrangement";
+  $("stageHint").textContent = "Drag screens to match where they sit on your desk. Then move any computer's pointer off an edge to hop across, with its own keyboard.";
+  renderRole();
 }
 
 function renderNearby() {
@@ -302,8 +294,8 @@ function renderNearby() {
     list.append(el("div", { class: "item empty" }, "Turn on OpenHop to look for other computers."));
     return;
   }
-  if (form.role === "client" && st.needs_pairing) {
-    list.append(el("div", { class: "hint-row" }, "Pick the computer whose keyboard and mouse you want to use, then enter the code it shows."));
+  if (st.needs_pairing) {
+    list.append(el("div", { class: "hint-row" }, "Pick one of your computers, then enter the code it shows."));
   }
   if (!items.length) {
     list.append(el("div", { class: "item empty" }, "Searching… Open OpenHop on your other computers (same network, or joined by a cable)."));
@@ -316,12 +308,10 @@ function renderNearby() {
     let right;
     if (live) {
       right = el("span", { class: "tag live" }, "Connected");
-    } else if (form.role === "client" && d.role === "server") {
-      right = isPaired
-        ? el("span", { class: "tag" }, "Paired")
-        : el("button", { class: "pill", onclick: () => openPair(d) }, "Pair");
+    } else if (d.role === "server" && !isPaired) {
+      right = el("button", { class: "pill", onclick: () => openPair(d) }, "Add");
     } else {
-      right = el("span", { class: "tag" }, isPaired ? "Paired" : d.role === "server" ? "Sharing" : "Waiting");
+      right = el("span", { class: "tag" }, isPaired ? "Paired" : "In another group");
     }
     list.append(el("div", { class: "item" },
       el("span", { class: `icon os-${d.os}` }, initials[d.os] || "PC"),
@@ -355,8 +345,8 @@ function renderRadar() {
   const items = (st?.discovered || []).slice().sort((a, b) => (a.device || a.name).localeCompare(b.device || b.name));
   const connected = new Set((st?.peers || []).map((p) => p.name));
   const paired = new Set((st?.paired || []).map((p) => p.device));
-  const isClient = form.role === "client";
-  const state = (d) => connected.has(d.name) ? "live" : paired.has(d.device) ? "paired" : (isClient && d.role === "server") ? "pair" : "seen";
+  const isClient = (st?.role || form.role) === "client";
+  const state = (d) => connected.has(d.name) ? "live" : paired.has(d.device) ? "paired" : d.role === "server" ? "pair" : "seen";
   const w = radar.clientWidth || 600;
   const key = JSON.stringify([running, isClient, form.name, snap.os, w, items.map((d) => [d.device, d.name, d.os, d.role, state(d)])]);
   if (key === radarKey) return;
@@ -378,7 +368,7 @@ function renderRadar() {
     // Keep names and buttons inside the card.
     const y = Math.max(46, Math.min(h - 78, cy + Math.sin(angle) * ring * 0.78));
     const s = state(d);
-    const label = s === "live" ? "Connected" : s === "paired" ? "Paired" : s === "pair" ? "Tap to pair" : d.role === "server" ? "Sharing" : "Nearby";
+    const label = s === "live" ? "Connected" : s === "paired" ? "Paired" : s === "pair" ? "Tap to connect" : d.role === "server" ? "Sharing" : "Nearby";
     const node = el(s === "pair" ? "button" : "div", {
       class: `peer os-${d.os} ${s}${s === "pair" ? " can-pair" : ""}`,
       style: `left:${Math.round(x)}px;top:${Math.round(y)}px;animation-delay:${i * 70}ms`,
@@ -400,7 +390,7 @@ function renderRadar() {
   });
   const caption = !running ? "Turn on OpenHop to look for computers nearby."
     : n === 0 ? "Looking for computers nearby… Open OpenHop on your other computers."
-    : isClient && st.needs_pairing ? "Tap the computer whose keyboard and mouse you want to use."
+    : st.needs_pairing ? "Tap one of your computers to connect."
     : "";
   if (caption) radar.append(el("div", { class: "caption" }, caption));
 }
@@ -415,7 +405,7 @@ function openPair(d) {
   $("pairTitle").textContent = d ? `Pair with ${d.name}` : "Connect by Address";
   $("pairText").textContent = d
     ? `Enter the 6-digit code shown in OpenHop on ${d.name}.`
-    : "On the other computer, OpenHop shows its address and a 6-digit code under Pair a Computer.";
+    : "On the other computer, OpenHop shows its address and a 6-digit code under Add a Computer.";
   for (const id of ["addrInput", "addrLabel", "codeLabel"]) $(id).hidden = !!d;
   $("addrInput").value = snap.config?.server_addr || "";
   $("pairInput").value = "";
@@ -482,7 +472,12 @@ function renderPairing() {
       el("button", { class: "link", onclick: async () => { await invoke("forget", { device: p.device }); refresh(); } }, "Forget"),
     ));
   }
-  $("myAddr").textContent = (st?.addresses || []).join(", ") || "–";
+  const joined = st?.role === "client";
+  const hub = st?.hub || st?.peers?.[0]?.name;
+  $("myAddr").textContent = joined ? (st.peers?.[0]?.addr || "–") : ((st?.addresses || []).join(", ") || "–");
+  $("pairHint").textContent = joined && hub
+    ? `On the new computer, open OpenHop, tap ${hub} in Nearby and type this code.`
+    : "On the other computer, open OpenHop, tap this computer in Nearby and type this code.";
   // Follow a pairing attempt in progress.
   if (pairing?.sent && st) {
     const done = pairing.byAddr
@@ -572,7 +567,7 @@ function render() {
   renderRadar();
   renderBanner();
   renderStatus();
-  if (form.role === "server" && !dragging) renderGrid();
+  if (!dragging) renderGrid();
   renderNearby();
 }
 

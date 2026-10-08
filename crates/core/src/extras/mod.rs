@@ -46,12 +46,20 @@ pub enum UiEvent {
     CloseViewer {
         stream: u64,
     },
+    /// Maximize (or restore) a live window's view.
+    MaximizeViewer {
+        stream: u64,
+        on: bool,
+    },
 }
 
 /// An update to a live window's picture.
 #[derive(Clone)]
 pub struct Frame {
+    /// Order of arrival here (an update can come in several parts).
     pub seq: u64,
+    /// The owner's update number (acknowledged when shown).
+    pub remote: u64,
     pub w: u32,
     pub h: u32,
     /// Title bar height (top of the picture).
@@ -109,6 +117,8 @@ struct Viewer {
     window: u64,
     /// Updates not shown yet.
     queue: Vec<Frame>,
+    /// Parts received so far (numbers the queue).
+    received: u64,
     paused: Option<String>,
     closed: bool,
 }
@@ -129,6 +139,8 @@ struct Source {
     poke: Condvar,
     /// The window was dragged back here: show it under the pointer.
     returning: AtomicBool,
+    /// Shown maximized on the viewer's screen.
+    maxed: AtomicBool,
 }
 
 impl Source {
@@ -417,7 +429,7 @@ impl Hub {
         let (title, w, h) = info.map(|i| (i.title, i.w, i.h)).unwrap_or_else(|| ("Window".into(), 960, 640));
         // Fits in a JavaScript number.
         let stream = crate::files::new_id() & ((1 << 52) - 1);
-        self.viewers.lock().insert(stream, Viewer { origin: origin.into(), window, queue: vec![], paused: None, closed: false });
+        self.viewers.lock().insert(stream, Viewer { origin: origin.into(), window, queue: vec![], received: 0, paused: None, closed: false });
         self.send(origin, Ext::WinOpen { stream, window, os: Os::current() });
         self.ui(UiEvent::OpenViewer { stream, origin: origin.into(), title, w, h, at });
         log::info!("opening a live window from {origin}");
@@ -455,7 +467,7 @@ impl Hub {
                     if !v.queue.is_empty() {
                         let frames = std::mem::take(&mut v.queue);
                         log::trace!("{} hand {} update(s) to the view", ms(), frames.len());
-                        let (origin, last) = (v.origin.clone(), frames.last().map(|f| f.seq).unwrap_or(0));
+                        let (origin, last) = (v.origin.clone(), frames.last().map(|f| f.remote).unwrap_or(0));
                         drop(viewers);
                         self.send(&origin, Ext::WinAck { stream, seq: last });
                         return FrameWait::Frames(frames);
@@ -487,12 +499,21 @@ impl Hub {
         }
     }
 
-    /// The live window being dragged here right now (left button held).
+    /// The live window being dragged here right now. The caller checks the
+    /// left button is still held (it knows best: on a computer being
+    /// controlled, the button was pressed by OpenHop itself).
     pub fn dragged_viewer(&self) -> Option<u64> {
         let d = *self.dragging.lock();
         let (stream, since) = d?;
         let alive = self.viewers.lock().contains_key(&stream);
-        (alive && since.elapsed() < Duration::from_secs(300) && crate::platform::dnd::left_button_down()).then_some(stream)
+        (alive && since.elapsed() < Duration::from_secs(600)).then_some(stream)
+    }
+
+    /// The left button was let go: no live window is being dragged any more.
+    pub fn drag_ended(&self) {
+        if self.dragging.lock().take().is_some() {
+            log::debug!("live window put down");
+        }
     }
 
     /// A live window shown here was dragged onto `to`'s screen: move it
@@ -562,7 +583,8 @@ impl Hub {
                     let mut viewers = self.viewers.lock();
                     match viewers.get_mut(&stream) {
                         Some(v) => {
-                            let f = Frame { seq, w, h, bar, title, patches: Arc::new(patches) };
+                            v.received += 1;
+                            let f = Frame { seq: v.received, remote: seq, w, h, bar, title, patches: Arc::new(patches) };
                             if f.is_full() {
                                 v.queue.clear();
                             }
@@ -603,6 +625,11 @@ impl Hub {
                 }
             }
             Ext::WinMoveTo { stream, to } => self.move_viewer(stream, &to),
+            Ext::WinMaximize { stream, on } => {
+                if self.viewers.lock().contains_key(&stream) {
+                    self.ui(UiEvent::MaximizeViewer { stream, on });
+                }
+            }
             Ext::WinReturn { stream } => {
                 if let Some(s) = self.sources.lock().remove(&stream) {
                     s.returning.store(true, Ordering::SeqCst);
@@ -642,6 +669,7 @@ impl Hub {
             busy_until: Mutex::new(Instant::now()),
             poke: Condvar::new(),
             returning: AtomicBool::new(false),
+            maxed: AtomicBool::new(false),
         });
         self.sources.lock().insert(stream, src.clone());
         // It has moved to the other screen: hide it here (it keeps running).
@@ -707,6 +735,10 @@ impl Hub {
         let mut last_full = Instant::now();
         let mut sent_at = Instant::now();
         let mut paused_sent = false;
+        let mut last_max_check = Instant::now();
+        // Area sent at lower quality during a big change, to send again sharp.
+        let mut rough: Option<(u32, u32, u32, u32)> = None;
+        let mut rough_pass;
         while !src.stop.load(Ordering::SeqCst) && !self.stop.load(Ordering::SeqCst) {
             let pause = src.remote_pause.lock().clone();
             if let Some(reason) = pause {
@@ -742,21 +774,65 @@ impl Hub {
             let (fw, fh) = (pic.w, pic.h);
             // A full picture now and then heals anything that went wrong.
             let full = prev.as_ref().map(|p| p.w != fw || p.h != fh).unwrap_or(true) || last_full.elapsed() > Duration::from_secs(15);
-            let rects = if full { vec![(0, 0, fw, fh)] } else { changed_rects(prev.as_ref().unwrap(), &pic) };
-            if rects.is_empty() {
-                // Right after input, look again soon: the app is about to redraw.
-                let wait = if src.busy() { Duration::from_millis(8) } else { interval };
-                src.nap(wait.saturating_sub(started.elapsed()).max(Duration::from_millis(4)));
-                continue;
+            // Maximized on its own screen (its maximize button, a double click
+            // on its title bar): maximize the view instead, on this screen
+            // size, like an app opened here would.
+            if last_max_check.elapsed() > Duration::from_millis(40) {
+                last_max_check = Instant::now();
+                if wins::is_maximized(src.window) {
+                    wins::unmaximize(src.window);
+                    let on = !src.maxed.fetch_xor(true, Ordering::SeqCst);
+                    log::debug!("live window {} on the other screen", if on { "maximized" } else { "restored" });
+                    self.send(&src.viewer, Ext::WinMaximize { stream, on });
+                    continue;
+                }
             }
+            let mut rects = if full { vec![(0, 0, fw, fh)] } else { changed_rects(prev.as_ref().unwrap(), &pic) };
+            if rects.is_empty() {
+                // Things settled after a big change (scrolling) sent quickly at
+                // lower quality: send those areas again, sharp.
+                if let Some(r) = rough.filter(|_| sent_at.elapsed() > Duration::from_millis(180)) {
+                    rough = None;
+                    rects = vec![r];
+                    rough_pass = false;
+                } else {
+                    // Right after input, look again soon: the app is about to redraw.
+                    let wait = if src.busy() { Duration::from_millis(8) } else { interval };
+                    src.nap(wait.saturating_sub(started.elapsed()).max(Duration::from_millis(4)));
+                    continue;
+                }
+            } else {
+                // A big part of the window changed at once (scrolling, a new
+                // page): send it fast first, then sharp once it settles.
+                let area: u64 = rects.iter().map(|r| r.2 as u64 * r.3 as u64).sum();
+                rough_pass = !full && area * 3 > fw as u64 * fh as u64;
+                if rough_pass {
+                    for r in &rects {
+                        rough = Some(match rough {
+                            None => *r,
+                            Some(u) => {
+                                let (x0, y0) = (u.0.min(r.0), u.1.min(r.1));
+                                let (x1, y1) = ((u.0 + u.2).max(r.0 + r.2), (u.1 + u.3).max(r.1 + r.3));
+                                (x0, y0, x1 - x0, y1 - y0)
+                            }
+                        });
+                    }
+                }
+            }
+            let (pq, colour) = if rough_pass { (q.min(72), false) } else { (q, full_colour) };
+            // Bands of at most 64 rows: small messages, so keys and clicks
+            // going the other way never wait behind a big picture.
+            let bands: Vec<(u32, u32, u32, u32)> =
+                rects.into_iter().flat_map(|(x, y, w, h)| (0..h.div_ceil(64)).map(move |i| (x, y + i * 64, w, (h - i * 64).min(64)))).collect();
             let patches: Vec<Patch> =
-                rects.into_iter().filter_map(|(x, y, w, h)| encode_patch(&pic, (x, y, w, h), q, full_colour).map(|jpeg| Patch { x, y, w, h, jpeg })).collect();
+                bands.into_iter().filter_map(|(x, y, w, h)| encode_patch(&pic, (x, y, w, h), pq, colour).map(|jpeg| Patch { x, y, w, h, jpeg })).collect();
             if patches.is_empty() {
                 std::thread::sleep(interval);
                 continue;
             }
             if full {
                 last_full = Instant::now();
+                rough = None;
             }
             *src.scale.lock() = (fw, fh, ow, oh);
             prev = Some(pic);
@@ -777,7 +853,21 @@ impl Hub {
                 );
             }
             log::trace!("{} send update {seq} ({} bytes, took {} ms)", ms(), len, started.elapsed().as_millis());
-            self.send(&src.viewer, Ext::WinFrame { stream, seq, w: fw, h: fh, bar: bar_px, title, patches });
+            // Split into messages of about 48 KB (same update number).
+            let mut part: Vec<Patch> = vec![];
+            let mut part_len = 0;
+            let mut first = true;
+            let n = patches.len();
+            for (i, p) in patches.into_iter().enumerate() {
+                part_len += p.jpeg.len();
+                part.push(p);
+                if part_len >= 48 * 1024 || i + 1 == n {
+                    let t = if first { title.clone() } else { String::new() };
+                    first = false;
+                    self.send(&src.viewer, Ext::WinFrame { stream, seq, w: fw, h: fh, bar: bar_px, title: t, patches: std::mem::take(&mut part) });
+                    part_len = 0;
+                }
+            }
             crate::files::pace(len);
             sent_at = Instant::now();
             let wait = if src.busy() { Duration::from_millis(8) } else { interval };
@@ -813,10 +903,30 @@ impl Hub {
                 *self.focused.lock() = Some((src.viewer.clone(), stream, src.window));
             }
             WinEvent::Resize { w, h } => {
-                let w = (w as i64 * ow as i64 / fw.max(1) as i64) as i32;
-                let h = (h as i64 * oh as i64 / fh.max(1) as i64) as i32;
+                let mut w = (w as i64 * ow as i64 / fw.max(1) as i64) as i32;
+                let mut h = (h as i64 * oh as i64 / fh.max(1) as i64) as i32;
+                // Bigger than this screen (a maximized view on a bigger screen):
+                // the window can't be used beyond this screen's edges, so it
+                // gets this screen's size in the same proportions, and the
+                // view shows it a little larger.
+                let screen = *self.screen.lock();
+                if let Some(sc) = screen {
+                    if w > sc.w || h > sc.h {
+                        let k = (sc.w as f64 / w as f64).min(sc.h as f64 / h as f64);
+                        w = (w as f64 * k) as i32;
+                        h = (h as f64 * k) as i32;
+                    }
+                }
                 if (w - g.w).abs() > 2 || (h - g.h).abs() > 2 {
                     wins::resize(src.window, w, h);
+                    // Keep all of it on this screen (so every part can be clicked).
+                    if let Some(sc) = screen {
+                        let x = g.x.clamp(sc.x, (sc.x + sc.w - w).max(sc.x));
+                        let y = g.y.clamp(sc.y, (sc.y + sc.h - h).max(sc.y));
+                        if (x, y) != (g.x, g.y) {
+                            wins::move_to(src.window, x, y);
+                        }
+                    }
                 }
             }
             WinEvent::Blur => {
@@ -1112,7 +1222,7 @@ mod tests {
     #[test]
     fn viewer_waits_for_frames() {
         let hub = Hub::new("me".into(), Settings::from_config(&crate::Config::default()));
-        hub.viewers.lock().insert(7, Viewer { origin: "pc".into(), window: 1, queue: vec![], paused: None, closed: false });
+        hub.viewers.lock().insert(7, Viewer { origin: "pc".into(), window: 1, queue: vec![], received: 0, paused: None, closed: false });
         assert!(matches!(hub.frame(7, 0, Duration::from_millis(20)), FrameWait::Timeout));
         let h2 = hub.clone();
         std::thread::spawn(move || {

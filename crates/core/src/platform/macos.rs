@@ -100,6 +100,8 @@ fn button_from_number(n: i64) -> Option<MouseButton> {
 
 /// Letting OpenHop's own input through while grabbed (controlling a window).
 static PASS: AtomicBool = AtomicBool::new(false);
+/// The pointer is hidden while the shared pointer is on another screen.
+static IDLE_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 fn tap_callback(etype: CGEventType, event: &CGEvent) -> CallbackResult {
     use CGEventType::*;
@@ -127,8 +129,15 @@ fn tap_callback(etype: CGEventType, event: &CGEvent) -> CallbackResult {
                 }
                 CallbackResult::Drop
             } else {
-                let p = event.location();
-                send(InputEvent::LocalMove { x: p.x.round() as i32, y: p.y.round() as i32 });
+                // Our own injected moves (another computer using this screen) aren't the user's.
+                let ours = event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID) == std::process::id() as i64;
+                if !ours {
+                    if IDLE_HIDDEN.swap(false, Ordering::SeqCst) {
+                        set_cursor_hidden(false);
+                    }
+                    let p = event.location();
+                    send(InputEvent::LocalMove { x: p.x.round() as i32, y: p.y.round() as i32 });
+                }
                 CallbackResult::Keep
             }
         }
@@ -265,7 +274,18 @@ impl Capture for MacCapture {
         std::thread::sleep(std::time::Duration::from_millis(10));
         PASS.store(false, Ordering::SeqCst);
     }
+    fn idle_cursor(&self, hidden: bool) {
+        if GRABBED.load(Ordering::SeqCst) {
+            return;
+        }
+        if IDLE_HIDDEN.swap(hidden, Ordering::SeqCst) != hidden {
+            set_cursor_hidden(hidden);
+        }
+    }
     fn grab(&self) -> bool {
+        if IDLE_HIDDEN.swap(false, Ordering::SeqCst) {
+            set_cursor_hidden(false);
+        }
         HELD_MODS.lock().clear();
         GRABBED.store(true, Ordering::SeqCst);
         unsafe { CGAssociateMouseAndMouseCursorPosition(0) };

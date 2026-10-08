@@ -110,6 +110,13 @@ pub fn pump(handle: &AppHandle) {
     for ev in hub.take_ui() {
         match ev {
             UiEvent::OpenViewer { stream, origin, title, w, h, at } => open_viewer(handle, stream, &origin, &title, w, h, at),
+            UiEvent::MaximizeViewer { stream, on } => {
+                let label = format!("view-{stream}");
+                if let Some(w) = handle.get_webview_window(&label) {
+                    let _ = w.emit_to(label.as_str(), "maximized", on);
+                    let _ = if on { w.maximize() } else { w.unmaximize() };
+                }
+            }
             UiEvent::CloseViewer { stream } => {
                 if let Some(w) = handle.get_webview_window(&format!("view-{stream}")) {
                     let _ = w.destroy();
@@ -257,6 +264,12 @@ pub async fn win_frame(app: State<'_, App>, stream: String, after: String) -> Re
 #[tauri::command]
 pub fn viewer_fit(window: tauri::WebviewWindow, w: f64, h: f64) {
     let _ = window.set_size(LogicalSize::new(w.max(120.0), h.max(80.0)));
+}
+
+/// Troubleshooting notes from a live window's page.
+#[tauri::command]
+pub fn viewer_log(window: tauri::WebviewWindow, msg: String) {
+    log::debug!("{}: {msg}", window.label());
 }
 
 /// Show a viewer's title like the original window's.

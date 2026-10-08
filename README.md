@@ -109,7 +109,7 @@ Then follow [Set up your computers](#set-up-your-computers).
 
 ## How it works
 
-One computer is the **server**: it has the keyboard and mouse you actually use. Every other computer is a **client**.
+Every computer can use every screen with its own keyboard and mouse: move any computer's pointer off a screen edge and it carries on onto the next screen, with that computer's keyboard. Behind the scenes one computer keeps the group together (the **hub**: the one the others paired with) and passes input along; you never have to choose which.
 
 ```mermaid
 flowchart LR
@@ -122,22 +122,23 @@ flowchart LR
     S -. "UDP 24851 discovery" .- C2
 ```
 
-1. The server watches its pointer. When it touches an edge that has a screen next to it in your arrangement, the server **captures** its local input. Your local pointer is hidden and parked, and your keystrokes and clicks stop reaching local apps.
-2. Mouse motion, clicks, scrolling and key presses are sent to the active client, which **injects** them as if they came from a real device.
-3. When the pointer leaves that client's screen, it lands on the next screen in the arrangement, which can be another client or back on the server.
-4. Keys travel as standard USB HID codes, so a key pressed on any OS arrives as the same physical key on every other OS.
-5. Files travel on a separate bulk lane in 256 KB pieces, so your pointer stays smooth during a transfer. Clients send files to each other through the server.
+1. Every computer watches its own pointer. When it touches an edge that has a screen next to it in your arrangement, that computer **captures** its keyboard and mouse. Its pointer is hidden and parked, and its keystrokes and clicks stop reaching local apps.
+2. Mouse motion, clicks, scrolling and key presses go (through the hub) to the computer whose screen the pointer is on, which **injects** them as if they came from a real device.
+3. When the pointer leaves that screen, it lands on the next screen in the arrangement, or back home, where the keyboard and mouse work directly again.
+4. There's only ever one pointer: a screen the pointer has left hides its own pointer until its own mouse or touchpad moves (then it can hop across too).
+5. Keys travel as standard USB HID codes, so a key pressed on any OS arrives as the same physical key on every other OS.
+6. Files and live window pictures travel on a separate bulk lane in small pieces, and each connection keeps only a short queue of unsent data, so keys and clicks never wait behind them.
 
 ## Platform support
 
-| | Share its keyboard & mouse (server) | Be controlled (client) |
+| | Use its keyboard & mouse on other screens | Its screen used by other computers |
 |---|:---:|:---:|
 | **Windows 10 / 11** | ✅ | ✅ |
 | **macOS 11+** (Apple Silicon & Intel) | ✅ needs Accessibility permission | ✅ needs Accessibility permission |
 | **Linux, X11 / Xorg session** | ✅ | ✅ |
 | **Linux, Wayland session** (default on Ubuntu 22.04+) | ⚠️ not yet, see [roadmap](#roadmap) | ✅ via `uinput` (set up automatically by the .deb) |
 
-**What works on Wayland.** A Wayland desktop can be *controlled* but can't yet *share* its own keyboard and mouse. The common setups work fine: a Windows PC or Mac as the server with Ubuntu as a client. If your Linux machine must be the server, log in with an Xorg session.
+**What works on Wayland.** Other computers can use a Wayland desktop's screen, but its own keyboard and mouse can't hop to them yet. For that, log in with an Xorg session.
 
 **Drag & drop.** Dragging *from* a computer works from Windows Explorer, macOS Finder and Linux file managers (on Ubuntu's default Wayland session, OpenHop briefly puts a tiny helper window under the pointer to see the drag). Dropping lands the files in the folder or app under the pointer on Linux (X11 apps) and Windows. On macOS, and anywhere a drop isn't accepted, the files are saved to `Downloads/OpenHop` and put on the clipboard, so you can paste them where you want them.
 
@@ -151,6 +152,8 @@ flowchart LR
 | Do Not Disturb sync | best effort | via two Shortcuts* | ✅ GNOME | ✅ GNOME |
 
 \* macOS has no public switch for Focus. In the Shortcuts app, make two shortcuts named **OpenHop Focus On** and **OpenHop Focus Off**, each with one *Set Focus* action, and OpenHop runs them.
+
+> **Test status (v0.6.0).** Tested end to end on Linux (two X servers, two copies of the app, and the app with the command-line version): a laptop's own mouse and keyboard driving the desktop and coming home, the desktop's mouse taking over again, the touchpad moving the pointer while the desktop's mouse was on the laptop, pairing by tapping and typing the code (the computer that types the code joins), forgetting (it stands alone again), rearranging screens from the joined computer, maximizing and restoring a live window, clicking in it while maximized, and dragging it back home. Windows and macOS build and pass the automated tests but haven't been tried on real machines.
 
 > **Test status (v0.5.0).** Tested end to end on Linux (two X servers, the app on one side and the command-line version on the other, both ways round): clicking and fast typing into a live window of the computer sharing its keyboard and mouse, moving a live window by its own title bar, dragging it back home (it keeps following the mouse) and from the other side, the on/off state surviving a restart, and taking over the port from an older copy. Windows and macOS build and pass the automated tests but haven't been tried on real machines.
 
@@ -229,11 +232,11 @@ It works like AirDrop: no accounts, no IP addresses, no passwords to agree on.
 
 **1. Install OpenHop on every computer** (see [Quick install](#quick-install)). Open it and leave it running in the tray.
 
-**2. On the computer whose keyboard and mouse you want to use**, keep **Role** on **Control Others**. Under **Pair a Computer** it shows a 6-digit **Pairing Code**.
+**2. On one computer**, look under **Add a Computer**: it shows a 6-digit **Pairing Code**.
 
-**3. On each of the other computers**, set **Role** to **Be Controlled**. The host pops up in the **Nearby** radar on the right, like Xender or AirDrop. Tap it (**Tap to pair**), type its code, and you're connected. From then on they reconnect automatically, even after restarts.
+**3. On each of the other computers**, that computer pops up in the **Nearby** radar on the right, like Xender or AirDrop. Tap it (**Tap to connect**), type its code, and you're connected. From then on they reconnect automatically, even after restarts. There's no "control" or "be controlled": each computer's keyboard and mouse work on all the screens.
 
-> **Host not showing up?** Click **Don't see it? Connect by address** under the radar and type the address shown on the host under **Pair a Computer › Address** (for example `192.168.1.20` or `192.168.1.20:24852`), plus the code. This works even when your network or firewall blocks discovery.
+> **Host not showing up?** Click **Don't see it? Connect by address** under the radar and type the address shown on the host under **Add a Computer › Address** (for example `192.168.1.20` or `192.168.1.20:24852`), plus the code. This works even when your network or firewall blocks discovery.
 
 <p align="center">
   <img src="docs/screenshots/pair-light.png" width="70%" alt="Pairing: typing the 6-digit code shown on the host">
@@ -284,7 +287,7 @@ Update **every computer** to the same version: computers only connect to others 
 - **Connect once:** you don't need to keep the window open, or open OpenHop again after a restart. Closing the window hides OpenHop to the tray or menu bar and sharing carries on, and it starts by itself (in the background, already connected) every time you sign in. It stays that way until you switch it off with the switch at the top of its window (or **Turn OpenHop Off** in the tray menu).
 - **Nothing to set up:** clipboard and file sync, ⌃/⌘ swapping, dragging windows across screens, dark mode and Do Not Disturb sync, notifications and Wake-on-LAN are simply always on. The network port is chosen automatically: if an older OpenHop still holds it, that copy is closed; if another program has it, OpenHop uses the next free one. The only option is the transfer **Speed Limit**; the **Look** tab has the accent colour.
 - **Windows from other computers:** press **Ctrl+Alt+Space** (or click the tray icon › *Windows on All Computers*) for the window dock. Click a window from any computer and it moves here: it looks and behaves like a normal window, with its own title bar (drag it to move it, click its buttons, drag an edge to resize it and the real one follows), while the app keeps running on its own computer, where the original is hidden until it comes back (macOS can't hide another app's window, so there it stays visible). You can also grab a window by its title bar and drag it off the screen edge onto another computer: it opens there under your pointer. Drag it by its title bar back across the edge and it's home again, still following your mouse.
-- **Something feels stuck?** Move the pointer back to the server. Leaving a screen always releases every key and mouse button that was held there. If a computer stops responding (asleep, Wi-Fi dropped), OpenHop drops it within about 10 seconds, returns the pointer to you, and reconnects it automatically when it's back, in the same spot in your arrangement.
+- **Something feels stuck?** Move the pointer back to its own screen. Leaving a screen always releases every key and mouse button that was held there. If a computer stops responding (asleep, Wi-Fi dropped), OpenHop drops it within about 10 seconds, returns the pointer to you, and reconnects it automatically when it's back, in the same spot in your arrangement.
 
 ---
 
@@ -426,7 +429,7 @@ It saves **OpenHop clipboard report.txt** on your Desktop, listing the formats t
 <details>
 <summary><b>"That code didn't work"</b></summary>
 
-Type the code currently shown on the host. It changes after each successful pairing, and after five wrong tries pairing pauses for a minute. Make sure the host is set to **Control Others** and its switch is on.
+Type the code currently shown on the host. It changes after each successful pairing, and after five wrong tries pairing pauses for a minute. Make sure its switch is on.
 </details>
 
 <details>
@@ -528,6 +531,8 @@ open-hop/
 ```
 
 ## Roadmap
+
+**Done in v0.6:** every computer's keyboard and mouse work on every screen (no more "control" or "be controlled"), one pointer at a time, live windows that maximize to the screen they're on, smoother scrolling and typing next to live windows.
 
 **Done in v0.5:** live windows with their own title bar that you drag back home, connect once (always on until switched off), no toggles to set, automatic port, instant typing over Wi-Fi.
 

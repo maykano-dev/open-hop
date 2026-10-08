@@ -15,7 +15,7 @@ use crate::keys;
 use crate::layout::{apply_delta, edge_fraction, entry_point, touching_edge, Layout, Side, SERVER};
 use crate::net::{derive_psk, handshake, Link, SecureReceiver, CHUNK};
 use crate::platform::{self, dnd, Capture, Injector, InputEvent};
-use crate::protocol::{ClipData, Ext, FileMeta, MouseButton, Msg, OfferKind, Os, Rect, WinInfo, DEFAULT_PORT, PROTOCOL_VERSION};
+use crate::protocol::{ClipData, DriveEv, Ext, FileMeta, MouseButton, Msg, OfferKind, Os, Rect, WinInfo, DEFAULT_PORT, PROTOCOL_VERSION};
 use crate::wol;
 use anyhow::{anyhow, bail, Context, Result};
 use crossbeam_channel::{select, tick, Receiver, Sender};
@@ -33,6 +33,26 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// ones wait until the pointer arrives on this computer.
 const AUTO_FETCH_BYTES: u64 = 64 * 1024 * 1024;
 const ESC: u16 = 0x29;
+/// Pointer positions OpenHop set itself lately, to tell them apart from the
+/// user moving this computer's own mouse.
+#[derive(Default)]
+struct Placed(std::collections::VecDeque<((i32, i32), Instant)>);
+
+impl Placed {
+    fn add(&mut self, p: (i32, i32)) {
+        self.0.push_back((p, Instant::now()));
+        while self.0.len() > 32 {
+            self.0.pop_front();
+        }
+    }
+    fn ours(&self, (x, y): (i32, i32)) -> bool {
+        self.0.iter().any(|((px, py), t)| (x - px).abs() <= 2 && (y - py).abs() <= 2 && t.elapsed() < Duration::from_millis(400))
+    }
+}
+
+/// In `Server::active`: the pointer is on this (the server's) screen, moved
+/// by another computer's keyboard and mouse.
+const THIS: u64 = u64::MAX;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PeerStatus {
@@ -79,6 +99,9 @@ pub struct Status {
     pub windows: Vec<ComputerWindows>,
     /// Computers in Do Not Disturb or presenting right now.
     pub quiet_from: Vec<String>,
+    /// Client: the computer the others connect through (it keeps the
+    /// arrangement and the pairing code).
+    pub hub: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -220,6 +243,7 @@ impl Engine {
             addresses: local_addresses(),
             windows: vec![],
             quiet_from: vec![],
+            hub: None,
         }));
         // The server binds first so discovery can announce the port it really got.
         let listeners = match cfg.role {
@@ -259,7 +283,17 @@ impl Engine {
         };
         let main = match cfg.role {
             Role::Server => {
-                let capture = shared_capture(cfg.screen)?;
+                // Without a way to capture the keyboard and mouse here (Wayland),
+                // the others can still use this screen.
+                let capture = match shared_capture(cfg.screen) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::warn!("this computer's keyboard and mouse can't be shared: {e:#}");
+                        let screen =
+                            platform::create_injector(cfg.screen, &cfg.linux_backend).map(|i| i.screen()).unwrap_or(Rect { x: 0, y: 0, w: 1920, h: 1080 });
+                        (Arc::new(NoCapture(screen)) as Arc<dyn Capture>, crossbeam_channel::never())
+                    }
+                };
                 status.lock().screen = Some(capture.0.screen());
                 // Also listening on IPv6 so direct-cable (link-local) connections work.
                 let (listener, listener6, _) = listeners.expect("server listeners");
@@ -437,6 +471,19 @@ fn shared_capture(screen: Option<Rect>) -> Result<(Arc<dyn Capture>, Receiver<In
     let cap = platform::start_capture(tx, screen)?;
     let _ = CAPTURE.set((cap.clone(), rx.clone()));
     Ok((cap, rx))
+}
+
+/// Stand-in where this computer's keyboard and mouse can't be captured.
+struct NoCapture(Rect);
+
+impl Capture for NoCapture {
+    fn grab(&self) -> bool {
+        false
+    }
+    fn release(&self, _: i32, _: i32) {}
+    fn screen(&self) -> Rect {
+        self.0
+    }
 }
 
 #[derive(Clone)]
@@ -765,6 +812,19 @@ struct Server {
     last_wake: HashMap<String, Instant>,
     /// Window the keyboard types into directly (see update_key_pass).
     key_pass: Option<u64>,
+    /// Whose keyboard and mouse are in use: None = this computer's own,
+    /// Some(id) = that client's (any computer can drive the others).
+    driver: Option<u64>,
+    /// Puts another computer's input on this screen.
+    local_inj: Option<Box<dyn Injector>>,
+    /// Keys and buttons held on this screen by another computer's devices.
+    local_keys: HashSet<u16>,
+    local_buttons: HashSet<MouseButton>,
+    /// Where we put this screen's pointer ourselves lately (the user's own
+    /// mouse moving it somewhere else means they're using it).
+    injected: Placed,
+    /// The arrangement and pairing code last told to the clients.
+    group_sent: Option<(Layout, String)>,
 }
 
 impl Server {
@@ -825,6 +885,7 @@ impl Server {
                 );
             }
         }
+        let (ctx_screen, linux_backend) = (ctx.cfg.screen, ctx.cfg.linux_backend.clone());
         let mut s = Server {
             common: Common::new(ctx.clone(), clip_set),
             ctx,
@@ -837,6 +898,12 @@ impl Server {
             drag: None,
             last_wake: HashMap::new(),
             key_pass: None,
+            driver: None,
+            local_inj: platform::create_injector(ctx_screen, &linux_backend).map_err(|e| log::warn!("other computers can't use this screen: {e:#}")).ok(),
+            local_keys: HashSet::new(),
+            local_buttons: HashSet::new(),
+            injected: Placed::default(),
+            group_sent: None,
         };
         s.update_status();
         s.ctx.hub.set_screen(s.capture.screen());
@@ -856,10 +923,15 @@ impl Server {
                 recv(pinger) -> _ => {
                     s.broadcast(&Msg::Ping, None);
                     s.update_status();
+                    s.send_group(false);
                 }
                 recv(fast) -> _ => {
                     s.check_local_drop();
                     s.update_key_pass();
+                    // A live window shown here was put down (button let go).
+                    if s.active.is_none() && s.ctx.hub.dragged_viewer().is_some() && !dnd::left_button_down() {
+                        s.ctx.hub.drag_ended();
+                    }
                 }
             }
         }
@@ -900,6 +972,20 @@ impl Server {
         self.ctx.cfg.layout = l;
         self.ctx.save_config();
         self.update_status();
+        self.send_group(true);
+    }
+
+    /// Tell the clients the arrangement and pairing code (when they change),
+    /// so every computer can show them.
+    fn send_group(&mut self, force: bool) {
+        let code = self.ctx.pair.lock().code.clone();
+        let now = (self.ctx.cfg.layout.clone(), code.clone());
+        if !force && self.group_sent.as_ref() == Some(&now) {
+            return;
+        }
+        let msg = Msg::Group { layout: now.0.clone(), code, hub: self.me() };
+        self.broadcast(&msg, None);
+        self.group_sent = Some(now);
     }
 
     fn forget(&mut self, device: &str) {
@@ -962,12 +1048,25 @@ impl Server {
             for f in self.ctx.inbox.abort_from(&p.name) {
                 self.common.on_finished(f);
             }
-            if matches!(self.active, Some((a, _, _)) if a == id) {
+            if self.driver == Some(id) {
+                // Its keyboard and mouse were in use: this computer's take over.
+                self.driver = None;
+                self.release_local();
+                if let Some((a, _, _)) = self.active.take() {
+                    if a != THIS {
+                        self.release_held(a);
+                        self.send(a, Msg::Leave);
+                    }
+                }
+                self.capture.idle_cursor(false);
+            } else if matches!(self.active, Some((a, _, _)) if a == id) {
                 self.active = None;
                 self.held_keys.clear();
                 self.held_buttons.clear();
-                let (cx, cy) = self.capture.screen().center();
-                self.capture.release(cx, cy);
+                if self.driver.is_none() {
+                    let (cx, cy) = self.capture.screen().center();
+                    self.capture.release(cx, cy);
+                }
             }
             self.update_status();
         }
@@ -1018,6 +1117,7 @@ impl Server {
                     });
                 }
                 self.peers.insert(id, Peer { name, device, os, screen, addr, link });
+                self.send_group(true);
                 self.update_status();
             }
             NetEvent::Disconnected(id) => self.drop_peer(id),
@@ -1074,6 +1174,23 @@ impl Server {
                 }
             }
             Msg::Ping => self.send(id, Msg::Pong),
+            Msg::EdgeHit { side, frac } => self.on_edge_hit(id, side, frac),
+            Msg::Drive(ev) => {
+                if self.driver == Some(id) {
+                    self.on_drive(id, ev);
+                }
+            }
+            Msg::LocalPos { x, y } => {
+                // Its own mouse moved the pointer while we were showing it there.
+                if let Some((a, _, _)) = self.active {
+                    if a == id {
+                        self.active = Some((a, x, y));
+                    }
+                }
+            }
+            Msg::SetLayout(l) => {
+                self.set_layout(l);
+            }
             _ => {}
         }
     }
@@ -1107,6 +1224,15 @@ impl Server {
     // ---------- input
 
     fn on_input(&mut self, ev: InputEvent) {
+        if let (Some(c), InputEvent::LocalMove { x, y }) = (self.driver, &ev) {
+            // Our own moves (another computer using this screen) aren't the user's.
+            if self.injected.ours((*x, *y)) {
+                return;
+            }
+            // This computer's own mouse moved: it's in use here again.
+            log::debug!("this computer's mouse is in use again");
+            self.stop_driver(c);
+        }
         match (ev, self.active) {
             (InputEvent::LocalMove { x, y }, None) => {
                 let screen = self.capture.screen();
@@ -1276,11 +1402,259 @@ impl Server {
         self.update_status();
     }
 
+    // ---------- any computer drives the others
+
+    /// Let go of keys and buttons another computer held on this screen.
+    fn release_local(&mut self) {
+        let keys: Vec<u16> = self.local_keys.drain().collect();
+        let buttons: Vec<MouseButton> = self.local_buttons.drain().collect();
+        if let Some(inj) = self.local_inj.as_mut() {
+            for k in keys {
+                let _ = inj.key(k, false);
+            }
+            for b in buttons {
+                let _ = inj.button(b, false);
+            }
+        }
+    }
+
+    /// Put this screen's pointer at (x, y) (screen coordinates) for another computer.
+    fn local_move(&mut self, x: i32, y: i32) {
+        let r = self.capture.screen();
+        self.injected.add((r.x + x, r.y + y));
+        if let Some(inj) = self.local_inj.as_mut() {
+            let _ = inj.move_to(r.x + x, r.y + y);
+        }
+    }
+
+    /// The client driving stops (its pointer is back home, or this computer's
+    /// own mouse took over): it lets go of its keyboard and mouse.
+    fn stop_driver(&mut self, c: u64) {
+        // (-1, -1): its pointer isn't coming home, it just stays hidden there.
+        self.send(c, Msg::DriveStop { x: -1, y: -1 });
+        self.driver = None;
+        self.release_local();
+        if let Some((a, _, _)) = self.active.take() {
+            if a != THIS {
+                self.release_held(a);
+                self.send(a, Msg::Leave);
+            }
+        }
+        self.capture.idle_cursor(false);
+        self.update_status();
+    }
+
+    /// A client's own mouse reached the edge of its screen: if there's a
+    /// screen there, its keyboard and mouse drive from now on.
+    fn on_edge_hit(&mut self, c: u64, side: Side, frac: f64) {
+        let Some(cname) = self.peers.get(&c).map(|p| p.name.clone()) else { return };
+        if self.driver == Some(c) {
+            return;
+        }
+        let Some(target) = self.ctx.cfg.layout.neighbor(&cname, side).map(str::to_string) else { return };
+        let to_peer = if target == SERVER { None } else { Some(self.peer_by_name(&target)) };
+        if to_peer == Some(None) {
+            self.maybe_wake(&target);
+            return;
+        }
+        if self.local_inj.is_none() && to_peer.is_none() {
+            return;
+        }
+        // Whoever was driving stops.
+        let r = self.capture.screen();
+        let (ex, ey) = entry_point(r.w, r.h, side, frac, 3);
+        match self.driver {
+            Some(other) => self.stop_driver(other),
+            None => {
+                if let Some((a, _, _)) = self.active.take() {
+                    // This computer's mouse was on another screen: it's put down,
+                    // where the other pointer arrives (or in the middle).
+                    self.release_held(a);
+                    self.send(a, Msg::Leave);
+                    let (px, py) = if to_peer.is_none() { (r.x + ex, r.y + ey) } else { r.center() };
+                    self.key_pass = None;
+                    // Its own warp isn't the user moving this mouse.
+                    self.injected.add((px, py));
+                    self.capture.release(px, py);
+                }
+            }
+        }
+        log::debug!("{cname}'s keyboard and mouse now drive ({target})");
+        self.driver = Some(c);
+        match to_peer.flatten() {
+            None => {
+                self.capture.idle_cursor(false);
+                self.local_move(ex, ey);
+                self.active = Some((THIS, ex, ey));
+            }
+            Some(d) => {
+                self.capture.idle_cursor(true);
+                self.drive_enter(d, side, frac);
+            }
+        }
+        self.send(c, Msg::DriveStart);
+        self.update_status();
+    }
+
+    /// The driving client's pointer goes onto client `d`'s screen.
+    fn drive_enter(&mut self, d: u64, side: Side, frac: f64) {
+        let Some(p) = self.peers.get(&d) else { return };
+        let (x, y) = entry_point(p.screen.w, p.screen.h, side, frac, 1);
+        self.active = Some((d, x, y));
+        self.send(d, Msg::Enter { x, y });
+    }
+
+    /// Leave the screen the driving client's pointer is on now.
+    fn drive_leave(&mut self) {
+        if let Some((a, _, _)) = self.active.take() {
+            if a == THIS {
+                self.release_local();
+                self.capture.idle_cursor(true);
+            } else {
+                self.release_held(a);
+                self.send(a, Msg::Leave);
+            }
+        }
+    }
+
+    /// The driving client's pointer crossed the edge `side` of screen `from`.
+    fn drive_cross(&mut self, c: u64, from: &str, side: Side, frac: f64) -> bool {
+        let Some(n) = self.ctx.cfg.layout.neighbor(from, side).map(str::to_string) else { return false };
+        let cname = self.peers.get(&c).map(|p| p.name.clone()).unwrap_or_default();
+        if n == cname {
+            // Home: its keyboard and mouse work there directly again.
+            self.drive_leave();
+            let (cw, ch) = self.peers.get(&c).map(|p| (p.screen.w, p.screen.h)).unwrap_or((0, 0));
+            let (x, y) = entry_point(cw, ch, side, frac, 3);
+            self.send(c, Msg::DriveStop { x, y });
+            self.driver = None;
+            self.active = None;
+            self.update_status();
+            return true;
+        }
+        if n == SERVER {
+            if self.local_inj.is_none() {
+                return false;
+            }
+            self.drive_leave();
+            let r = self.capture.screen();
+            let (x, y) = entry_point(r.w, r.h, side, frac, 3);
+            self.capture.idle_cursor(false);
+            self.local_move(x, y);
+            self.active = Some((THIS, x, y));
+            self.update_status();
+            return true;
+        }
+        match self.peer_by_name(&n) {
+            Some(d) => {
+                self.drive_leave();
+                self.drive_enter(d, side, frac);
+                self.update_status();
+                true
+            }
+            None => {
+                self.maybe_wake(&n);
+                false
+            }
+        }
+    }
+
+    /// Input from the driving client's own keyboard and mouse.
+    fn on_drive(&mut self, c: u64, ev: DriveEv) {
+        let Some((a, x, y)) = self.active else { return };
+        let from_os = self.peers.get(&c).map(|p| p.os).unwrap_or(Os::Other);
+        match ev {
+            DriveEv::Delta { dx, dy } => {
+                let (w, h, name) = if a == THIS {
+                    let r = self.capture.screen();
+                    (r.w, r.h, SERVER.to_string())
+                } else {
+                    match self.peers.get(&a) {
+                        Some(p) => (p.screen.w, p.screen.h, p.name.clone()),
+                        None => return,
+                    }
+                };
+                match apply_delta(w, h, x, y, dx, dy) {
+                    Ok((nx, ny)) => {
+                        self.active = Some((a, nx, ny));
+                        if a == THIS {
+                            self.local_move(nx, ny);
+                        } else {
+                            self.send(a, Msg::Move { x: nx, y: ny });
+                        }
+                    }
+                    Err((side, frac)) => {
+                        if !self.drive_cross(c, &name, side, frac) {
+                            let (nx, ny) = ((x + dx).clamp(0, w - 1), (y + dy).clamp(0, h - 1));
+                            self.active = Some((a, nx, ny));
+                            if a == THIS {
+                                self.local_move(nx, ny);
+                            } else {
+                                self.send(a, Msg::Move { x: nx, y: ny });
+                            }
+                        }
+                    }
+                }
+            }
+            DriveEv::Button { button, down } => {
+                if a == THIS {
+                    if down {
+                        self.local_buttons.insert(button);
+                    } else if !self.local_buttons.remove(&button) {
+                        return;
+                    }
+                    if let Some(inj) = self.local_inj.as_mut() {
+                        let _ = inj.button(button, down);
+                    }
+                } else {
+                    if down {
+                        self.held_buttons.insert(button);
+                    } else if !self.held_buttons.remove(&button) {
+                        return;
+                    }
+                    self.send(a, Msg::Button { button, down });
+                }
+            }
+            DriveEv::Wheel { dx, dy } => {
+                if a == THIS {
+                    if let Some(inj) = self.local_inj.as_mut() {
+                        let _ = inj.wheel(dx, dy);
+                    }
+                } else {
+                    self.send(a, Msg::Wheel { dx, dy });
+                }
+            }
+            DriveEv::Key { key, down } => {
+                let to_os = if a == THIS { Os::current() } else { self.peers.get(&a).map(|p| p.os).unwrap_or(Os::Other) };
+                let key = if should_swap(&self.ctx.cfg, from_os, to_os) { keys::swap_ctrl_meta(key) } else { key };
+                if a == THIS {
+                    if down {
+                        self.local_keys.insert(key);
+                    } else if !self.local_keys.remove(&key) {
+                        return;
+                    }
+                    if let Some(inj) = self.local_inj.as_mut() {
+                        let _ = inj.key(key, down);
+                    }
+                } else {
+                    if down {
+                        self.held_keys.insert(key);
+                    } else if !self.held_keys.remove(&key) {
+                        return;
+                    }
+                    self.send(a, Msg::Key { key, down });
+                }
+            }
+        }
+    }
+
     /// Typing goes straight into one of our windows while its live view is
     /// focused on the screen the pointer is on.
     fn update_key_pass(&mut self) {
         let active = self.active.and_then(|(id, _, _)| self.peers.get(&id)).map(|p| p.name.clone());
         let target = self.ctx.hub.key_target().filter(|(viewer, _)| Some(viewer) == active.as_ref()).map(|(_, w)| w);
+        // Only while this computer's own keyboard is the one in use.
+        let target = target.filter(|_| self.driver.is_none());
         if target != self.key_pass {
             if let Some(w) = target {
                 // Keys held now would be stuck over there: release them first.
@@ -1339,7 +1713,12 @@ impl Server {
         if self.drag.is_some() {
             return None;
         }
+        if !dnd::left_button_down() {
+            self.ctx.hub.drag_ended();
+            return None;
+        }
         let stream = self.ctx.hub.dragged_viewer()?;
+        log::info!("a live window is being dragged off this screen");
         // Let the window manager let go of the mouse.
         if !cfg!(target_os = "macos") {
             dnd::cancel_drag();
@@ -1652,6 +2031,17 @@ struct Client {
     pos: (i32, i32),
     /// Last keyboard or mouse input from the server.
     last_input: Instant,
+    /// This computer's own keyboard and mouse (to drive the others), where
+    /// they can be captured (not on Wayland).
+    capture: Option<Arc<dyn Capture>>,
+    cap_rx: Receiver<InputEvent>,
+    /// This computer's keyboard and mouse are driving another screen.
+    driving: bool,
+    /// Where the server put the pointer lately.
+    placed: Placed,
+    /// When this computer's own mouse last reported the edge / its position.
+    edge_sent: Instant,
+    pos_sent: Instant,
 }
 
 /// Where and how the client connects.
@@ -1708,7 +2098,26 @@ impl Client {
             here: false,
             pos: (0, 0),
             last_input: Instant::now(),
+            capture: None,
+            cap_rx: crossbeam_channel::never(),
+            driving: false,
+            placed: Placed::default(),
+            edge_sent: Instant::now(),
+            pos_sent: Instant::now(),
         };
+        // This computer's keyboard and mouse can drive the others too
+        // (not on Wayland, which doesn't allow capturing them).
+        #[cfg(target_os = "linux")]
+        let can_capture = !platform::linux_is_wayland();
+        #[cfg(not(target_os = "linux"))]
+        let can_capture = true;
+        match if can_capture { shared_capture(c.ctx.cfg.screen) } else { Err(anyhow!("Wayland")) } {
+            Ok((cap, rx)) => {
+                c.capture = Some(cap);
+                c.cap_rx = rx;
+            }
+            Err(e) => log::info!("this computer's keyboard and mouse can't be shared from here: {e:#}"),
+        }
         let mut last_failed: HashMap<SocketAddr, Instant> = HashMap::new();
         let mut pending_pair: Option<(PairWith, String)> = None;
         while !c.ctx.stopped() {
@@ -1834,7 +2243,16 @@ impl Client {
         let psk = crate::net::pairing_psk(code);
         match with {
             PairWith::Device(device) => {
-                let Some(s) = self.ctx.discovery.servers().into_iter().find(|s| &s.device == device) else {
+                // Just (re)started: give discovery a moment to see it again.
+                let mut found = None;
+                for _ in 0..50 {
+                    found = self.ctx.discovery.servers().into_iter().find(|s| &s.device == device);
+                    if found.is_some() || self.ctx.stopped() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                let Some(s) = found else {
                     self.ctx.status.lock().pair_error = Some("That computer isn't visible any more. Is OpenHop running on it?".into());
                     return None;
                 };
@@ -1977,8 +2395,13 @@ impl Client {
                             break Ok(SessionEnd::Forgot);
                         }
                     }
-                    Ok(Control::SetLayout(_)) => {}
+                    Ok(Control::SetLayout(l)) => {
+                        // The arrangement is kept by the hub: change it there.
+                        self.ctx.status.lock().layout = l.clone();
+                        link.send(Msg::SetLayout(l));
+                    }
                 },
+                recv(self.cap_rx) -> ev => if let Ok(ev) = ev { self.on_local_input(ev, screen, &link) },
                 recv(awake) -> _ => {
                     if self.here && self.last_input.elapsed() < Duration::from_secs(30) {
                         link.send(Msg::Ping);
@@ -1996,6 +2419,16 @@ impl Client {
             }
         };
         self.ctx.hub.set_out(None);
+        if self.driving {
+            self.driving = false;
+            if let Some(cap) = &self.capture {
+                let (cx, cy) = screen.center();
+                cap.release(cx, cy);
+            }
+        }
+        if let Some(cap) = &self.capture {
+            cap.idle_cursor(false);
+        }
         link.close();
         for f in self.ctx.inbox.abort_from(&server_name) {
             self.common.on_finished(f);
@@ -2010,22 +2443,72 @@ impl Client {
         let r = match m {
             Msg::Enter { x, y } => {
                 self.here = true;
+                if let Some(cap) = &self.capture {
+                    cap.idle_cursor(false);
+                }
                 self.ctx.hub.lower_hidden();
                 self.ctx.status.lock().active = self.ctx.cfg.name.clone();
                 if let Some(req) = self.common.arrived() {
                     link.send(req);
                 }
                 self.pos = (screen.x + x, screen.y + y);
+                self.placed.add(self.pos);
                 self.injector.move_to(screen.x + x, screen.y + y)
             }
             Msg::Move { x, y } => {
                 self.pos = (screen.x + x, screen.y + y);
+                self.placed.add(self.pos);
                 self.injector.move_to(screen.x + x, screen.y + y)
             }
             Msg::Leave => {
                 self.here = false;
                 self.ctx.status.lock().active.clear();
                 self.release_all();
+                // One pointer: this screen's hides until its own mouse moves.
+                if let Some(cap) = &self.capture {
+                    cap.idle_cursor(true);
+                }
+                Ok(())
+            }
+            Msg::DriveStart => {
+                // This computer's keyboard and mouse now drive another screen.
+                if let Some(cap) = &self.capture {
+                    if cap.grab() {
+                        self.driving = true;
+                        self.here = false;
+                        self.release_all();
+                        self.ctx.status.lock().active.clear();
+                    }
+                }
+                Ok(())
+            }
+            Msg::DriveStop { x, y } => {
+                // The pointer is back on this screen: the keyboard and mouse work here again.
+                let home = x >= 0 && y >= 0;
+                if self.driving {
+                    self.driving = false;
+                    if let Some(cap) = &self.capture {
+                        if home {
+                            cap.release(screen.x + x, screen.y + y);
+                        } else {
+                            // Another computer's mouse took over: this pointer stays out of sight.
+                            let (cx, cy) = screen.center();
+                            cap.release(cx, cy);
+                            cap.idle_cursor(true);
+                        }
+                    }
+                }
+                self.here = false;
+                if home {
+                    self.ctx.status.lock().active = self.ctx.cfg.name.clone();
+                }
+                Ok(())
+            }
+            Msg::Group { layout, code, hub } => {
+                let mut st = self.ctx.status.lock();
+                st.layout = layout;
+                st.pairing_code = Some(code);
+                st.hub = Some(hub);
                 Ok(())
             }
             Msg::Button { button, down } => {
@@ -2036,6 +2519,9 @@ impl Client {
                     }
                 } else {
                     self.held_buttons.remove(&button);
+                    if button == MouseButton::Left {
+                        self.ctx.hub.drag_ended();
+                    }
                 }
                 self.injector.button(button, down)
             }
@@ -2089,7 +2575,10 @@ impl Client {
                 let mut nudge = |dx: i32| {
                     let _ = injector.move_to(px + dx.max(0), py);
                 };
-                let viewer = self.ctx.hub.dragged_viewer();
+                // A live window shown here being carried by its title bar?
+                // (The button is the one we pressed for the server.)
+                let viewer = if self.held_buttons.contains(&MouseButton::Left) { self.ctx.hub.dragged_viewer() } else { None };
+                log::info!("drag across the edge: {}", if viewer.is_some() { "a live window" } else { "looking for files or a window" });
                 let found = if viewer.is_some() { None } else { dnd::drag_files_at(self.pos, &mut nudge) };
                 let reply = match found {
                     Some(paths) => {
@@ -2143,6 +2632,49 @@ impl Client {
         }
     }
 
+    /// This computer's own keyboard and mouse.
+    fn on_local_input(&mut self, ev: InputEvent, screen: Rect, link: &Link) {
+        match ev {
+            InputEvent::LocalMove { x, y } => {
+                if self.driving {
+                    return;
+                }
+                // Where the server just put the pointer: not the user's own move.
+                if self.here && self.placed.ours((x, y)) {
+                    return;
+                }
+                if self.here {
+                    // The touchpad moved the pointer while the server's mouse
+                    // was using this screen: keep the server in step.
+                    self.pos = (x, y);
+                    if self.pos_sent.elapsed() > Duration::from_millis(30) {
+                        self.pos_sent = Instant::now();
+                        link.send(Msg::LocalPos { x: x - screen.x, y: y - screen.y });
+                    }
+                }
+                if let Some(side) = touching_edge(&screen, x, y) {
+                    if self.edge_sent.elapsed() > Duration::from_millis(250) {
+                        self.edge_sent = Instant::now();
+                        link.send(Msg::EdgeHit { side, frac: edge_fraction(&screen, side, x, y) });
+                    }
+                }
+            }
+            _ if !self.driving => {}
+            InputEvent::Delta { dx, dy } => {
+                link.send(Msg::Drive(DriveEv::Delta { dx, dy }));
+            }
+            InputEvent::Button { button, down } => {
+                link.send(Msg::Drive(DriveEv::Button { button, down }));
+            }
+            InputEvent::Wheel { dx, dy } => {
+                link.send(Msg::Drive(DriveEv::Wheel { dx, dy }));
+            }
+            InputEvent::Key { key, down } => {
+                link.send(Msg::Drive(DriveEv::Key { key, down }));
+            }
+        }
+    }
+
     fn release_all(&mut self) {
         for key in self.held_keys.drain().collect::<Vec<_>>() {
             let _ = self.injector.key(key, false);
@@ -2156,6 +2688,18 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn own_pointer_moves_are_recognised() {
+        let mut p = Placed::default();
+        p.add((100, 200));
+        assert!(p.ours((101, 199)));
+        assert!(!p.ours((140, 200)));
+        let m = Msg::Drive(DriveEv::Key { key: 4, down: true });
+        assert_eq!(crate::protocol::decode(&crate::protocol::encode(&m)).unwrap(), m);
+        let e = Msg::EdgeHit { side: Side::Left, frac: 0.5 };
+        assert!(matches!(crate::protocol::decode(&crate::protocol::encode(&e)).unwrap(), Msg::EdgeHit { side: Side::Left, .. }));
+    }
 
     #[test]
     fn addresses_parse() {

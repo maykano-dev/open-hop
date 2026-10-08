@@ -129,6 +129,10 @@ pub fn restore_all() {}
 pub fn raise(_: u64) {}
 pub fn move_to(_: u64, _: i32, _: i32) {}
 pub fn begin_move(_: u64, _: i32, _: i32) {}
+pub fn is_maximized(_: u64) -> bool {
+    false
+}
+pub fn unmaximize(_: u64) {}
 
 /// Pictures include the window's title bar (28 points on current macOS).
 pub fn bar_height(_: u64) -> i32 {

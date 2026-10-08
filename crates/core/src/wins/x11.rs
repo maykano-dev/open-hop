@@ -47,6 +47,8 @@ fn x() -> Option<&'static Mutex<X>> {
             "WM_STATE",
             "_NET_WM_STATE",
             "_NET_WM_STATE_HIDDEN",
+            "_NET_WM_STATE_MAXIMIZED_VERT",
+            "_NET_WM_STATE_MAXIMIZED_HORZ",
             "_NET_WM_STATE_SKIP_TASKBAR",
             "_GTK_FRAME_EXTENTS",
             "_NET_FRAME_EXTENTS",
@@ -330,6 +332,23 @@ pub fn move_to(id: u64, px: i32, py: i32) {
     let ext = x.prop32(w, "_GTK_FRAME_EXTENTS", AtomEnum::CARDINAL);
     let (sl, st) = if ext.len() == 4 { (ext[0] as i32, ext[2] as i32) } else { (0, 0) };
     let _ = x.conn.configure_window(w, &ConfigureWindowAux::new().x(px - sl).y(py - st));
+    let _ = x.conn.flush();
+}
+
+pub fn is_maximized(id: u64) -> bool {
+    let Some(x) = x() else { return false };
+    let x = x.lock();
+    let st = x.prop32(id as Window, "_NET_WM_STATE", AtomEnum::ATOM);
+    st.contains(&x.a("_NET_WM_STATE_MAXIMIZED_VERT")) && st.contains(&x.a("_NET_WM_STATE_MAXIMIZED_HORZ"))
+}
+
+pub fn unmaximize(id: u64) {
+    let Some(x) = x() else { return };
+    let x = x.lock();
+    // _NET_WM_STATE_REMOVE both maximized states.
+    let ev =
+        ClientMessageEvent::new(32, id as Window, x.a("_NET_WM_STATE"), [0, x.a("_NET_WM_STATE_MAXIMIZED_VERT"), x.a("_NET_WM_STATE_MAXIMIZED_HORZ"), 1, 0]);
+    let _ = x.conn.send_event(false, x.root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ev);
     let _ = x.conn.flush();
 }
 

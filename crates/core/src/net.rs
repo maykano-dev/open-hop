@@ -24,7 +24,7 @@ const MAX_CHUNK: usize = MAX_NOISE - TAG;
 pub const MAX_MSG: usize = 64 * 1024 * 1024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(8);
 /// Bulk data is sent in pieces this big so input can slip in between.
-pub const CHUNK: usize = 256 * 1024;
+pub const CHUNK: usize = 64 * 1024;
 
 /// Sent in the clear before the handshake: tells the server which secret
 /// this connection will prove knowledge of. It reveals nothing secret.
@@ -83,9 +83,39 @@ fn read_frame(s: &mut TcpStream, buf: &mut Vec<u8>) -> std::io::Result<()> {
     s.read_exact(buf)
 }
 
+/// Keep the socket's queue of unsent data short. Otherwise a burst of bulk
+/// data (a live window's picture, a file) fills a big kernel buffer and every
+/// key press after it waits behind all of it, which on Wi-Fi is easily a
+/// tenth of a second or more.
+fn keep_queue_short(stream: &TcpStream) {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        #[cfg(target_os = "macos")]
+        const TCP_NOTSENT_LOWAT: libc::c_int = 0x201;
+        #[cfg(not(target_os = "macos"))]
+        const TCP_NOTSENT_LOWAT: libc::c_int = 25;
+        let v: libc::c_int = 16 * 1024;
+        unsafe {
+            libc::setsockopt(
+                stream.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                TCP_NOTSENT_LOWAT,
+                &v as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = socket2::SockRef::from(stream).set_send_buffer_size(128 * 1024);
+    }
+}
+
 /// Run the handshake. `initiator` is the side that opened the connection.
 pub fn handshake(mut stream: TcpStream, psk: &[u8; 32], initiator: bool) -> Result<(SecureSender, SecureReceiver)> {
     stream.set_nodelay(true)?;
+    keep_queue_short(&stream);
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     let builder = Builder::new(NOISE_PARAMS.parse()?).psk(2, psk)?;
     let mut hs = if initiator { builder.build_initiator()? } else { builder.build_responder()? };
@@ -308,13 +338,18 @@ mod tests {
         let (a, b) = pair("correct horse", "correct horse");
         let (tx, _) = a.unwrap();
         let (_, mut rx) = b.unwrap();
-        tx.send(&Msg::Move { x: 5, y: 7 }).unwrap();
         let big = vec![7u8; 300_000];
-        tx.send(&Msg::Clip { origin: "a".into(), data: ClipData::Png(big.clone()) }).unwrap();
-        tx.send(&Msg::Key { key: 4, down: true }).unwrap();
+        // The socket keeps only a short queue of unsent data: send while reading.
+        let b2 = big.clone();
+        let sender = std::thread::spawn(move || {
+            tx.send(&Msg::Move { x: 5, y: 7 }).unwrap();
+            tx.send(&Msg::Clip { origin: "a".into(), data: ClipData::Png(b2) }).unwrap();
+            tx.send(&Msg::Key { key: 4, down: true }).unwrap();
+        });
         assert_eq!(rx.recv().unwrap(), Msg::Move { x: 5, y: 7 });
         assert_eq!(rx.recv().unwrap(), Msg::Clip { origin: "a".into(), data: ClipData::Png(big) });
         assert_eq!(rx.recv().unwrap(), Msg::Key { key: 4, down: true });
+        sender.join().unwrap();
     }
 
     #[test]

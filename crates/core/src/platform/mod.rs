@@ -61,6 +61,10 @@ pub trait Capture: Send + Sync {
     fn whole_clicks(&self) -> bool {
         false
     }
+    /// Hide this computer's mouse pointer while the shared pointer is on
+    /// another screen (so there's only ever one pointer). It comes back by
+    /// itself as soon as this computer's own mouse or touchpad moves.
+    fn idle_cursor(&self, _hidden: bool) {}
     /// Current local desktop bounds.
     fn screen(&self) -> Rect;
 }

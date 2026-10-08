@@ -1,9 +1,10 @@
 //! Messages exchanged between the server (the computer with the physical
 //! keyboard and mouse) and its clients.
 
+use crate::layout::{Layout, Side};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 8;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -213,6 +214,40 @@ pub enum Msg {
         stream: u64,
     },
 
+    // ---- every computer can drive the others ----
+    /// Client -> server: this computer's own mouse reached its screen edge.
+    EdgeHit {
+        side: Side,
+        frac: f64,
+    },
+    /// Server -> client: your keyboard and mouse now drive the others:
+    /// capture them and send [`Msg::Drive`].
+    DriveStart,
+    /// Server -> client: the pointer came back to your screen at (x, y): let
+    /// your keyboard and mouse work here again. (-1, -1): another computer's
+    /// mouse took over; stop, and keep your pointer hidden.
+    DriveStop {
+        x: i32,
+        y: i32,
+    },
+    /// Client -> server: input from this computer's own keyboard and mouse.
+    Drive(DriveEv),
+    /// Client -> server: this computer's own mouse moved the pointer (while
+    /// another computer was using this screen), to (x, y) on its screen.
+    LocalPos {
+        x: i32,
+        y: i32,
+    },
+    /// Server -> clients: the arrangement and how to add a computer, so
+    /// every computer can show (and change) them.
+    Group {
+        layout: Layout,
+        code: String,
+        hub: String,
+    },
+    /// Client -> server: change the arrangement.
+    SetLayout(Layout),
+
     /// Everything beyond keyboard, mouse, clipboard and files, addressed by
     /// computer name. `to` is "*" for everyone. The server forwards these.
     Ext {
@@ -220,6 +255,15 @@ pub enum Msg {
         from: String,
         ext: Ext,
     },
+}
+
+/// Keyboard and mouse input from a client's own devices.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum DriveEv {
+    Delta { dx: i32, dy: i32 },
+    Button { button: MouseButton, down: bool },
+    Wheel { dx: i32, dy: i32 },
+    Key { key: u16, down: bool },
 }
 
 /// A window open on some computer.
@@ -344,6 +388,12 @@ pub enum Ext {
     /// if the button is still held).
     WinReturn {
         stream: u64,
+    },
+    /// Owner -> viewer: the window was maximized (or restored) with its own
+    /// controls; maximize the view on the viewer's screen (or restore it).
+    WinMaximize {
+        stream: u64,
+        on: bool,
     },
 }
 

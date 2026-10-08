@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.6.0
+
+**Update every computer** (protocol 8).
+
+### Added
+- **Every computer controls every other.** No more *Control Others* / *Be Controlled*: move any computer's pointer off a screen edge and it carries on onto the next screen with that computer's keyboard. A laptop's touchpad can go to the desktop, and the desktop's mouse to the laptop. Whichever mouse you touch takes over.
+- **One pointer.** A screen the pointer has left hides its own pointer until its own mouse or touchpad moves.
+- **Live windows maximize like a native app**: the window's own maximize button (or a double click on its title bar) fills the screen it's shown on, and the app lays itself out for that size. Restore works the same way.
+- Arrange the screens from any computer; every computer shows the pairing code.
+
+### Fixed
+- **Dragging a live window back** didn't work on some setups: OpenHop now uses the mouse button it pressed itself instead of asking the system.
+- **Keys and clicks waited behind live window pictures.** Pictures are sent in small pieces and each connection keeps only a short queue of unsent data, so typing stays instant while a window updates.
+- **Scrolling a live window** is smoother: scroll steps are combined, and big changes are sent quickly first and sharp a moment later.
+
+### Changed
+- Pairing: tap a computer in Nearby and type its code; the computer you type the code on joins it. *Forget* on a joined computer makes it stand alone again. With a shared passphrase instead of pairing, computers agree among themselves.
+- A computer whose keyboard and mouse can't be captured (Wayland) can still have its screen used by the others.
+
 ## v0.5.0
 
 **Update every computer** (protocol 6).

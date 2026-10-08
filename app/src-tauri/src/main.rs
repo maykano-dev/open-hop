@@ -6,7 +6,7 @@ mod updater;
 use openhop_core::engine::{Note, NoteAction};
 use openhop_core::layout::Layout;
 use openhop_core::protocol::Os;
-use openhop_core::{Config, Engine, Status};
+use openhop_core::{Config, Engine, Role, Status};
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -259,6 +259,57 @@ fn stop(handle: AppHandle, app: State<App>) {
     update_tray(&handle, false);
 }
 
+/// Connecting to another computer with its code: this computer joins that
+/// one's group (it connects to it). Every computer can still use every
+/// screen with its own keyboard and mouse either way.
+fn join_group(app: &App) -> Result<(), String> {
+    let needs_restart = app.config.lock().role != Role::Client || app.engine.lock().is_none();
+    if needs_restart {
+        let mut cfg = merge_engine_fields(app.config.lock().clone(), &app.path);
+        cfg.role = Role::Client;
+        cfg.enabled = true;
+        cfg.save(&app.path).map_err(|e| e.to_string())?;
+        *app.config.lock() = cfg;
+        start_engine(app)?;
+    }
+    Ok(())
+}
+
+/// Switch this computer's part in the group and restart (passphrase setups,
+/// where no one paired with a code).
+fn switch_role(app: &App, role: Role) {
+    log::info!("this computer now {}", if role == Role::Server { "keeps the group together" } else { "joins the group" });
+    let mut cfg = merge_engine_fields(app.config.lock().clone(), &app.path);
+    cfg.role = role;
+    let _ = cfg.save(&app.path);
+    *app.config.lock() = cfg;
+    if app.engine.lock().is_some() {
+        let _ = start_engine(app);
+    }
+}
+
+/// With a shared passphrase (no pairing), computers agree by themselves on
+/// which one the others connect to: the one with the lowest id.
+fn elect(app: &App, lonely: &mut u32) {
+    let cfg = app.config.lock().clone();
+    if cfg.passphrase.trim().is_empty() || cfg.server_device.is_some() || cfg.server_addr.is_some() {
+        return;
+    }
+    let Some(st) = app.engine.lock().as_ref().map(|e| e.status()) else { return };
+    let servers: Vec<_> = st.discovered.iter().filter(|d| d.role == Role::Server && d.device != cfg.device_id).collect();
+    match cfg.role {
+        Role::Server if st.peers.is_empty() && servers.iter().any(|d| d.device < cfg.device_id) => switch_role(app, Role::Client),
+        Role::Client if st.peers.is_empty() && servers.is_empty() => {
+            *lonely += 1;
+            if *lonely >= 3 {
+                *lonely = 0;
+                switch_role(app, Role::Server);
+            }
+        }
+        _ => *lonely = 0,
+    }
+}
+
 /// The tray's on/off item follows the switch in the window.
 fn update_tray(handle: &AppHandle, on: bool) {
     if let Some(item) = handle.try_state::<TrayToggle>() {
@@ -335,10 +386,7 @@ fn note_action(handle: AppHandle, kind: String, target: String) -> Result<(), St
 /// Client: pair with a server using the code it shows.
 #[tauri::command]
 fn pair(app: State<App>, device: String, code: String) -> Result<(), String> {
-    if app.engine.lock().is_none() {
-        remember_enabled(&app, true);
-        start_engine(&app)?;
-    }
+    join_group(&app)?;
     match app.engine.lock().as_ref() {
         Some(e) => {
             e.pair(device, code);
@@ -351,10 +399,7 @@ fn pair(app: State<App>, device: String, code: String) -> Result<(), String> {
 /// Client: pair with a server by its address (when it doesn't show up nearby).
 #[tauri::command]
 fn pair_addr(app: State<App>, addr: String, code: String) -> Result<(), String> {
-    if app.engine.lock().is_none() {
-        remember_enabled(&app, true);
-        start_engine(&app)?;
-    }
+    join_group(&app)?;
     match app.engine.lock().as_ref() {
         Some(e) => {
             e.pair_addr(addr, code);
@@ -366,6 +411,27 @@ fn pair_addr(app: State<App>, addr: String, code: String) -> Result<(), String> 
 
 #[tauri::command]
 fn forget(app: State<App>, device: String) -> Result<(), String> {
+    // Leaving the group this computer joined: it stands on its own again
+    // (others can join it).
+    let leaving = {
+        // Pairing is saved by the engine: read it from disk.
+        let cfg = merge_engine_fields(app.config.lock().clone(), &app.path);
+        cfg.role == Role::Client && cfg.server_device.as_deref() == Some(device.as_str())
+    };
+    if leaving {
+        let running = app.engine.lock().take().map(|e| e.stop()).is_some();
+        let mut cfg = merge_engine_fields(app.config.lock().clone(), &app.path);
+        cfg.trusted.remove(&device);
+        cfg.server_device = None;
+        cfg.server_addr = None;
+        cfg.role = Role::Server;
+        cfg.save(&app.path).map_err(|e| e.to_string())?;
+        *app.config.lock() = cfg;
+        if running {
+            start_engine(&app)?;
+        }
+        return Ok(());
+    }
     match app.engine.lock().as_ref() {
         Some(e) => e.forget(device.clone()),
         None => {
@@ -485,6 +551,7 @@ fn main() {
             live::dock_toggle,
             live::dock_hide,
             live::viewer_drag,
+            live::viewer_log,
             live::viewer_fit,
             live::viewer_title
         ])
@@ -593,6 +660,15 @@ fn main() {
                         });
                     }
                     std::thread::sleep(std::time::Duration::from_secs(24 * 3600));
+                }
+            });
+            // Passphrase setups: agree on which computer the others connect to.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let mut lonely = 0;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(4));
+                    elect(&handle.state::<App>(), &mut lonely);
                 }
             });
             // We're the one running copy now (single-instance passed); clear out older versions.

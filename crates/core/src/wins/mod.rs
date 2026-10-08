@@ -42,6 +42,10 @@ mod imp {
     pub fn raise(_: u64) {}
     pub fn move_to(_: u64, _: i32, _: i32) {}
     pub fn begin_move(_: u64, _: i32, _: i32) {}
+    pub fn is_maximized(_: u64) -> bool {
+        false
+    }
+    pub fn unmaximize(_: u64) {}
 }
 
 /// A picture of a window: BGRA (what every OS hands out), top row first.
@@ -118,6 +122,16 @@ pub fn raise(id: u64) {
 /// Put the window's top-left corner (title bar included) at (x, y).
 pub fn move_to(id: u64, x: i32, y: i32) {
     imp::move_to(id, x, y)
+}
+
+/// Maximized (filling its screen)?
+pub fn is_maximized(id: u64) -> bool {
+    imp::is_maximized(id)
+}
+
+/// Back to its size from before it was maximized.
+pub fn unmaximize(id: u64) {
+    imp::unmaximize(id)
 }
 
 /// The left button is held over the window's title bar at (x, y): the
