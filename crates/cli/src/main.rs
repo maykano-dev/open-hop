@@ -60,6 +60,11 @@ enum Cmd {
     Config,
     /// Show what's on the clipboard and what OpenHop would send (for troubleshooting).
     Clipboard,
+    /// List this computer's windows, or save a picture of one: `openhop windows --capture ID out.jpg`.
+    Windows {
+        #[arg(long, num_args = 2, value_names = ["ID", "FILE"])]
+        capture: Option<Vec<String>>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -88,6 +93,25 @@ fn main() -> Result<()> {
                 cfg.server_addr = server;
             }
             pair_request = pair.map(|code| (code, server_name));
+        }
+        Some(Cmd::Windows { capture }) => {
+            match capture {
+                Some(v) => {
+                    let id = u64::from_str_radix(v[0].trim_start_matches("0x"), if v[0].starts_with("0x") { 16 } else { 10 })?;
+                    let t = std::time::Instant::now();
+                    let pic = openhop_core::wins::capture(id).ok_or_else(|| anyhow::anyhow!("couldn't capture window {id}"))?;
+                    let ms = t.elapsed().as_millis();
+                    let img = image::RgbaImage::from_raw(pic.w, pic.h, pic.rgba).ok_or_else(|| anyhow::anyhow!("bad picture"))?;
+                    image::DynamicImage::ImageRgba8(img).to_rgb8().save(&v[1])?;
+                    println!("saved {}x{} picture in {ms} ms (geometry {:?})", pic.w, pic.h, openhop_core::wins::geometry(id));
+                }
+                None => {
+                    for w in openhop_core::wins::list() {
+                        println!("{:#x}  {}x{}  {}  ({})", w.id, w.w, w.h, w.title, w.app);
+                    }
+                }
+            }
+            return Ok(());
         }
         Some(Cmd::Clipboard) => {
             print!("{}", openhop_core::clipboard::inspect());

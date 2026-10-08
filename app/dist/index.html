@@ -116,6 +116,73 @@
       <button id="save" class="filled" disabled>Save Changes</button>
       <p id="saveNote" class="footer center"></p>
 
+      <h2 class="section">Across Computers</h2>
+      <div class="group">
+        <div class="row">
+          <span class="label">Windows on All Computers</span>
+          <button id="openDock" class="pill" type="button">Show</button>
+        </div>
+        <label class="row">
+          <span class="label">Drag Windows Across Screens</span>
+          <span class="switch"><input type="checkbox" id="windowDrag" data-pref="window_drag"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row">
+          <span class="label">Live Window Quality</span>
+          <select id="quality" class="value" data-pref="stream_quality">
+            <option value="low">Low (saves Wi-Fi)</option>
+            <option value="balanced">Balanced</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+        <label class="row">
+          <span class="label">Battery Saver</span>
+          <span class="switch"><input type="checkbox" id="battery" data-pref="battery_saver"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row">
+          <span class="label">Sync Dark Mode</span>
+          <span class="switch"><input type="checkbox" id="themeSync" data-pref="theme_sync"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+        <label class="row">
+          <span class="label">Sync Do Not Disturb</span>
+          <span class="switch"><input type="checkbox" id="dndSync" data-pref="dnd_sync"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+      </div>
+      <p class="footer">Press <b>Ctrl+Alt+Space</b> for the window dock: click any window from any computer to open it here, live. Battery Saver pauses live windows when a laptop is under 20%. Do Not Disturb sync silences this computer while another one is presenting or in Do Not Disturb. These apply right away.</p>
+
+      <h2 class="section">Look &amp; Sound</h2>
+      <div class="group">
+        <div class="row stacked">
+          <div class="seg" id="appearance" role="radiogroup" aria-label="Appearance">
+            <button data-appearance="system" role="radio">Automatic</button>
+            <button data-appearance="light" role="radio">Light</button>
+            <button data-appearance="dark" role="radio">Dark</button>
+          </div>
+        </div>
+        <div class="row">
+          <span class="label">Accent</span>
+          <div id="accents" class="accents" role="radiogroup" aria-label="Accent colour"></div>
+        </div>
+        <label class="row">
+          <span class="label">Arrival Sound</span>
+          <select id="sound" class="value" data-pref="sound">
+            <option value="off">None</option>
+            <option value="swoosh">Swoosh</option>
+            <option value="pop">Pop</option>
+            <option value="chime">Chime</option>
+          </select>
+          <button id="soundTest" class="link" type="button" aria-label="Play sound">▶︎</button>
+        </label>
+        <label class="row">
+          <span class="label">Volume</span>
+          <input id="volume" class="slider" type="range" min="0" max="100" step="5" data-pref="sound_volume">
+        </label>
+        <label class="row">
+          <span class="label">Open at Login</span>
+          <span class="switch"><input type="checkbox" id="login" data-pref="open_at_login"><span class="track"><span class="thumb"></span></span></span>
+        </label>
+      </div>
+      <p class="footer">OpenHop keeps working when you close this window: it lives in the tray (menu bar on a Mac). With Open at Login on, it starts quietly in the background when you sign in.</p>
+
       <h2 class="section">Software Update</h2>
       <div class="group">
         <div class="row">
@@ -178,6 +245,7 @@
     </div>
   </div>
 
+  <script src="theme.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

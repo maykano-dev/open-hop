@@ -9,12 +9,13 @@
 use crate::clipboard;
 use crate::config::{Config, Role};
 use crate::discovery::{Discovered, Discovery};
+use crate::extras::{self, Hub};
 use crate::files::{self, Finished, Inbox, Outbox, TransferInfo};
 use crate::keys;
 use crate::layout::{apply_delta, edge_fraction, entry_point, touching_edge, Layout, Side, SERVER};
 use crate::net::{derive_psk, handshake, Link, SecureReceiver, CHUNK};
 use crate::platform::{self, dnd, Capture, InputEvent, Injector};
-use crate::protocol::{ClipData, FileMeta, MouseButton, Msg, OfferKind, Os, Rect, DEFAULT_PORT, PROTOCOL_VERSION};
+use crate::protocol::{ClipData, Ext, FileMeta, MouseButton, Msg, OfferKind, Os, Rect, WinInfo, DEFAULT_PORT, PROTOCOL_VERSION};
 use crate::wol;
 use anyhow::{anyhow, bail, Context, Result};
 use crossbeam_channel::{select, tick, Receiver, Sender};
@@ -74,6 +75,18 @@ pub struct Status {
     pub port: u16,
     /// This computer's addresses (shown so others can connect by address).
     pub addresses: Vec<String>,
+    /// Open windows on every connected computer (this one first).
+    pub windows: Vec<ComputerWindows>,
+    /// Computers in Do Not Disturb or presenting right now.
+    pub quiet_from: Vec<String>,
+    /// This computer's battery (percent, charging), if it has one.
+    pub battery: Option<(u8, bool)>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ComputerWindows {
+    pub name: String,
+    pub windows: Vec<WinInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -166,6 +179,7 @@ pub struct Engine {
     notes: Arc<Mutex<Vec<Note>>>,
     inbox: Inbox,
     discovery: Arc<Discovery>,
+    hub: Arc<Hub>,
     main: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -200,6 +214,9 @@ impl Engine {
             pair_error: None,
             port: cfg.port,
             addresses: local_addresses(),
+            windows: vec![],
+            quiet_from: vec![],
+            battery: None,
         }));
         // The server binds first so discovery can announce the port it really got.
         let listeners = match cfg.role {
@@ -224,8 +241,10 @@ impl Engine {
         let inbox = Inbox::new(root);
         files::set_speed_limit_mbps(cfg.transfer_limit_mbps);
         dnd::init();
+        let hub = Hub::new(cfg.name.clone(), extras::Settings::from_config(&cfg));
 
         let ctx = Ctx {
+            hub: hub.clone(),
             cfg: cfg.clone(),
             config_path,
             status: status.clone(),
@@ -263,14 +282,22 @@ impl Engine {
                 })?
             }
         };
-        Ok(Engine { stop, ctl: ctl_tx, status, notes, inbox, discovery, main: Some(main) })
+        Ok(Engine { stop, ctl: ctl_tx, status, notes, inbox, discovery, hub, main: Some(main) })
     }
 
     pub fn status(&self) -> Status {
         let mut s = self.status.lock().clone();
         s.discovered = self.discovery.peers();
         s.transfers = self.inbox.history();
+        s.windows = self.hub.windows().into_iter().map(|(name, windows)| ComputerWindows { name, windows }).collect();
+        s.quiet_from = self.hub.quiet_from();
+        s.battery = extras::system::battery();
         s
+    }
+
+    /// Live windows, sounds, animations, theme and Do Not Disturb sync.
+    pub fn hub(&self) -> Arc<Hub> {
+        self.hub.clone()
     }
 
     /// Notifications produced since the last call.
@@ -303,6 +330,7 @@ impl Engine {
     }
 
     fn shutdown(&mut self) {
+        self.hub.shutdown();
         self.stop.store(true, Ordering::SeqCst);
         let _ = self.ctl.send(Control::Stop);
         if let Some(h) = self.main.take() {
@@ -395,6 +423,7 @@ fn shared_capture(screen: Option<Rect>) -> Result<(Arc<dyn Capture>, Receiver<In
 
 #[derive(Clone)]
 struct Ctx {
+    hub: Arc<Hub>,
     cfg: Config,
     config_path: Option<PathBuf>,
     status: Arc<Mutex<Status>>,
@@ -423,7 +452,8 @@ impl Ctx {
     }
     fn note(&self, note: Note) {
         log::info!("{}: {}", note.title, note.body);
-        if self.cfg.notifications {
+        // Hold pop-ups while another computer is presenting or in Do Not Disturb.
+        if self.cfg.notifications && !self.hub.quiet() {
             let mut v = self.notes.lock();
             v.push(note);
             if v.len() > 20 {
@@ -576,6 +606,7 @@ impl Common {
         self.pending_offer = None;
         if kind == OfferKind::Drop {
             self.dropped_at = Some(Instant::now());
+            self.ctx.hub.incoming(&files::label_for(&files), &origin);
         }
         self.request(offer, origin, kind, files)
     }
@@ -629,11 +660,13 @@ impl Common {
                 let tops = f.tops.clone();
                 let _ = std::thread::Builder::new().name("drop".into()).spawn(move || {
                     if recent && dnd::drop_files(&tops) {
+                        ctx.hub.landed(&label);
                         log::info!("dropped {label} into the app under the pointer");
                         ctx.inbox.discard_later(&tops);
                         ctx.note(note(format!("Dropped {label}"), format!("From {origin}."), vec![]));
                         return;
                     }
+                    ctx.hub.landed(&label);
                     let kept = ctx.inbox.keep(&tops);
                     let first = kept.first().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
                     let mut actions = vec![];
@@ -684,6 +717,8 @@ struct Drag {
     query: Option<u64>,
     /// Where it was dropped, if the drop happened before we knew the files.
     dropped_on: Option<String>,
+    /// The screen it was carried onto (for a window dragged across).
+    to: String,
     started: Instant,
 }
 
@@ -699,6 +734,8 @@ struct Server {
     held_buttons: HashSet<MouseButton>,
     drag: Option<Drag>,
     last_wake: HashMap<String, Instant>,
+    /// Window the keyboard types into directly (see update_key_pass).
+    key_pass: Option<u64>,
 }
 
 impl Server {
@@ -723,6 +760,42 @@ impl Server {
         };
         let port = ctx.status.lock().port;
         ctx.set_message(format!("Waiting for other computers… (port {port})"));
+        {
+            let routes = routes.clone();
+            let me = ctx.cfg.name.clone();
+            ctx.hub.set_out(Some(Box::new(move |to: &str, ext: Ext| {
+                let bulk = matches!(ext, Ext::WinFrame { .. } | Ext::Windows { .. });
+                let msg = Msg::Ext { to: to.to_string(), from: me.clone(), ext };
+                let links: Vec<Link> = if to == "*" {
+                    routes.lock().values().cloned().collect()
+                } else {
+                    routes.lock().get(to).cloned().into_iter().collect()
+                };
+                for l in links {
+                    if bulk {
+                        l.send_bulk_wait(msg.clone());
+                    } else {
+                        l.send(msg.clone());
+                    }
+                }
+            })));
+            // Controlling this computer's windows from a live view elsewhere:
+            // inject here, letting our own events past the capture.
+            if let Ok(mut inj) = platform::create_injector(ctx.cfg.screen, "x11") {
+                let cap = capture.clone();
+                ctx.hub.set_injector(Box::new(move |ops: &[platform::InjectOp]| {
+                    let pointer = ops.iter().any(|o| !matches!(o, platform::InjectOp::Key(..)));
+                    let was = cap.suspend(pointer);
+                    for op in ops {
+                        let _ = platform::apply(inj.as_mut(), *op);
+                    }
+                    inj.sync();
+                    if was {
+                        cap.resume();
+                    }
+                }));
+            }
+        }
         let mut s = Server {
             common: Common::new(ctx.clone(), clip_set),
             ctx,
@@ -734,6 +807,7 @@ impl Server {
             held_buttons: HashSet::new(),
             drag: None,
             last_wake: HashMap::new(),
+            key_pass: None,
         };
         s.update_status();
         let pinger = tick(Duration::from_secs(3));
@@ -753,7 +827,10 @@ impl Server {
                     s.broadcast(&Msg::Ping, None);
                     s.update_status();
                 }
-                recv(fast) -> _ => s.check_local_drop(),
+                recv(fast) -> _ => {
+                    s.check_local_drop();
+                    s.update_key_pass();
+                }
             }
         }
         if s.active.is_some() {
@@ -840,6 +917,16 @@ impl Server {
         if let Some(p) = self.peers.remove(&id) {
             log::info!("{} disconnected", p.name);
             p.link.close();
+            self.ctx.hub.peer_left(&p.name);
+            // Tell the others its windows are gone.
+            let gone = Msg::Ext { to: "*".into(), from: p.name.clone(), ext: Ext::Windows { list: vec![] } };
+            for q in self.peers.values() {
+                q.link.send(gone.clone());
+            }
+            let quiet_off = Msg::Ext { to: "*".into(), from: p.name.clone(), ext: Ext::Quiet { on: false } };
+            for q in self.peers.values() {
+                q.link.send(quiet_off.clone());
+            }
             {
                 let mut routes = self.routes.lock();
                 if routes.get(&p.name).map(|l| l.is_dead()).unwrap_or(false) {
@@ -897,6 +984,13 @@ impl Server {
                 self.ctx.cfg.last_ips.insert(name.clone(), addr.ip().to_string());
                 self.ctx.save_config();
                 self.routes.lock().insert(name.clone(), link.clone());
+                {
+                    let l = link.clone();
+                    let to = name.clone();
+                    self.ctx.hub.peer_joined(&name, |from, ext| {
+                        l.send_bulk_wait(Msg::Ext { to: to.clone(), from: from.to_string(), ext });
+                    });
+                }
                 self.peers.insert(id, Peer { name, device, os, screen, addr, link });
                 self.update_status();
             }
@@ -942,6 +1036,7 @@ impl Server {
                 }
             }
             Msg::DragReply { id: q, offer, files } => self.on_drag_reply(q, offer, files),
+            Msg::DragWindow { id: q, window } => self.on_drag_window(q, window),
             Msg::Mac(mac) => {
                 if wol::parse_mac(&mac).is_some() && self.ctx.cfg.macs.get(&from) != Some(&mac) {
                     self.ctx.cfg.macs.insert(from, mac);
@@ -992,7 +1087,14 @@ impl Server {
                 match self.peer_by_name(&target) {
                     Some(id) => {
                         self.start_local_drag_if_any();
+                        let window = self.local_window_drag(x, y);
                         self.enter(id, side, frac);
+                        if let (Some(w), Some((a, _, _))) = (window, self.active) {
+                            if a == id {
+                                let me = self.me();
+                                self.ctx.hub.offer_window(&target, &me, w);
+                            }
+                        }
                     }
                     None => self.maybe_wake(&target),
                 }
@@ -1009,12 +1111,12 @@ impl Server {
                         let neighbor = self.ctx.cfg.layout.neighbor(&pname, side).map(str::to_string);
                         match neighbor.as_deref() {
                             Some(SERVER) => {
-                                self.start_remote_drag_if_any(id, &pname);
+                                self.start_remote_drag_if_any(id, &pname, SERVER);
                                 self.go_local(side, frac);
                             }
                             Some(n) if self.peer_by_name(n).is_some() => {
                                 let next = self.peer_by_name(n).unwrap();
-                                self.start_remote_drag_if_any(id, &pname);
+                                self.start_remote_drag_if_any(id, &pname, n);
                                 self.enter(next, side, frac);
                             }
                             other => {
@@ -1116,6 +1218,7 @@ impl Server {
     }
 
     fn go_local(&mut self, exit_side: Side, frac: f64) {
+        self.key_pass = None;
         if let Some((old, _, _)) = self.active.take() {
             self.release_held(old);
             self.send(old, Msg::Leave);
@@ -1133,31 +1236,82 @@ impl Server {
         self.update_status();
     }
 
+    /// Typing goes straight into one of our windows while its live view is
+    /// focused on the screen the pointer is on.
+    fn update_key_pass(&mut self) {
+        let active = self.active.and_then(|(id, _, _)| self.peers.get(&id)).map(|p| p.name.clone());
+        let target = self.ctx.hub.key_target().filter(|(viewer, _)| Some(viewer) == active.as_ref()).map(|(_, w)| w);
+        if target != self.key_pass {
+            if let Some(w) = target {
+                // Keys held now would be stuck over there: release them first.
+                if let Some((id, _, _)) = self.active {
+                    for k in self.held_keys.drain().collect::<Vec<_>>() {
+                        self.send(id, Msg::Key { key: k, down: false });
+                    }
+                }
+                crate::wins::activate(w);
+            }
+            self.capture.keyboard_passthrough(target.is_some());
+            self.key_pass = target;
+        }
+    }
+
     // ---------- drag and drop
 
     /// Leaving this computer with the left button held: is it a file drag?
-    fn start_local_drag_if_any(&mut self) {
+    fn start_local_drag_if_any(&mut self) -> Option<u64> {
         if !dnd::left_button_down() {
-            return;
+            return None;
         }
-        let Some(paths) = dnd::drag_files() else { return };
+        let Some(paths) = dnd::drag_files() else { return None };
         let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         if let Some(Msg::FileOffer { offer, files, .. }) = self.common.offer_local_files(&paths, OfferKind::Drop) {
             log::info!("carrying a drag of {} across", files::label_for(&files));
             dnd::cancel_drag();
-            self.drag = Some(Drag { origin: self.me(), offer: Some((offer, files)), query: None, dropped_on: None, started: Instant::now() });
+            self.drag = Some(Drag { origin: self.me(), offer: Some((offer, files)), query: None, dropped_on: None, to: String::new(), started: Instant::now() });
+            return None;
         }
+        None
+    }
+
+    /// Leaving this computer while dragging a window by its title bar: the
+    /// window to open live on the other side.
+    fn local_window_drag(&mut self, x: i32, y: i32) -> Option<u64> {
+        if !self.ctx.hub.settings().window_drag || !dnd::left_button_down() || self.drag.is_some() {
+            return None;
+        }
+        let w = crate::wins::titlebar_window_at(x, y)?;
+        log::info!("a window is being dragged across; opening it live on the other side");
+        // Cancel the move here (the window goes back where it was) so the
+        // window manager lets go of the mouse.
+        if !cfg!(target_os = "macos") {
+            dnd::cancel_drag();
+        }
+        Some(w)
     }
 
     /// Leaving a client with the left button held there: ask it what's being dragged.
-    fn start_remote_drag_if_any(&mut self, id: u64, name: &str) {
+    fn start_remote_drag_if_any(&mut self, id: u64, name: &str, to: &str) {
         if !self.held_buttons.contains(&MouseButton::Left) {
             return;
         }
         let q = files::new_id();
         self.send(id, Msg::DragQuery { id: q });
         // The query is answered before the button-up that Leave sends.
-        self.drag = Some(Drag { origin: name.to_string(), offer: None, query: Some(q), dropped_on: None, started: Instant::now() });
+        self.drag = Some(Drag { origin: name.to_string(), offer: None, query: Some(q), dropped_on: None, to: to.to_string(), started: Instant::now() });
+    }
+
+    /// A client says a window (not files) was being dragged across.
+    fn on_drag_window(&mut self, q: u64, window: u64) {
+        let Some(d) = self.drag.take() else { return };
+        if d.query != Some(q) {
+            self.drag = Some(d);
+            return;
+        }
+        let to = if d.to == SERVER { self.me() } else { d.to.clone() };
+        if !to.is_empty() && to != d.origin {
+            self.ctx.hub.offer_window(&to, &d.origin, window);
+        }
     }
 
     fn on_drag_reply(&mut self, q: u64, offer: Option<u64>, files: Vec<FileMeta>) {
@@ -1249,11 +1403,16 @@ fn spawn_acceptor(
                         return;
                     }
                 };
+                let peer_name = name.clone();
                 if net_tx.send(NetEvent::Connected { id, name, os, screen, addr, link, device }).is_err() {
                     return;
                 }
                 loop {
                     match rx.recv() {
+                        Ok(Msg::Ext { to, ext, .. }) => {
+                            // The sender is who this connection says it is.
+                            route_ext(&ctx.hub, &me, &peer_name, &to, ext, &routes);
+                        }
                         Ok(m) => {
                             if !route_or_handle(m, &me, &ctx.inbox, &routes, |ev| net_tx.send(ev).is_ok(), id) {
                                 return;
@@ -1330,6 +1489,32 @@ fn accept_peer(
                 }
             }
         }
+    }
+}
+
+/// Server reader thread: deliver an [`Ext`] here, to one computer, or to all.
+fn route_ext(hub: &Arc<Hub>, me: &str, from: &str, to: &str, ext: Ext, routes: &Routes) {
+    let bulk = matches!(ext, Ext::WinFrame { .. } | Ext::Windows { .. });
+    let forward = |name: &str, ext: Ext| {
+        if let Some(l) = routes.lock().get(name).cloned() {
+            let m = Msg::Ext { to: to.to_string(), from: from.to_string(), ext };
+            if bulk {
+                l.send_bulk_wait(m);
+            } else {
+                l.send(m);
+            }
+        }
+    };
+    if to == me {
+        hub.handle(from, ext);
+    } else if to == "*" {
+        let names: Vec<String> = routes.lock().keys().filter(|n| *n != from).cloned().collect();
+        for n in names {
+            forward(&n, ext.clone());
+        }
+        hub.handle(from, ext);
+    } else {
+        forward(to, ext);
     }
 }
 
@@ -1445,6 +1630,15 @@ impl Client {
         } else {
             (None, crossbeam_channel::never())
         };
+        // A second injector for controlling this computer's windows from a
+        // live view on another one.
+        if let Ok(mut inj) = platform::create_injector(ctx.cfg.screen, &ctx.cfg.linux_backend) {
+            ctx.hub.set_injector(Box::new(move |ops: &[platform::InjectOp]| {
+                for op in ops {
+                    let _ = platform::apply(inj.as_mut(), *op);
+                }
+            }));
+        }
         let mut c = Client {
             common: Common::new(ctx.clone(), clip_set),
             ctx,
@@ -1641,10 +1835,25 @@ impl Client {
             link.send(Msg::Mac(mac));
         }
         {
+            let l = link.clone();
+            let me = self.ctx.cfg.name.clone();
+            self.ctx.hub.set_out(Some(Box::new(move |to: &str, ext: Ext| {
+                let bulk = matches!(ext, Ext::WinFrame { .. } | Ext::Windows { .. });
+                let m = Msg::Ext { to: to.to_string(), from: me.clone(), ext };
+                if bulk {
+                    l.send_bulk_wait(m);
+                } else {
+                    l.send(m);
+                }
+            })));
+        }
+        {
             let inbox = self.ctx.inbox.clone();
             let me = self.ctx.cfg.name.clone();
+            let hub = self.ctx.hub.clone();
             std::thread::Builder::new().name("client-rx".into()).spawn(move || loop {
                 match rx.recv() {
+                    Ok(Msg::Ext { from, ext, .. }) => hub.handle(&from, ext),
                     Ok(Msg::FileData { offer, dest, index, data }) if dest == me => {
                         if let Err(e) = inbox.data(offer, index, &data) {
                             if let Some(f) = inbox.finish(offer, Some(e)) {
@@ -1712,6 +1921,7 @@ impl Client {
                 },
             }
         };
+        self.ctx.hub.set_out(None);
         link.close();
         for f in self.ctx.inbox.abort_from(&server_name) {
             self.common.on_finished(f);
@@ -1816,7 +2026,21 @@ impl Client {
                             _ => Msg::DragReply { id, offer: None, files: vec![] },
                         }
                     }
-                    None => Msg::DragReply { id, offer: None, files: vec![] },
+                    None => {
+                        // Not files: a window dragged by its title bar?
+                        let window = if self.ctx.hub.settings().window_drag { crate::wins::titlebar_window_at(self.pos.0, self.pos.1) } else { None };
+                        match window {
+                            Some(window) => {
+                                if !cfg!(target_os = "macos") {
+                                    // Cancel the move so the window manager lets go.
+                                    let _ = self.injector.key(ESC, true);
+                                    let _ = self.injector.key(ESC, false);
+                                }
+                                Msg::DragWindow { id, window }
+                            }
+                            None => Msg::DragReply { id, offer: None, files: vec![] },
+                        }
+                    }
                 };
                 link.send(reply);
                 Ok(())

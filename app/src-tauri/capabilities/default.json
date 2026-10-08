@@ -3,7 +3,10 @@
   "identifier": "default",
   "windows": [
     "main",
-    "toast"
+    "toast",
+    "fx",
+    "dock",
+    "view-*"
   ],
   "permissions": [
     "core:default"

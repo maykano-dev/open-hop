@@ -98,8 +98,14 @@ fn button_from_number(n: i64) -> Option<MouseButton> {
     }
 }
 
+/// Letting OpenHop's own input through while grabbed (controlling a window).
+static PASS: AtomicBool = AtomicBool::new(false);
+
 fn tap_callback(etype: CGEventType, event: &CGEvent) -> CallbackResult {
     use CGEventType::*;
+    if PASS.load(Ordering::Relaxed) && !matches!(etype, TapDisabledByTimeout | TapDisabledByUserInput) {
+        return CallbackResult::Keep;
+    }
     let grabbed = GRABBED.load(Ordering::Relaxed);
     if !grabbed && matches!(etype, CGEventType::LeftMouseDown) {
         super::dnd::note_left_down();
@@ -236,6 +242,17 @@ impl MacCapture {
 }
 
 impl Capture for MacCapture {
+    fn suspend(&self, _pointer: bool) -> bool {
+        if !GRABBED.load(Ordering::SeqCst) {
+            return false;
+        }
+        PASS.store(true, Ordering::SeqCst);
+        true
+    }
+    fn resume(&self) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        PASS.store(false, Ordering::SeqCst);
+    }
     fn grab(&self) -> bool {
         HELD_MODS.lock().clear();
         GRABBED.store(true, Ordering::SeqCst);

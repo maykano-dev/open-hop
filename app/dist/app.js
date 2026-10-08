@@ -45,7 +45,56 @@ function fillForm(cfg) {
   $("port").value = form.port;
   $("speed").value = String(form.transfer_limit_mbps || 0);
   renderRole();
+  fillPrefs(cfg);
 }
+
+// ------------------------------------------------------------------ instant settings
+
+const PREF_ACCENTS = ["blue", "purple", "pink", "orange", "green", "graphite"];
+
+function fillPrefs(cfg) {
+  for (const n of document.querySelectorAll("[data-pref]")) {
+    const v = cfg[n.dataset.pref];
+    if (n.type === "checkbox") n.checked = !!v;
+    else n.value = String(v ?? "");
+  }
+  renderLook(cfg.ui_appearance, cfg.ui_accent);
+}
+
+function renderLook(appearance, accent) {
+  for (const b of document.querySelectorAll("#appearance button")) b.setAttribute("aria-checked", String(b.dataset.appearance === appearance));
+  const box = $("accents");
+  if (!box.children.length) {
+    for (const a of PREF_ACCENTS) {
+      const col = window.OpenHopTheme.ACCENTS[a][0];
+      box.append(el("button", { type: "button", role: "radio", "aria-label": a, title: a[0].toUpperCase() + a.slice(1), style: `background:${col}`, "data-accent": a,
+        onclick: () => setPref({ ui_accent: a }) }));
+    }
+  }
+  for (const b of box.children) b.setAttribute("aria-checked", String(b.dataset.accent === accent));
+  window.OpenHopTheme.apply(appearance, accent);
+}
+
+async function setPref(patch) {
+  Object.assign(form, patch);
+  if (snap) Object.assign(snap.config, patch);
+  renderLook(form.ui_appearance, form.ui_accent);
+  try { await invoke("update_prefs", { prefs: patch }); } catch (e) { showBanner(String(e)); }
+}
+
+for (const n of document.querySelectorAll("[data-pref]")) {
+  n.addEventListener("change", () => {
+    let v = n.type === "checkbox" ? n.checked : n.value;
+    if (n.type === "range") v = parseInt(n.value, 10);
+    setPref({ [n.dataset.pref]: v });
+    if (n.dataset.pref === "sound" || n.dataset.pref === "sound_volume") invoke("play_sound", { kind: form.sound, volume: form.sound_volume });
+  });
+}
+for (const b of document.querySelectorAll("#appearance button")) {
+  b.addEventListener("click", () => setPref({ ui_appearance: b.dataset.appearance }));
+}
+$("soundTest").addEventListener("click", (e) => { e.preventDefault(); invoke("play_sound", { kind: form.sound === "off" ? "swoosh" : form.sound, volume: form.sound_volume }); });
+$("openDock").addEventListener("click", () => invoke("dock_toggle"));
 
 function renderRole() {
   document.body.classList.toggle("role-server", form.role === "server");
@@ -529,7 +578,11 @@ async function refresh() {
     return;
   }
   if (!form) fillForm(snap.config);
-  else if (!dirty) {
+  else {
+    // Instant settings are saved as they change; keep them in step.
+    for (const k of ["theme_sync", "dnd_sync", "sound", "sound_volume", "battery_saver", "stream_quality", "window_drag", "ui_appearance", "ui_accent", "open_at_login"]) form[k] = snap.config[k];
+  }
+  if (form && !dirty) {
     // Pick up layout changes the server made (newly connected computers).
     form.layout = snap.config.layout;
   }
@@ -548,6 +601,8 @@ function mockInvoke() {
     swap_cmd_ctrl: true, clipboard_sync: true, screen: null, linux_backend: "auto",
     notifications: true, wake_on_lan: true, macs: {}, last_ips: {}, download_dir: null,
     transfer_limit_mbps: 50, device_id: "a1", trusted: {}, server_device: null,
+    theme_sync: true, dnd_sync: true, sound: "swoosh", sound_volume: 60, battery_saver: true, stream_quality: "balanced",
+    window_drag: true, ui_appearance: "system", ui_accent: "blue", open_at_login: true,
   };
   let running = true;
   if (location.search.includes("client")) {
@@ -594,6 +649,7 @@ function mockInvoke() {
         version: "0.3.0", update: { phase: "available", current: "0.3.0", latest: "0.3.1" } };
       case "save_config": Object.assign(cfg, args.config); return null;
       case "set_layout": cfg.layout = args.layout; return null;
+      case "update_prefs": Object.assign(cfg, args.prefs); return null;
       case "start": running = true; return null;
       case "stop": running = false; return null;
       default: return null;

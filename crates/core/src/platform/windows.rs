@@ -45,6 +45,9 @@ const LLKHF_INJECTED: u32 = 0x10;
 
 static TX: OnceLock<Sender<InputEvent>> = OnceLock::new();
 static GRABBED: AtomicBool = AtomicBool::new(false);
+/// Grabbed, but letting OpenHop's own input through to control a window.
+static SUSPENDED: AtomicBool = AtomicBool::new(false);
+static BLANK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static CX: AtomicI32 = AtomicI32::new(0);
 static CY: AtomicI32 = AtomicI32::new(0);
 static HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
@@ -85,6 +88,9 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         let info = &*(lparam.0 as *const MSLLHOOKSTRUCT);
         if info.flags & LLMHF_INJECTED == 0 {
             let msg = wparam.0 as u32;
+            if GRABBED.load(Ordering::Relaxed) && SUSPENDED.load(Ordering::Relaxed) {
+                return LRESULT(1);
+            }
             if GRABBED.load(Ordering::Relaxed) {
                 let wheel = ((info.mouseData >> 16) as u16) as i16 as i32;
                 let xbtn = if (info.mouseData >> 16) & 0xFFFF == 2 { MouseButton::Forward } else { MouseButton::Back };
@@ -206,6 +212,9 @@ impl WinCapture {
             // Watchdog: every 2 s, if there was user input the hooks never saw, reinstall them.
             let _ = SetTimer(None, 0, 2000, None);
             let blank = create_blank_window(hinst);
+            if let Some(h) = blank {
+                BLANK.store(h.0 as isize, Ordering::SeqCst);
+            }
             HOOK_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
             let _ = ready_tx.try_send(Ok(()));
             let mut msg = MSG::default();
@@ -269,6 +278,34 @@ impl WinCapture {
 }
 
 impl Capture for WinCapture {
+    fn suspend(&self, _pointer: bool) -> bool {
+        if !GRABBED.load(Ordering::SeqCst) {
+            return false;
+        }
+        SUSPENDED.store(true, Ordering::SeqCst);
+        let h = BLANK.load(Ordering::SeqCst);
+        if h != 0 {
+            // The cover window would catch the clicks: hide it meanwhile.
+            unsafe {
+                let _ = ShowWindow(HWND(h as *mut _), SW_HIDE);
+            }
+        }
+        true
+    }
+    fn resume(&self) {
+        if !SUSPENDED.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        unsafe {
+            let _ = SetCursorPos(CX.load(Ordering::Relaxed), CY.load(Ordering::Relaxed));
+            let h = BLANK.load(Ordering::SeqCst);
+            if h != 0 && GRABBED.load(Ordering::SeqCst) {
+                let r = virtual_screen();
+                let _ = SetWindowPos(HWND(h as *mut _), Some(HWND_TOPMOST), r.x, r.y, r.w, r.h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            }
+        }
+    }
     fn grab(&self) -> bool {
         self.post(APP_GRAB, 0, 0)
     }

@@ -86,6 +86,12 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 📋 **Clipboard sync** | Copy text, an image or a screenshot on one computer and paste it on another. Images arrive pixel-perfect. |
 | 📁 **Copy & paste files** | Copy files, folders or videos in Explorer, Finder or Files, hop over, and paste: the real files arrive, not a path. A copied picture file pastes as a picture too, into chats, documents and image editors. |
 | 🫳 **Drag & drop files across screens** | Drag files off one computer's screen and drop them into a folder or app on another's, just like a local drag. |
+| 🪟 **Windows from any computer** | A dock (**Ctrl+Alt+Space**) shows the open windows of every computer. Click one and it opens live on the computer you're using: you see it update and can click, scroll and type in it. Or just drag a window by its title bar off the screen edge. |
+| 🌙 **Dark mode sync** | Switch dark mode on one computer and the others follow. |
+| 🔕 **Do Not Disturb sync** | While one computer is presenting, in a full-screen call or in Do Not Disturb, the others go quiet too. |
+| 🔋 **Battery saver** | Live windows pause when a laptop drops below 20% and isn't charging. Mouse and keyboard sharing keeps working. |
+| 🔊 **Sounds & animation** | A soft swoosh, pop or chime (your choice) and a landing animation when files or windows arrive. |
+| 🎨 **Themes** | Light, dark or automatic, with six accent colours. |
 | 🔗 **Smart link prompts** | Copy a link on one computer, move to another, and a notification offers to open it there in the default browser. |
 | 💤 **Wake-on-LAN** | Move the pointer toward a computer that's asleep and OpenHop sends it a wake-up packet. |
 | 🔒 **End-to-end encryption** | Every keystroke, mouse movement and clipboard item is encrypted with the [Noise protocol](https://noiseprotocol.org) (X25519, ChaCha20-Poly1305, BLAKE2s). There is no plaintext mode. |
@@ -134,6 +140,20 @@ flowchart LR
 **What works on Wayland.** A Wayland desktop can be *controlled* but can't yet *share* its own keyboard and mouse. The common setups work fine: a Windows PC or Mac as the server with Ubuntu as a client. If your Linux machine must be the server, log in with an Xorg session.
 
 **Drag & drop.** Dragging *from* a computer works from Windows Explorer, macOS Finder and Linux file managers (on Ubuntu's default Wayland session, OpenHop briefly puts a tiny helper window under the pointer to see the drag). Dropping lands the files in the folder or app under the pointer on Linux (X11 apps) and Windows. On macOS, and anywhere a drop isn't accepted, the files are saved to `Downloads/OpenHop` and put on the clipboard, so you can paste them where you want them.
+
+**Live windows and the other v0.4 extras.**
+
+| | Windows | macOS | Linux X11 | Linux Wayland |
+|---|:---:|:---:|:---:|:---:|
+| Live windows (share its windows) | ✅ | ✅ needs **Screen Recording** permission | ✅ | ⚠️ only apps running under XWayland |
+| Live windows (view and control) | ✅ | ✅ | ✅ | ✅ |
+| Dark mode sync | ✅ | ✅ (asks to control System Events once) | ✅ GNOME | ✅ GNOME |
+| Do Not Disturb sync | best effort | via two Shortcuts* | ✅ GNOME | ✅ GNOME |
+| Battery saver | ✅ | ✅ | ✅ | ✅ |
+
+\* macOS has no public switch for Focus. In the Shortcuts app, make two shortcuts named **OpenHop Focus On** and **OpenHop Focus Off**, each with one *Set Focus* action, and OpenHop runs them.
+
+> **Test status (v0.4.0).** The v0.4 features were tested end to end on Linux: the window dock, opening a live window, clicking and typing into it from both computers' keyboards, dragging a window by its title bar onto another computer, dark mode and Do Not Disturb sync in both directions, and the arrival animation. The Windows and macOS versions build and pass the automated tests, but haven't been tried on real machines yet.
 
 > **Test status (v0.2.0).** On Linux, everything is tested end to end: edge switching, typing and clicks, the stuck-switching fix (hopping keeps working while another computer is frozen), stale-connection replacement, text, image and full-screenshot clipboard, copy & paste of a 300 MB video, folders, and client-to-client files, drag & drop in both directions, Wake-on-LAN, notifications and their buttons, and the one-line installer. The Windows and macOS code compiles cleanly and CI builds their installers, but it hasn't yet had hands-on testing on real hardware. Please [open an issue](https://github.com/maykano-dev/open-hop/issues) if something misbehaves.
 
@@ -260,8 +280,9 @@ Update **every computer** to the same version: computers only connect to others 
 
 - **Links:** copy a web link on one computer. When you move to another, a notification offers to open it there.
 - **Waking a sleeping computer:** when **Wake Sleeping Computers** is on, pushing the pointer toward a computer that's asleep sends it a Wake-on-LAN packet. Its tile shows **Asleep** in the arrangement. Wake-on-LAN must be enabled on that computer: in the BIOS/UEFI and network adapter settings on PCs, or with **Wake for network access** on Macs (works when plugged in). It works best over Ethernet.
-- **Running in the background:** closing the window hides it to the tray or menu bar. Choose **Quit** from the tray icon to stop OpenHop completely.
-- **Start automatically:** once a passphrase is saved, OpenHop starts sharing as soon as it launches. Add it to your OS's login items or startup apps to have it always on.
+- **Running in the background:** you don't need to keep the window open. Closing it hides OpenHop to the tray or menu bar and sharing carries on. Choose **Quit** from the tray icon to stop OpenHop completely.
+- **Start automatically:** **Open at Login** (on by default) starts OpenHop quietly in the background when you sign in, already connected.
+- **Windows from other computers:** press **Ctrl+Alt+Space** (or click the tray icon › *Windows on All Computers*) for the window dock. Click a window from any computer to open it live here. It's a live view of the real window, which keeps running on its own computer: what you click and type in it happens there. Close the view whenever you like; the real window stays open. You can also grab a window by its title bar and drag it off the screen edge onto another computer: it opens there under your pointer and snaps back into place on its own screen.
 - **Something feels stuck?** Move the pointer back to the server. Leaving a screen always releases every key and mouse button that was held there. If a computer stops responding (asleep, Wi-Fi dropped), OpenHop drops it within about 10 seconds, returns the pointer to you, and reconnects it automatically when it's back, in the same spot in your arrangement.
 
 ---
@@ -269,7 +290,14 @@ Update **every computer** to the same version: computers only connect to others 
 ## FAQ
 
 **Can I drag an app window from one computer onto another?**
-Not yet. Moving a live window between different operating systems means streaming it as video, which is planned for phase 2 (see the [roadmap](#roadmap)). Today, if you drag a window to the edge, the window stays on its own screen and only the pointer hops. Files you drag *do* carry across.
+Yes. Drag it by its title bar off the screen edge and it opens live on the other computer. A Windows app can't really run on a Mac (or the other way round), so the window keeps running where it is and you get a live view of it that you can click and type into, like Windows' *RemoteApp*. Live windows use more bandwidth than mouse and keyboard (a few Mbps while the window changes, almost nothing when it's still). Pick **Low** under *Live Window Quality* to save Wi-Fi.
+
+**Do I have to keep OpenHop open on every computer?**
+It has to be running, but not on screen. Close the window and it keeps working from the tray (menu bar on a Mac). With **Open at Login** on (the default) it starts by itself when you sign in.
+
+<p align="center">
+  <img src="docs/screenshots/dock-light.png" width="90%" alt="The window dock: windows from every computer">
+</p>
 
 **Will it slow down my Wi-Fi?**
 Mouse and keyboard traffic is tiny, under 0.1 Mbps even while you move the mouse constantly. Only copying big files or images uses real bandwidth. To cap that, choose a **Speed Limit** under Options (for example 20 Mbps). Your pointer stays smooth during transfers either way, because input always goes first.
@@ -500,6 +528,8 @@ open-hop/
 
 ## Roadmap
 
+**Done in v0.4:** live windows from other computers (window dock, drag a window across), dark mode sync, Do Not Disturb sync, battery saver, arrival sounds and animation, themes, open at login.
+
 **Done in v0.3:** AirDrop-style pairing with a 6-digit code, direct-cable connections (no router), transfer speed limit, Check for Updates, single-instance app and the restart fix.
 
 **Done in v0.2:** file copy & paste (files, folders, videos), drag & drop across screens, smart link prompts, open-received-file prompts, Wake-on-LAN, resilient connections.
@@ -510,15 +540,16 @@ open-hop/
 - [ ] **Built-in wireless link** without any network: Wi-Fi Direct (Windows and Linux have APIs, macOS doesn't) or a Bluetooth RFCOMM/L2CAP transport (needs a separate implementation for each OS's Bluetooth stack)
 - [ ] **Hotkeys**: jump to a screen, or lock the pointer to the current one
 - [ ] **Keep awake / smart sleep**: keep controlled computers awake while connected, and let an idle one sleep while the others stay up
-- [ ] **Do Not Disturb sync**: silence notifications on the other computers while one is presenting or in a full-screen meeting. This works on GNOME and KDE. macOS and Windows have no public API for Focus or Do Not Disturb, so it would rely on a Shortcuts automation (macOS) and is best-effort on Windows.
 - [ ] **Universal launcher** (`Ctrl+Space`): search apps and files on every connected computer and launch them where they live
 - [ ] Per-monitor edges (cross from any monitor, not just the desktop's outer edge)
 - [ ] Code-signed and notarised builds (needs paid Apple and Windows signing certificates)
 
 **Phase 2: window streaming**
 
-- [ ] Show another computer's desktop as an extra monitor, then stream individual windows across ("teleport" a window from one OS to another)
-- [ ] **Battery-aware streaming**: fall back to plain mouse and keyboard sharing on low battery (depends on streaming)
+- [x] Stream individual windows across, with a window dock and drag-to-teleport (v0.4)
+- [x] **Battery-aware streaming** (v0.4)
+- [ ] Hardware video encoding (H.264) for smoother live windows on slow Wi-Fi
+- [ ] Show another computer's whole desktop as an extra monitor
 
 **Hardware bridging (research).** These need OS-level drivers. Some of those drivers must be signed by Microsoft, or approved by Apple, before they can be distributed:
 

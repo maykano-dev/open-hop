@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod live;
 mod updater;
 
 use openhop_core::engine::{Note, NoteAction};
@@ -169,6 +170,46 @@ fn save_config(app: State<App>, config: Config, restart: bool) -> Result<(), Str
         start_engine(&app)?;
     }
     Ok(())
+}
+
+/// Settings that apply straight away (no restart): sync, sounds, live
+/// windows, look, open at login. `prefs` holds just the changed fields.
+#[tauri::command]
+fn update_prefs(handle: AppHandle, app: State<App>, prefs: serde_json::Value) -> Result<(), String> {
+    let cfg = {
+        let mut cfg = app.config.lock();
+        let mut v = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
+        if let (Some(obj), Some(p)) = (v.as_object_mut(), prefs.as_object()) {
+            for k in ["theme_sync", "dnd_sync", "sound", "sound_volume", "battery_saver", "stream_quality", "window_drag", "ui_appearance", "ui_accent", "open_at_login"] {
+                if let Some(x) = p.get(k) {
+                    obj.insert(k.into(), x.clone());
+                }
+            }
+        }
+        let new: Config = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        let merged = merge_engine_fields(new, &app.path);
+        merged.save(&app.path).map_err(|e| e.to_string())?;
+        *cfg = merged.clone();
+        merged
+    };
+    if let Some(e) = app.engine.lock().as_ref() {
+        e.hub().set_settings(openhop_core::extras::Settings::from_config(&cfg));
+    }
+    apply_login(&handle, cfg.open_at_login);
+    Ok(())
+}
+
+fn apply_login(handle: &AppHandle, on: bool) {
+    use tauri_plugin_autostart::ManagerExt;
+    let al = handle.autolaunch();
+    let now = al.is_enabled().unwrap_or(false);
+    if on && !now {
+        if let Err(e) = al.enable() {
+            log::warn!("couldn't turn on open at login: {e}");
+        }
+    } else if !on && now {
+        let _ = al.disable();
+    }
 }
 
 #[tauri::command]
@@ -366,6 +407,17 @@ fn main() {
                 let _ = w.set_focus();
             }
         }))
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    log::debug!("shortcut {:?}", event.state());
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        live::toggle_dock(app);
+                    }
+                })
+                .build(),
+        )
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             snapshot,
@@ -382,13 +434,23 @@ fn main() {
             forget,
             update_state,
             update_check,
-            update_install
+            update_install,
+            update_prefs,
+            live::open_window,
+            live::close_window,
+            live::win_input,
+            live::win_frame,
+            live::fx_done,
+            live::dock_toggle,
+            live::dock_hide,
+            live::play_sound
         ])
         .setup(move |app| {
             // Keep sharing in the background: closing the window hides it to the tray.
             let show = MenuItem::with_id(app, "show", "Open OpenHop", true, None::<&str>)?;
+            let dock = MenuItem::with_id(app, "dock", "Windows on All Computers (Ctrl+Alt+Space)", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &dock, &quit])?;
             TrayIconBuilder::with_id("tray")
                 .icon(app.default_window_icon().cloned().expect("icon"))
                 .tooltip("OpenHop")
@@ -400,6 +462,7 @@ fn main() {
                             let _ = w.set_focus();
                         }
                     }
+                    "dock" => live::toggle_dock(app),
                     "quit" => {
                         if let Some(e) = app.state::<App>().engine.lock().take() {
                             e.stop();
@@ -422,6 +485,28 @@ fn main() {
                 .focused(false)
                 .visible(false)
                 .build()?;
+            live::create_fx(app)?;
+            {
+                use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+                let sc = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
+                if let Err(e) = app.global_shortcut().register(sc) {
+                    log::info!("window dock shortcut unavailable: {e}");
+                }
+            }
+            // Live windows and arrival animations.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                let h = handle.clone();
+                let _ = handle.run_on_main_thread(move || live::pump(&h));
+            });
+            // Started at login: stay in the tray.
+            if std::env::args().any(|a| a == "--hidden") {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
+            apply_login(app.handle(), app.state::<App>().config.lock().open_at_login);
             // Move notifications from the engine to the toast window.
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
@@ -462,6 +547,33 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            let label = window.label().to_string();
+            if let Some(stream) = label.strip_prefix("view-") {
+                if let WindowEvent::Destroyed = event {
+                    if let Ok(s) = stream.parse::<u64>() {
+                        if let Some(e) = window.state::<App>().engine.lock().as_ref() {
+                            e.hub().close(s);
+                        }
+                    }
+                }
+                return;
+            }
+            if label == "dock" {
+                if let WindowEvent::Focused(false) = event {
+                    let _ = window.hide();
+                }
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                return;
+            }
+            if label == "fx" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                }
+                return;
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "toast" {
                     let _ = window.hide();

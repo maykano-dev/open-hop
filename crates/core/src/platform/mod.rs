@@ -42,8 +42,69 @@ pub trait Capture: Send + Sync {
     }
     /// Stop swallowing input, show the cursor and put it at (x, y) (native coords).
     fn release(&self, x: i32, y: i32);
+    /// Let OpenHop's own synthetic input through for a moment (used to
+    /// control a local window from a live view on another computer while the
+    /// pointer is over there). `pointer`: mouse input is coming (else just
+    /// keys). Returns whether it was capturing.
+    fn suspend(&self, _pointer: bool) -> bool {
+        false
+    }
+    /// Undo [`Capture::suspend`].
+    fn resume(&self) {}
+    /// While the pointer is on another computer, let the keyboard type
+    /// straight into this computer's focused window (a live window of it is
+    /// focused over there). Only needed where our own input can't get past
+    /// the capture.
+    fn keyboard_passthrough(&self, _on: bool) {}
     /// Current local desktop bounds.
     fn screen(&self) -> Rect;
+}
+
+/// One step of synthetic input.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InjectOp {
+    MoveTo(i32, i32),
+    Button(MouseButton, bool),
+    Wheel(i32, i32),
+    Key(u16, bool),
+}
+
+pub fn apply(inj: &mut dyn Injector, op: InjectOp) -> Result<()> {
+    match op {
+        InjectOp::MoveTo(x, y) => inj.move_to(x, y),
+        InjectOp::Button(b, d) => inj.button(b, d),
+        InjectOp::Wheel(dx, dy) => inj.wheel(dx, dy),
+        InjectOp::Key(k, d) => inj.key(k, d),
+    }
+}
+
+/// Where the pointer is now (native coordinates).
+pub fn cursor_pos() -> Option<(i32, i32)> {
+    #[cfg(target_os = "linux")]
+    {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::ConnectionExt as _;
+        let (conn, n) = x11rb::connect(None).ok()?;
+        let root = conn.setup().roots[n].root;
+        let p = conn.query_pointer(root).ok()?.reply().ok()?;
+        return Some((p.root_x as i32, p.root_y as i32));
+    }
+    #[cfg(windows)]
+    {
+        let mut p = ::windows::Win32::Foundation::POINT::default();
+        unsafe { ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p).ok()? };
+        return Some((p.x, p.y));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use core_graphics::event::CGEvent;
+        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+        let src = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
+        let p = CGEvent::new(src).ok()?.location();
+        return Some((p.x.round() as i32, p.y.round() as i32));
+    }
+    #[allow(unreachable_code)]
+    None
 }
 
 /// Client-side synthetic input.
@@ -54,6 +115,8 @@ pub trait Injector: Send {
     fn wheel(&mut self, dx: i32, dy: i32) -> Result<()>;
     fn key(&mut self, hid: u16, down: bool) -> Result<()>;
     fn screen(&self) -> Rect;
+    /// Wait until the OS has processed everything injected so far.
+    fn sync(&mut self) {}
 }
 
 /// Ask for OS permissions where needed (macOS Accessibility). Returns a

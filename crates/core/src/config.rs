@@ -54,6 +54,27 @@ pub struct Config {
     pub trusted: std::collections::BTreeMap<String, Trusted>,
     /// Client: the paired server to connect to.
     pub server_device: Option<String>,
+    /// Turn dark mode on/off everywhere when it's switched on one computer.
+    pub theme_sync: bool,
+    /// Silence notifications here while another computer is in Do Not
+    /// Disturb or presenting.
+    pub dnd_sync: bool,
+    /// Sound when files or windows arrive: "off", "swoosh", "pop" or "chime".
+    pub sound: String,
+    /// 0-100.
+    pub sound_volume: u32,
+    /// Pause live windows when a laptop is below 20% and not charging.
+    pub battery_saver: bool,
+    /// Live window picture quality: "low", "balanced" or "high".
+    pub stream_quality: String,
+    /// Dragging a window by its title bar onto another screen opens it there live.
+    pub window_drag: bool,
+    /// The OpenHop window's look: "system", "light" or "dark".
+    pub ui_appearance: String,
+    /// Accent colour name.
+    pub ui_accent: String,
+    /// Start OpenHop (in the background) when you log in.
+    pub open_at_login: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +124,16 @@ impl Default for Config {
             device_id: String::new(),
             trusted: Default::default(),
             server_device: None,
+            theme_sync: true,
+            dnd_sync: true,
+            sound: "swoosh".into(),
+            sound_volume: 60,
+            battery_saver: true,
+            stream_quality: "balanced".into(),
+            window_drag: true,
+            ui_appearance: "system".into(),
+            ui_accent: "blue".into(),
+            open_at_login: true,
         }
     }
 }

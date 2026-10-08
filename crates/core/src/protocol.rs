@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -139,13 +139,74 @@ pub enum Msg {
     Mac(String),
     /// Server -> client after pairing with a code: the key to use from now on.
     Paired { server_device: String, key: String },
+    /// Client -> server, answering a [`Msg::DragQuery`] when a *window* (not
+    /// files) was being dragged by its title bar: it can be opened live on
+    /// the computer it was dragged to.
+    DragWindow { id: u64, window: u64 },
+
+    /// Everything beyond keyboard, mouse, clipboard and files, addressed by
+    /// computer name. `to` is "*" for everyone. The server forwards these.
+    Ext { to: String, from: String, ext: Ext },
+}
+
+/// A window open on some computer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WinInfo {
+    pub id: u64,
+    pub title: String,
+    pub app: String,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// Input aimed at a live window, in the streamed picture's pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum WinEvent {
+    Move { x: i32, y: i32 },
+    Button { button: MouseButton, down: bool, x: i32, y: i32 },
+    Wheel { dx: i32, dy: i32, x: i32, y: i32 },
+    Key { key: u16, down: bool },
+    /// The viewer window got the focus: bring the real window forward.
+    Focus,
+    /// The viewer window lost the focus.
+    Blur,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Ext {
+    /// Dark mode was turned on or off on the sender.
+    Theme { dark: bool },
+    /// The sender is in Do Not Disturb or presenting (or stopped being).
+    Quiet { on: bool },
+    /// The windows open on the sender (sent when they change).
+    Windows { list: Vec<WinInfo> },
+    /// Viewer -> owner: stream `window` to me as `stream`.
+    WinOpen { stream: u64, window: u64, os: Os },
+    /// Ask a computer to open `origin`'s window here (a window dragged across).
+    WinOffer { origin: String, window: u64 },
+    /// Owner -> viewer: the next picture of the window (JPEG).
+    WinFrame { stream: u64, seq: u64, w: u32, h: u32, title: String, jpeg: Vec<u8> },
+    /// Viewer -> owner: picture received; send the next one.
+    WinAck { stream: u64, seq: u64 },
+    WinInput { stream: u64, ev: WinEvent },
+    /// Either side: the live window was closed.
+    WinClose { stream: u64 },
+    /// Either side: pause or resume the picture (e.g. low battery).
+    WinPause { stream: u64, paused: bool, reason: String },
 }
 
 impl Msg {
     /// Bulk messages go through a separate, lower-priority queue so mouse and
     /// keyboard never wait behind a file or a big image.
     pub fn is_bulk(&self) -> bool {
-        matches!(self, Msg::Clip { .. } | Msg::ClipPart { .. } | Msg::FileData { .. } | Msg::FileEnd { .. })
+        matches!(
+            self,
+            Msg::Clip { .. }
+                | Msg::ClipPart { .. }
+                | Msg::FileData { .. }
+                | Msg::FileEnd { .. }
+                | Msg::Ext { ext: Ext::WinFrame { .. } | Ext::Windows { .. }, .. }
+        )
     }
 }
 

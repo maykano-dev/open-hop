@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OpenHop</title>
+  <style>
+    :root { --blue: #007aff; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, Ubuntu, sans-serif; }
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+    .stage { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+    .card {
+      width: 64px; height: 78px; border-radius: 10px; position: relative;
+      background: linear-gradient(160deg, #fff, #e8eefc); box-shadow: 0 10px 30px rgba(0, 40, 120, .35), 0 0 0 0.5px rgba(0,0,0,.08);
+      display: grid; place-items: center; opacity: 0;
+    }
+    .card::before { content: ""; position: absolute; top: 0; right: 0; width: 18px; height: 18px; border-bottom-left-radius: 6px; background: linear-gradient(225deg, transparent 50%, #c9d6f5 50%); }
+    .card::after { content: ""; width: 30px; height: 4px; border-radius: 2px; background: var(--blue); box-shadow: 0 8px 0 #c3cde4, 0 16px 0 #c3cde4; transform: translateY(-6px); }
+    .label {
+      position: absolute; bottom: 14px; left: 0; right: 0; text-align: center; color: #fff; font-size: 12px; font-weight: 600;
+      text-shadow: 0 1px 6px rgba(0,0,0,.6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 8px; opacity: 0;
+    }
+    .glow { position: absolute; width: 110px; height: 110px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--blue) 45%, transparent), transparent 70%); opacity: 0; }
+    .ring { position: absolute; width: 40px; height: 40px; border-radius: 50%; border: 3px solid var(--blue); opacity: 0; }
+
+    .incoming .card { animation: flyin .7s cubic-bezier(.2, .9, .25, 1.15) forwards, bob 1.6s ease-in-out .7s infinite; }
+    .incoming .glow { animation: glow 1.6s ease-in-out infinite; }
+    .incoming .label, .landed .label { opacity: 1; transition: opacity .3s; }
+    .landed .card { opacity: 1; animation: land .55s cubic-bezier(.3, 0, .2, 1) forwards; }
+    .landed .ring { animation: ripple .8s ease-out forwards; }
+    .landed .ring:nth-child(2) { animation-delay: .12s; }
+    .landed .ring:nth-child(3) { animation-delay: .24s; }
+
+    @keyframes flyin { from { opacity: 0; transform: translateX(var(--from, -160px)) rotate(-14deg) scale(.6); } to { opacity: 1; transform: none; } }
+    @keyframes bob { 50% { transform: translateY(-6px) rotate(2deg); } }
+    @keyframes glow { 50% { opacity: .9; transform: scale(1.15); } }
+    @keyframes land { 40% { transform: scale(1.12); } to { opacity: 0; transform: scale(.2) translateY(30px); } }
+    @keyframes ripple { from { opacity: .9; transform: scale(.4); } to { opacity: 0; transform: scale(4.2); } }
+  </style>
+</head>
+<body>
+  <div id="stage" class="stage">
+    <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+    <div class="glow"></div>
+    <div class="card"></div>
+  </div>
+  <div id="label" class="label"></div>
+  <script src="theme.js"></script>
+  <script src="fx.js"></script>
+</body>
+</html>

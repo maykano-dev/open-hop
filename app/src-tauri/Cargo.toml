@@ -23,3 +23,5 @@ ureq = { version = "3.4.2", features = ["json", "platform-verifier"] }
 semver = "1.0.28"
 anyhow = "1.0.104"
 tauri-plugin-single-instance = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"

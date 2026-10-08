@@ -22,7 +22,7 @@
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #000000;
     --card: #1c1c1e;
     --label: #ffffff;
@@ -42,6 +42,26 @@
     --wall-c: #1e9bd7;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+    --bg: #000000;
+    --card: #1c1c1e;
+    --label: #ffffff;
+    --secondary: rgba(235, 235, 245, 0.6);
+    --tertiary: rgba(235, 235, 245, 0.3);
+    --separator: rgba(84, 84, 88, 0.6);
+    --fill: rgba(118, 118, 128, 0.24);
+    --fill-strong: rgba(118, 118, 128, 0.36);
+    --blue: #0a84ff;
+    --green: #30d158;
+    --orange: #ff9f0a;
+    --seg-on: #636366;
+    --shadow: none;
+    --bar: rgba(0, 0, 0, 0.78);
+    --wall-a: #2f6fd6;
+    --wall-b: #6b46c1;
+    --wall-c: #1e9bd7;
+    color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -255,3 +275,10 @@ select.value option { color: #000; }
 .addr-row .value { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .alert .field-label { display: block; text-align: left; margin: 6px 16px 2px; font-size: 12px; color: var(--secondary); }
 .alert input.addr { font: 500 17px ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 0; }
+
+/* ---------- look & sound */
+.accents { display: flex; gap: 9px; margin-left: auto; }
+.accents button { width: 22px; height: 22px; border-radius: 50%; border: 0; padding: 0; cursor: pointer; box-shadow: inset 0 0 0 0.5px rgba(0,0,0,.15); }
+.accents button[aria-checked="true"] { box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--blue); }
+.slider { margin-left: auto; width: 46%; accent-color: var(--blue); }
+#appearance { grid-template-columns: 1fr 1fr 1fr; }

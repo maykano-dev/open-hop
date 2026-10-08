@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OpenHop</title>
+  <style>
+    :root {
+      --bg: #e9e9ee; --label: #000; --secondary: rgba(60, 60, 67, 0.65); --pill: rgba(255, 255, 255, 0.86); --blue: #007aff;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) { --bg: #111113; --label: #fff; --secondary: rgba(235, 235, 245, 0.62); --pill: rgba(44, 44, 46, 0.88); }
+    }
+    :root[data-theme="dark"] { --bg: #111113; --label: #fff; --secondary: rgba(235, 235, 245, 0.62); --pill: rgba(44, 44, 46, 0.88); }
+    html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; color: var(--label); }
+    canvas { display: block; width: 100vw; height: 100vh; outline: none; cursor: default; }
+    .pill {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      background: var(--pill); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border-radius: 16px; padding: 14px 20px; font-size: 14px; text-align: center;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, .18); transition: opacity .25s; max-width: 80vw;
+    }
+    .pill small { display: block; color: var(--secondary); margin-top: 3px; font-size: 12px; }
+    .pill.hidden { opacity: 0; pointer-events: none; }
+    .spinner { width: 22px; height: 22px; margin: 0 auto 8px; border-radius: 50%; border: 2.5px solid var(--secondary); border-top-color: var(--blue); animation: spin .8s linear infinite; }
+    .pill:not(.loading) .spinner { display: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* A gentle "arrival" when the window first appears. */
+    canvas.arrive { animation: arrive .45s cubic-bezier(.2, .9, .3, 1.1); }
+    @keyframes arrive { from { opacity: 0; transform: scale(.94); filter: blur(4px); } }
+  </style>
+</head>
+<body>
+  <canvas id="view" tabindex="0"></canvas>
+  <div id="pill" class="pill loading"><div class="spinner"></div><span id="pillText">Connecting…</span><small id="pillSub"></small></div>
+  <script src="theme.js"></script>
+  <script src="keymap.js"></script>
+  <script src="viewer.js"></script>
+</body>
+</html>

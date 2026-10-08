@@ -45,6 +45,11 @@ enum Cmd {
     /// carried off this screen and its source may hold the pointer.
     Grab(Sender<bool>, bool),
     Release(i32, i32),
+    /// Ungrab for a moment so OpenHop's own XTEST input reaches windows.
+    /// `true`: the mouse (for injected pointer input), `false`: just the keyboard.
+    Suspend(Sender<bool>, bool),
+    Resume,
+    KeyboardPass(bool),
 }
 
 /// Carrying a file drag to another screen. The drag source (a file manager)
@@ -157,6 +162,19 @@ impl X11Capture {
 }
 
 impl Capture for X11Capture {
+    fn suspend(&self, pointer: bool) -> bool {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        if self.cmd.send(Cmd::Suspend(tx, pointer)).is_err() {
+            return false;
+        }
+        rx.recv_timeout(Duration::from_secs(1)).unwrap_or(false)
+    }
+    fn resume(&self) {
+        let _ = self.cmd.send(Cmd::Resume);
+    }
+    fn keyboard_passthrough(&self, on: bool) {
+        let _ = self.cmd.send(Cmd::KeyboardPass(on));
+    }
     fn grab(&self) -> bool {
         let (tx, rx) = crossbeam_channel::bounded(1);
         if self.cmd.send(Cmd::Grab(tx, false)).is_err() {
@@ -206,6 +224,22 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
     let (cx, cy) = rect.center();
     let mut grabbed = false;
     let mut carry: Option<Carry> = None;
+    // Let go for a moment so OpenHop's own input reaches a window here
+    // (a live window of this computer, used from another one).
+    let mut suspended: Option<bool> = None; // Some(pointer?)
+    // After an injected button press: the mouse stays free until the
+    // buttons are up again (the app holds it while a button is down).
+    let mut free_until_up: Option<(std::time::Instant, u16)> = None;
+    let mut buttons_down: std::collections::HashSet<u8> = Default::default();
+    // The keyboard is left to this computer's focused window (see keyboard_passthrough).
+    let mut key_pass = false;
+    // Devices held with XInput 2 (empty: the core grab is used).
+    let mut xi: Vec<(u16, bool)> = vec![];
+    // Opt-in: hold the physical devices with XInput 2 instead.
+    let xi_ok = std::env::var_os("OPENHOP_XI2").is_some() && {
+        use x11rb::protocol::xinput::ConnectionExt as _;
+        conn.xinput_xi_query_version(2, 2).ok().and_then(|c| c.reply().ok()).map(|r| r.major_version >= 2).unwrap_or(false)
+    };
     let mut last = (i32::MIN, i32::MIN);
     let mut held: std::collections::HashSet<u8> = Default::default();
     let atom = |n: &[u8]| -> Result<u32> { Ok(conn.intern_atom(false, n)?.reply()?.atom) };
@@ -220,6 +254,18 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
         // Commands from the engine.
         loop {
             match cmd_rx.try_recv() {
+                Ok(Cmd::Grab(reply, drag)) if !grabbed && carry.is_none() && !drag && xi_ok && {
+                    xi = xi_grab(&conn, root, (cx, cy)).unwrap_or_default();
+                    !xi.is_empty()
+                } =>
+                {
+                    grabbed = true;
+                    held.clear();
+                    conn.xfixes_hide_cursor(root)?;
+                    conn.warp_pointer(NONE, root, 0, 0, 0, 0, cx as i16, cy as i16)?;
+                    conn.flush()?;
+                    let _ = reply.send(true);
+                }
                 Ok(Cmd::Grab(reply, drag)) if !grabbed && carry.is_none() => match try_grab(&conn, root) {
                     Ok(()) => {
                         grabbed = true;
@@ -252,14 +298,91 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
                 Ok(Cmd::Grab(reply, _)) => {
                     let _ = reply.send(true);
                 }
+                Ok(Cmd::KeyboardPass(on)) => {
+                    if grabbed && xi.is_empty() && on != key_pass {
+                        if on {
+                            conn.ungrab_keyboard(CURRENT_TIME)?;
+                        } else {
+                            for _ in 0..20 {
+                                if conn.grab_keyboard(false, root, CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)?.reply()?.status == GrabStatus::SUCCESS {
+                                    break;
+                                }
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                        }
+                        conn.flush()?;
+                        key_pass = on;
+                        log::debug!("keyboard {}", if on { "typing straight into a window here" } else { "captured again" });
+                    }
+                }
+                Ok(Cmd::Suspend(reply, pointer)) => {
+                    // With XInput 2 our own input already gets through, and so
+                    // do keys while the keyboard is passed through.
+                    let ok = grabbed && xi.is_empty() && carry.is_none() && (pointer || !key_pass);
+                    if ok && suspended.is_none() {
+                        if pointer {
+                            if free_until_up.is_none() {
+                                conn.ungrab_pointer(CURRENT_TIME)?;
+                            }
+                        } else {
+                            conn.ungrab_keyboard(CURRENT_TIME)?;
+                        }
+                        conn.flush()?;
+                        let _ = conn.get_input_focus()?.reply();
+                        suspended = Some(pointer);
+                    }
+                    let _ = reply.send(ok);
+                }
+                Ok(Cmd::Resume) => {
+                    if let Some(pointer) = suspended.take() {
+                        // The injected events must land before we grab again.
+                        std::thread::sleep(Duration::from_millis(8));
+                        let _ = conn.get_input_focus()?.reply();
+                        if pointer {
+                            let mask = u16::from(conn.query_pointer(root)?.reply()?.mask);
+                            const ANY_BUTTON: u16 = 0x100 | 0x200 | 0x400;
+                            if mask & ANY_BUTTON != 0 {
+                                // A button is held in a window here: leave the mouse free until it's up.
+                                if free_until_up.is_none() {
+                                    free_until_up = Some((std::time::Instant::now(), mask));
+                                }
+                            } else if free_until_up.is_none() {
+                                retake_pointer(&conn, root, (cx, cy))?;
+                            }
+                        } else {
+                            for _ in 0..20 {
+                                if conn.grab_keyboard(false, root, CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)?.reply()?.status == GrabStatus::SUCCESS {
+                                    break;
+                                }
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            // Keys let go meanwhile went straight to the window: tell the engine.
+                            let keymap = conn.query_keymap()?.reply()?.keys;
+                            let gone: Vec<u8> = held.iter().copied().filter(|k| keymap[(*k / 8) as usize] & (1 << (*k % 8)) == 0).collect();
+                            for k in gone {
+                                key_event(&mut held, &tx, k, false);
+                            }
+                        }
+                        conn.flush()?;
+                    }
+                }
                 Ok(Cmd::Release(x, y)) => {
+                    suspended = None;
+                    key_pass = false;
+                    free_until_up = None;
+                    buttons_down.clear();
                     if let Some(c) = carry.take() {
                         let _ = conn.destroy_window(c.shield);
                         conn.xfixes_show_cursor(root)?;
                     }
                     if grabbed {
-                        conn.ungrab_keyboard(CURRENT_TIME)?;
-                        conn.ungrab_pointer(CURRENT_TIME)?;
+                        if xi.is_empty() {
+                            conn.ungrab_keyboard(CURRENT_TIME)?;
+                            conn.ungrab_pointer(CURRENT_TIME)?;
+                        } else {
+                            xi_ungrab(&conn, &xi);
+                            xi.clear();
+                        }
                         conn.xfixes_show_cursor(root)?;
                         grabbed = false;
                     }
@@ -276,6 +399,7 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
                         let _ = conn.xfixes_show_cursor(root);
                     }
                     if grabbed {
+                        xi_ungrab(&conn, &xi);
                         let _ = conn.ungrab_keyboard(CURRENT_TIME);
                         let _ = conn.ungrab_pointer(CURRENT_TIME);
                         let _ = conn.xfixes_show_cursor(root);
@@ -286,6 +410,34 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
             }
         }
 
+        if let Some((since, _)) = free_until_up {
+            if suspended.is_none() {
+                let mask = u16::from(conn.query_pointer(root)?.reply()?.mask);
+                if mask & (0x100 | 0x200 | 0x400) == 0 || since.elapsed() > Duration::from_secs(20) {
+                    free_until_up = None;
+                    // Released here, not through us: pass the release on.
+                    for b in buttons_down.drain().collect::<Vec<_>>() {
+                        if let Some(ev) = button_event(b as u32, false) {
+                            let _ = tx.try_send(ev);
+                        }
+                    }
+                    retake_pointer(&conn, root, (cx, cy))?;
+                } else {
+                    // Keys still come to us; drain the rest.
+                    while let Some(ev) = conn.poll_for_event()? {
+                        if let Event::KeyPress(e) | Event::KeyRelease(e) = &ev {
+                            key_event(&mut held, &tx, e.detail, matches!(ev, Event::KeyPress(_)));
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(4));
+                    continue;
+                }
+            }
+        }
+        if suspended.is_some() {
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
         if let Some(c) = carry.as_mut() {
             let p = conn.query_pointer(root)?.reply()?;
             let (x, y) = (p.root_x as i32, p.root_y as i32);
@@ -340,9 +492,14 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
         // Grabbed: drain events. Motion is measured from the screen centre,
         // and we warp back to the centre after each batch.
         let mut motion: Option<(i32, i32)> = None;
+        let mut xi_motion: std::collections::HashMap<u16, (i32, i32)> = Default::default();
         let mut any = false;
         while let Some(ev) = conn.poll_for_event()? {
             any = true;
+            let xi_down = matches!(ev, Event::XinputButtonPress(_) | Event::XinputKeyPress(_));
+            if !xi.is_empty() {
+                log::trace!("grabbed event: {:?}", std::mem::discriminant(&ev));
+            }
             match ev {
                 Event::MotionNotify(e) => motion = Some((e.root_x as i32, e.root_y as i32)),
                 Event::ButtonPress(e) | Event::ButtonRelease(e) => {
@@ -352,36 +509,35 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
                         send_delta(&tx, x - cx, y - cy);
                         conn.warp_pointer(NONE, root, 0, 0, 0, 0, cx as i16, cy as i16)?;
                     }
-                    let ev = match e.detail {
-                        1 => Some(InputEvent::Button { button: MouseButton::Left, down }),
-                        2 => Some(InputEvent::Button { button: MouseButton::Middle, down }),
-                        3 => Some(InputEvent::Button { button: MouseButton::Right, down }),
-                        8 => Some(InputEvent::Button { button: MouseButton::Back, down }),
-                        9 => Some(InputEvent::Button { button: MouseButton::Forward, down }),
-                        4 if down => Some(InputEvent::Wheel { dx: 0, dy: 120 }),
-                        5 if down => Some(InputEvent::Wheel { dx: 0, dy: -120 }),
-                        6 if down => Some(InputEvent::Wheel { dx: -120, dy: 0 }),
-                        7 if down => Some(InputEvent::Wheel { dx: 120, dy: 0 }),
-                        _ => None,
-                    };
-                    if let Some(ev) = ev {
+                    if (1..=3).contains(&e.detail) || (8..=9).contains(&e.detail) {
+                        if down {
+                            buttons_down.insert(e.detail);
+                        } else {
+                            buttons_down.remove(&e.detail);
+                        }
+                    }
+                    if let Some(ev) = button_event(e.detail as u32, down) {
                         let _ = tx.try_send(ev);
                     }
                 }
                 Event::KeyPress(e) | Event::KeyRelease(e) => {
-                    let down = matches!(ev, Event::KeyPress(_));
-                    if down && !held.insert(e.detail) {
-                        continue; // auto-repeat: the remote OS repeats on its own
+                    key_event(&mut held, &tx, e.detail, matches!(ev, Event::KeyPress(_)));
+                }
+                Event::XinputMotion(e) => {
+                    xi_motion.insert(e.deviceid, ((e.root_x >> 16), (e.root_y >> 16)));
+                }
+                Event::XinputButtonPress(e) | Event::XinputButtonRelease(e) => {
+                    let down = xi_down;
+                    for (dev, (x, y)) in xi_motion.drain() {
+                        send_delta(&tx, x - cx, y - cy);
+                        xi_warp(&conn, root, dev, (cx, cy));
                     }
-                    if !down {
-                        held.remove(&e.detail);
+                    if let Some(ev) = button_event(e.detail, down) {
+                        let _ = tx.try_send(ev);
                     }
-                    match keys::hid_from_evdev(e.detail.saturating_sub(8) as u16) {
-                        Some(key) => {
-                            let _ = tx.try_send(InputEvent::Key { key, down });
-                        }
-                        None => log::debug!("unmapped X keycode {}", e.detail),
-                    }
+                }
+                Event::XinputKeyPress(e) | Event::XinputKeyRelease(e) => {
+                    key_event(&mut held, &tx, e.detail as u8, xi_down);
                 }
                 _ => {}
             }
@@ -393,10 +549,137 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
                 conn.flush()?;
             }
         }
+        for (dev, (x, y)) in xi_motion {
+            if (x, y) != (cx, cy) {
+                send_delta(&tx, x - cx, y - cy);
+                xi_warp(&conn, root, dev, (cx, cy));
+                conn.flush()?;
+            }
+        }
         if !any {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+/// Grab the mouse again (after letting our own input through) and park it.
+fn retake_pointer(conn: &RustConnection, root: Window, (cx, cy): (i32, i32)) -> Result<()> {
+    let mask = EventMask::POINTER_MOTION | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE;
+    for _ in 0..40 {
+        let r = conn.grab_pointer(false, root, mask, GrabMode::ASYNC, GrabMode::ASYNC, NONE, NONE, CURRENT_TIME)?.reply()?;
+        if r.status == GrabStatus::SUCCESS {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    conn.warp_pointer(NONE, root, 0, 0, 0, 0, cx as i16, cy as i16)?;
+    conn.flush()?;
+    // Our own injected motion isn't the user moving the mouse.
+    let _ = conn.get_input_focus()?.reply();
+    while conn.poll_for_event()?.is_some() {}
+    Ok(())
+}
+
+fn button_event(detail: u32, down: bool) -> Option<InputEvent> {
+    match detail {
+        1 => Some(InputEvent::Button { button: MouseButton::Left, down }),
+        2 => Some(InputEvent::Button { button: MouseButton::Middle, down }),
+        3 => Some(InputEvent::Button { button: MouseButton::Right, down }),
+        8 => Some(InputEvent::Button { button: MouseButton::Back, down }),
+        9 => Some(InputEvent::Button { button: MouseButton::Forward, down }),
+        4 if down => Some(InputEvent::Wheel { dx: 0, dy: 120 }),
+        5 if down => Some(InputEvent::Wheel { dx: 0, dy: -120 }),
+        6 if down => Some(InputEvent::Wheel { dx: -120, dy: 0 }),
+        7 if down => Some(InputEvent::Wheel { dx: 120, dy: 0 }),
+        _ => None,
+    }
+}
+
+fn key_event(held: &mut std::collections::HashSet<u8>, tx: &Sender<InputEvent>, detail: u8, down: bool) {
+    if down && !held.insert(detail) {
+        return; // auto-repeat: the remote OS repeats on its own
+    }
+    if !down {
+        held.remove(&detail);
+    }
+    match keys::hid_from_evdev(detail.saturating_sub(8) as u16) {
+        Some(key) => {
+            let _ = tx.try_send(InputEvent::Key { key, down });
+        }
+        None => log::debug!("unmapped X keycode {detail}"),
+    }
+}
+
+// ------------------------------------------------------------- XInput 2
+//
+// Grabbing the physical mice and keyboards one by one (instead of the
+// core pointer and keyboard) detaches them while OpenHop holds them, so
+// OpenHop's own synthetic input (XTEST) still reaches windows. That's what
+// lets you click and type into a live window of this computer shown on
+// another one, using this computer's keyboard and mouse.
+
+const XI_MASK: u32 = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6); // key, button, motion
+
+/// Physical (non-synthetic) mice and keyboards: (device id, is a pointer).
+fn physical_devices(conn: &RustConnection) -> Vec<(u16, bool)> {
+    use x11rb::protocol::xinput::{ConnectionExt as _, DeviceType};
+    let Ok(Ok(r)) = conn.xinput_xi_query_device(0u16).map(|c| c.reply()) else { return vec![] };
+    r.infos
+        .into_iter()
+        .filter(|d| d.enabled && (d.type_ == DeviceType::SLAVE_POINTER || d.type_ == DeviceType::SLAVE_KEYBOARD))
+        .filter(|d| {
+            let name = String::from_utf8_lossy(&d.name);
+            // Leave our own synthetic devices and the system buttons alone.
+            !name.starts_with("Virtual core XTEST") && !["Power Button", "Sleep Button", "Video Bus", "Lid Switch"].iter().any(|n| name.contains(n))
+        })
+        .map(|d| (d.deviceid, d.type_ == DeviceType::SLAVE_POINTER))
+        .collect()
+}
+
+fn xi_ungrab(conn: &RustConnection, devs: &[(u16, bool)]) {
+    use x11rb::protocol::xinput::ConnectionExt as _;
+    for (id, _) in devs {
+        let _ = conn.xinput_xi_ungrab_device(CURRENT_TIME, *id);
+    }
+    let _ = conn.flush();
+}
+
+fn xi_warp(conn: &RustConnection, root: Window, dev: u16, (x, y): (i32, i32)) {
+    use x11rb::protocol::xinput::ConnectionExt as _;
+    let _ = conn.xinput_xi_warp_pointer(NONE, root, 0, 0, 0, 0, x << 16, y << 16, dev);
+}
+
+/// Grab every physical device. None if that isn't possible (then the core grab is used).
+fn xi_grab(conn: &RustConnection, root: Window, center: (i32, i32)) -> Option<Vec<(u16, bool)>> {
+    use x11rb::protocol::xinput::{ConnectionExt as _, GrabOwner};
+    let devs = physical_devices(conn);
+    if !devs.iter().any(|d| d.1) || !devs.iter().any(|d| !d.1) {
+        return None;
+    }
+    let mut done = vec![];
+    for &(id, ptr) in &devs {
+        let ok = conn
+            .xinput_xi_grab_device(root, CURRENT_TIME, NONE, id, GrabMode::ASYNC, GrabMode::ASYNC, GrabOwner::NO_OWNER, &[XI_MASK])
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .map(|r| r.status == GrabStatus::SUCCESS)
+            .unwrap_or(false);
+        if ok {
+            done.push((id, ptr));
+        } else if ptr {
+            // A mouse we can't hold (another app has it): give up on this way.
+            xi_ungrab(conn, &done);
+            return None;
+        }
+    }
+    for &(id, ptr) in &done {
+        if ptr {
+            xi_warp(conn, root, id, center);
+        }
+    }
+    let _ = conn.flush();
+    log::debug!("holding {} input device(s) with XInput 2", done.len());
+    Some(done)
 }
 
 fn send_delta(tx: &Sender<InputEvent>, dx: i32, dy: i32) {
@@ -437,6 +720,11 @@ impl X11Injector {
 }
 
 impl Injector for X11Injector {
+    fn sync(&mut self) {
+        if let Ok(c) = self.conn.get_input_focus() {
+            let _ = c.reply();
+        }
+    }
     fn move_to(&mut self, x: i32, y: i32) -> Result<()> {
         self.fake(MOTION_NOTIFY, 0, x as i16, y as i16)?;
         self.conn.flush()?;

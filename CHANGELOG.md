@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.4.0
+
+**Update every computer.** v0.4 uses protocol 4.
+
+### Added
+- **Live windows from any computer.** Press **Ctrl+Alt+Space** (or use the tray menu) for a dock that lists the open windows of every connected computer. Click one to open it live on the computer you're at: it updates as it changes, and your clicks, scrolling and typing go to the real window. Dragging a window by its title bar off the screen edge does the same, opening it under your pointer on the other computer.
+- **Dark mode sync**: switching dark mode on one computer switches the others.
+- **Do Not Disturb sync**: while one computer is presenting, in a full-screen call or in Do Not Disturb, the others hold their notifications too.
+- **Battery saver**: live windows pause on a laptop below 20% that isn't charging.
+- **Arrival sounds** (swoosh, pop or chime, with volume) and a **landing animation** when files or windows arrive.
+- **Themes**: light, dark or automatic, and six accent colours.
+- **Open at Login** (on by default): OpenHop starts in the background when you sign in. Closing the window always keeps it running in the tray.
+- `openhop windows` lists this computer's windows (and can save a picture of one).
+
+### Changed
+- Linux: while a live window of this computer is focused on another one, your keyboard types straight into the real window.
+
 ## v0.3.3
 
 ### Fixed
