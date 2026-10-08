@@ -198,6 +198,9 @@ fn safe_rel(path: &str) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
+/// Hidden folder (inside the downloads folder) for files being dropped.
+const DROPS: &str = ".drops";
+
 fn unique(dir: &Path, name: &str) -> String {
     if !dir.join(name).exists() {
         return name.to_string();
@@ -269,7 +272,42 @@ struct InboxState {
 
 impl Inbox {
     pub fn new(root: PathBuf) -> Inbox {
+        // Leftovers from earlier drops (see `start`).
+        let _ = std::fs::remove_dir_all(root.join(DROPS));
         Inbox { root, inner: Default::default() }
+    }
+
+    /// Move dropped files that didn't land anywhere into the downloads
+    /// folder proper. Returns their new paths.
+    pub fn keep(&self, tops: &[PathBuf]) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for t in tops {
+            let Some(name) = t.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+            let dest = self.root.join(unique(&self.root, &name));
+            match std::fs::rename(t, &dest) {
+                Ok(()) => out.push(dest),
+                Err(_) => out.push(t.clone()),
+            }
+        }
+        if let Some(dir) = tops.first().and_then(|t| t.parent()) {
+            if dir.starts_with(self.root.join(DROPS)) {
+                let _ = std::fs::remove_dir(dir);
+            }
+        }
+        out
+    }
+
+    /// Forget dropped files once the app they were dropped into has had
+    /// plenty of time to copy or upload them.
+    pub fn discard_later(&self, tops: &[PathBuf]) {
+        let Some(dir) = tops.first().and_then(|t| t.parent()).map(Path::to_path_buf) else { return };
+        if !dir.starts_with(self.root.join(DROPS)) {
+            return;
+        }
+        let _ = std::thread::Builder::new().name("drop-cleanup".into()).spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(30 * 60));
+            let _ = std::fs::remove_dir_all(dir);
+        });
     }
 
     pub fn is_active(&self, offer: u64) -> bool {
@@ -278,7 +316,10 @@ impl Inbox {
 
     /// Prepare to receive `files`. Creates folders and empty files up front.
     pub fn start(&self, offer: u64, origin: &str, kind: OfferKind, files: Vec<FileMeta>) -> Result<(), String> {
-        std::fs::create_dir_all(&self.root).map_err(|e| format!("{}: {e}", self.root.display()))?;
+        // Dropped files go to a fresh folder first, so they keep their own
+        // names when they're dropped into an app (no "photo (2).jpg").
+        let root = if kind == OfferKind::Drop { self.root.join(DROPS).join(format!("{offer:x}")) } else { self.root.clone() };
+        std::fs::create_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
         let mut renamed: HashMap<String, String> = HashMap::new();
         let mut targets = Vec::new();
         let mut tops = Vec::new();
@@ -287,12 +328,12 @@ impl Inbox {
             let mut comps = rel.components();
             let top = comps.next().unwrap().as_os_str().to_string_lossy().into_owned();
             let top_local = renamed.entry(top.clone()).or_insert_with(|| {
-                let t = unique(&self.root, &top);
-                tops.push(self.root.join(&t));
+                let t = unique(&root, &top);
+                tops.push(root.join(&t));
                 t
             });
             let rest = comps.as_path();
-            let mut target = self.root.join(&*top_local);
+            let mut target = root.join(&*top_local);
             if !rest.as_os_str().is_empty() {
                 target = target.join(rest);
             }

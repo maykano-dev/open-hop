@@ -518,11 +518,13 @@ struct Common {
     pending_offer: Option<(u64, String, Vec<FileMeta>)>,
     /// A notification to show when the pointer arrives here.
     pending_note: Option<Note>,
+    /// When files were last dropped onto this computer.
+    dropped_at: Option<Instant>,
 }
 
 impl Common {
     fn new(ctx: Ctx, clip_set: Option<Sender<ClipData>>) -> Common {
-        Common { ctx, clip_set, assembler: ClipAssembler::default(), pending_offer: None, pending_note: None }
+        Common { ctx, clip_set, assembler: ClipAssembler::default(), pending_offer: None, pending_note: None, dropped_at: None }
     }
 
     /// Clipboard content arrived from another computer.
@@ -572,6 +574,9 @@ impl Common {
             return None;
         }
         self.pending_offer = None;
+        if kind == OfferKind::Drop {
+            self.dropped_at = Some(Instant::now());
+        }
         self.request(offer, origin, kind, files)
     }
 
@@ -611,17 +616,39 @@ impl Common {
                 }
                 self.ctx.note(note(
                     format!("Ready to paste: {label}"),
-                    format!("Copied on {}. Paste it into any folder, or find it in Downloads › OpenHop.", f.origin),
+                    format!("Copied on {}. Paste it into a folder, chat or document, or find it in Downloads › OpenHop.", f.origin),
                     vec![action("Show in folder", "reveal", first)],
                 ));
             }
             OfferKind::Drop => {
-                let mut actions = vec![];
-                if f.tops.len() == 1 && f.tops[0].is_file() {
-                    actions.push(action("Open", "open_path", first.clone()));
-                }
-                actions.push(action("Show in folder", "reveal", first));
-                self.ctx.note(note(format!("Received {label}"), format!("From {}. Saved to Downloads › OpenHop.", f.origin), actions));
+                // Drop the files into whatever is under the pointer, like a local
+                // drag. If nothing takes them (or they took long to arrive), keep
+                // them in Downloads and put them on the clipboard to paste.
+                let recent = self.dropped_at.take().map(|t| t.elapsed() < Duration::from_secs(20)).unwrap_or(false);
+                let (ctx, clip, origin) = (self.ctx.clone(), self.clip_set.clone(), f.origin.clone());
+                let tops = f.tops.clone();
+                let _ = std::thread::Builder::new().name("drop".into()).spawn(move || {
+                    if recent && dnd::drop_files(&tops) {
+                        log::info!("dropped {label} into the app under the pointer");
+                        ctx.inbox.discard_later(&tops);
+                        ctx.note(note(format!("Dropped {label}"), format!("From {origin}."), vec![]));
+                        return;
+                    }
+                    let kept = ctx.inbox.keep(&tops);
+                    let first = kept.first().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                    let mut actions = vec![];
+                    if kept.len() == 1 && kept[0].is_file() {
+                        actions.push(action("Open", "open_path", first.clone()));
+                    }
+                    actions.push(action("Show in folder", "reveal", first));
+                    let pasteable = clip.map(|c| c.send(ClipData::Files(kept.iter().map(|p| p.to_string_lossy().into_owned()).collect())).is_ok()).unwrap_or(false);
+                    let body = if pasteable {
+                        format!("From {origin}. Saved to Downloads › OpenHop and copied: paste it where you want it.")
+                    } else {
+                        format!("From {origin}. Saved to Downloads › OpenHop.")
+                    };
+                    ctx.note(note(format!("Received {label}"), body, actions));
+                });
             }
         }
     }
@@ -1379,6 +1406,8 @@ struct Client {
     held_buttons: HashSet<MouseButton>,
     /// Is the pointer on this computer right now?
     here: bool,
+    /// Where the pointer is (desktop coordinates), when it's here.
+    pos: (i32, i32),
 }
 
 /// Where and how the client connects.
@@ -1421,6 +1450,7 @@ impl Client {
             held_keys: HashSet::new(),
             held_buttons: HashSet::new(),
             here: false,
+            pos: (0, 0),
         };
         let mut last_failed: HashMap<SocketAddr, Instant> = HashMap::new();
         let mut pending_pair: Option<(PairWith, String)> = None;
@@ -1695,9 +1725,13 @@ impl Client {
                 if let Some(req) = self.common.arrived() {
                     link.send(req);
                 }
+                self.pos = (screen.x + x, screen.y + y);
                 self.injector.move_to(screen.x + x, screen.y + y)
             }
-            Msg::Move { x, y } => self.injector.move_to(screen.x + x, screen.y + y),
+            Msg::Move { x, y } => {
+                self.pos = (screen.x + x, screen.y + y);
+                self.injector.move_to(screen.x + x, screen.y + y)
+            }
             Msg::Leave => {
                 self.here = false;
                 self.ctx.status.lock().active.clear();
@@ -1760,7 +1794,13 @@ impl Client {
                 Ok(())
             }
             Msg::DragQuery { id } => {
-                let reply = match dnd::drag_files() {
+                let (px, py) = self.pos;
+                let injector = &mut self.injector;
+                let mut nudge = |dx: i32| {
+                    let _ = injector.move_to(px + dx.max(0), py);
+                };
+                let found = dnd::drag_files_at(self.pos, &mut nudge);
+                let reply = match found {
                     Some(paths) => {
                         let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
                         match self.common.offer_local_files(&paths, OfferKind::Drop) {

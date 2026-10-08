@@ -319,8 +319,28 @@ fn update_install(handle: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// `openhop-app --clipboard`: report what's on the clipboard (troubleshooting).
+fn clipboard_report() {
+    let report = openhop_core::clipboard::inspect();
+    print!("{report}");
+    let dir = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let dir = if dir.join("Desktop").is_dir() { dir.join("Desktop") } else { dir };
+    let file = dir.join("OpenHop clipboard report.txt");
+    if std::fs::write(&file, &report).is_ok() {
+        println!("Saved to {}", file.display());
+        #[cfg(windows)]
+        let _ = std::process::Command::new("notepad").arg(&file).spawn();
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg("-t").arg(&file).spawn();
+    }
+}
+
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    if std::env::args().any(|a| a == "--clipboard") {
+        clipboard_report();
+        return;
+    }
     let path = Config::default_path();
     let config = Config::load(&path).unwrap_or_else(|e| {
         log::warn!("{e:#}; using defaults");

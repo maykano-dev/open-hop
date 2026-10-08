@@ -1,6 +1,8 @@
 //! OpenHop: share one keyboard and mouse between Windows, macOS and Linux
 //! computers on your local network.
 
+#[cfg(target_os = "linux")]
+pub mod clip_x11;
 pub mod clipboard;
 pub mod config;
 pub mod discovery;

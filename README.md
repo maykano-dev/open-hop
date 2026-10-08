@@ -84,8 +84,8 @@ Then follow [Set up your computers](#set-up-your-computers).
 | ⌨️ **Keyboard sharing** | Your keyboard types on whichever computer has the pointer. Held keys are released when you leave a screen, so nothing gets stuck. |
 | ⌘ **Shortcut translation** | When you cross between a Mac and a PC, `⌘ Command` and `Ctrl` are swapped automatically, so ⌘C on your Mac keyboard becomes Ctrl+C on Windows or Linux. |
 | 📋 **Clipboard sync** | Copy text, an image or a screenshot on one computer and paste it on another. Images arrive pixel-perfect. |
-| 📁 **Copy & paste files** | Copy files, folders or videos in Explorer, Finder or Files, hop over, and paste: the real files arrive, not a path. |
-| 🫳 **Drag & drop files across screens** | Drag files off one computer's screen and drop them on another's. They're saved to `Downloads/OpenHop`, with a prompt to open them. |
+| 📁 **Copy & paste files** | Copy files, folders or videos in Explorer, Finder or Files, hop over, and paste: the real files arrive, not a path. A copied picture file pastes as a picture too, into chats, documents and image editors. |
+| 🫳 **Drag & drop files across screens** | Drag files off one computer's screen and drop them into a folder or app on another's, just like a local drag. |
 | 🔗 **Smart link prompts** | Copy a link on one computer, move to another, and a notification offers to open it there in the default browser. |
 | 💤 **Wake-on-LAN** | Move the pointer toward a computer that's asleep and OpenHop sends it a wake-up packet. |
 | 🔒 **End-to-end encryption** | Every keystroke, mouse movement and clipboard item is encrypted with the [Noise protocol](https://noiseprotocol.org) (X25519, ChaCha20-Poly1305, BLAKE2s). There is no plaintext mode. |
@@ -133,7 +133,7 @@ flowchart LR
 
 **What works on Wayland.** A Wayland desktop can be *controlled* but can't yet *share* its own keyboard and mouse. The common setups work fine: a Windows PC or Mac as the server with Ubuntu as a client. If your Linux machine must be the server, log in with an Xorg session.
 
-**Drag & drop sources.** Dragging *from* a computer works from Windows Explorer, macOS Finder, and Linux file managers running under X11. On a Wayland desktop, apps keep drags to themselves, so drag files *from* Wayland isn't detected yet. Dropping *onto* a Wayland desktop works, and so does copy & paste of files everywhere.
+**Drag & drop.** Dragging *from* a computer works from Windows Explorer, macOS Finder and Linux file managers (on Ubuntu's default Wayland session, OpenHop briefly puts a tiny helper window under the pointer to see the drag). Dropping lands the files in the folder or app under the pointer on Linux (X11 apps) and Windows. On macOS, and anywhere a drop isn't accepted, the files are saved to `Downloads/OpenHop` and put on the clipboard, so you can paste them where you want them.
 
 > **Test status (v0.2.0).** On Linux, everything is tested end to end: edge switching, typing and clicks, the stuck-switching fix (hopping keeps working while another computer is frozen), stale-connection replacement, text, image and full-screenshot clipboard, copy & paste of a 300 MB video, folders, and client-to-client files, drag & drop in both directions, Wake-on-LAN, notifications and their buttons, and the one-line installer. The Windows and macOS code compiles cleanly and CI builds their installers, but it hasn't yet had hands-on testing on real hardware. Please [open an issue](https://github.com/maykano-dev/open-hop/issues) if something misbehaves.
 
@@ -251,8 +251,8 @@ Update **every computer** to the same version: computers only connect to others 
 - **Copy & paste:** copy as usual on one computer, move over, and paste.
   - ✅ **Text**, including whole documents of up to 8 MB.
   - ✅ **Screenshots and images**: a screenshot taken to the clipboard (`Win+Shift+S`, `⌘⇧⌃4`, `PrtSc` on Linux) or an image copied from a browser or photo app. A full 2560×1440 screenshot arrives in about a second.
-  - ✅ **Files, folders and videos**: copy them in Explorer, Finder or your Linux file manager, move to the other computer, and paste into any folder. Small copies (under 64 MB) are sent right away. Bigger ones start as soon as your pointer arrives on that computer, so a 4 GB video isn't sent to every machine. Progress shows under **Transfers**, and a notification says when it's ready to paste. Received files also stay in `Downloads/OpenHop`.
-- **Drag & drop files:** start dragging files in your file manager, carry them across the screen edge, and let go on the other computer. The files are copied there (into `Downloads/OpenHop`) and a notification offers **Open** and **Show in folder**. The drag on the original computer is cancelled, so nothing moves or gets deleted there.
+  - ✅ **Files, folders and videos**: copy them in Explorer, Finder or your Linux file manager, move to the other computer, and paste into any folder, chat or upload box. A copied **picture file** (JPG, PNG, GIF, WebP, BMP, TIFF) also pastes as the picture itself into documents, chats and image editors. Small copies (under 64 MB) are sent right away. Bigger ones start as soon as your pointer arrives on that computer, so a 4 GB video isn't sent to every machine. Progress shows under **Transfers**, and a notification says when it's ready to paste. Received files also stay in `Downloads/OpenHop`.
+- **Drag & drop files:** start dragging files in your file manager, carry them across the screen edge, and let go over a folder or app on the other computer. The files are dropped right there, with their own names. If nothing there accepts a drop (or on macOS), they're saved to `Downloads/OpenHop` and put on the clipboard, so you can paste them where you want them. The drag on the original computer is cancelled, so nothing moves or gets deleted there.
 <p align="center">
   <img src="docs/screenshots/toast-light.png" width="40%" alt="Notifications for a copied link and a received file (light)">
   <img src="docs/screenshots/toast-dark.png" width="40%" alt="Notifications for a copied link and a received file (dark)">
@@ -381,6 +381,20 @@ If you're still on an older version, quit OpenHop from its tray icon (or run `pk
 </details>
 
 <details>
+<summary><b>Pasting gives a file path instead of the picture or file</b></summary>
+
+Update **both** computers to v0.3.2 or later; the computer you paste on is the one that sets up the clipboard. If it still happens, copy the item again and, on the computer where you copied it, run:
+
+| | |
+|---|---|
+| Linux | `openhop-app --clipboard` |
+| macOS | `/Applications/OpenHop.app/Contents/MacOS/openhop-app --clipboard` |
+| Windows (Win+R) | `"%LOCALAPPDATA%\OpenHop\openhop-app.exe" --clipboard` |
+
+It saves **OpenHop clipboard report.txt** on your Desktop, listing the formats the app put on the clipboard and what OpenHop made of them. Attach it to an [issue](https://github.com/maykano-dev/open-hop/issues).
+</details>
+
+<details>
 <summary><b>"That code didn't work"</b></summary>
 
 Type the code currently shown on the host. It changes after each successful pairing, and after five wrong tries pairing pauses for a minute. Make sure the host is set to **Control Others** and its switch is on.
@@ -465,7 +479,8 @@ open-hop/
 │   │       ├── layout.rs     # screen grid and edge maths
 │   │       ├── net.rs        # Noise-encrypted framed transport
 │   │       ├── discovery.rs  # UDP LAN discovery
-│   │       ├── clipboard.rs  # clipboard watcher (text + PNG images)
+│   │       ├── clipboard.rs  # clipboard watcher (text, images, files)
+│   │       ├── clip_x11.rs   # X11 clipboard: many formats at once, INCR
 │   │       ├── keys.rs       # HID <-> Windows / macOS / Linux key tables
 │   │       ├── protocol.rs   # wire messages
 │   │       └── platform/     # input capture & injection per OS

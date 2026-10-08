@@ -58,6 +58,8 @@ enum Cmd {
     },
     /// Print the config file location and contents.
     Config,
+    /// Show what's on the clipboard and what OpenHop would send (for troubleshooting).
+    Clipboard,
 }
 
 fn main() -> Result<()> {
@@ -86,6 +88,10 @@ fn main() -> Result<()> {
                 cfg.server_addr = server;
             }
             pair_request = pair.map(|code| (code, server_name));
+        }
+        Some(Cmd::Clipboard) => {
+            print!("{}", openhop_core::clipboard::inspect());
+            return Ok(());
         }
         Some(Cmd::Place { screen, x, y }) => {
             cfg.layout.place(&screen, x, y);

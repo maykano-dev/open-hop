@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.3.2
+
+Compatible with v0.3.x. Update every computer: the fixes are on the receiving side.
+
+### Fixed
+- **Copying an image or a video pasted its path on the other computer.** The receiving computer only put a file reference on its clipboard, which many apps paste as a path. A received file now goes on the clipboard in every format the system's apps expect (Ubuntu Files/Nautilus, Caja and Nemo need `x-special/gnome-copied-files`; Windows Explorer gets a proper copy). A copied picture file is also put on the clipboard **as the picture itself**, so it pastes into chats, documents and image editors.
+- Copied files weren't picked up from file managers that end the list with a NUL byte (PCManFM/libfm).
+- Copying an image in a browser could send the image's URL instead of the image.
+- Linux: big clipboard images are sent and received with the X11 INCR protocol, and every image format (PNG, JPEG, BMP, GIF, WebP, TIFF) is understood.
+
+### Changed
+- **Drag & drop drops into the app under the pointer** on Linux (X11) and Windows, with the files' own names, just like a local drag. Elsewhere, or when nothing accepts the drop, the files are saved to Downloads › OpenHop and put on the clipboard to paste.
+- Linux (Wayland): dragging files *from* a Wayland app is now detected.
+
+### Added
+- `openhop-app --clipboard` (or `openhop clipboard` with the CLI) saves a report of what's on the clipboard and what OpenHop would send, for troubleshooting.
+
 ## v0.3.1
 
 Compatible with v0.3.0 (same protocol), but update every computer to get the fixes.

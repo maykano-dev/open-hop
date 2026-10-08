@@ -18,6 +18,31 @@ pub fn drag_files() -> Option<Vec<PathBuf>> {
     imp::drag_files().filter(|v| !v.is_empty())
 }
 
+/// Files being dragged on a Wayland desktop, where only an X11 window under
+/// the pointer gets to see the drag. `at` is where the pointer is; `nudge`
+/// wiggles it so the desktop notices the window placed under it.
+pub fn drag_files_at(at: (i32, i32), nudge: &mut dyn FnMut(i32)) -> Option<Vec<PathBuf>> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        if let Some(f) = drag_files() {
+            return Some(f);
+        }
+        return imp::drag_files_wayland(at, nudge).filter(|v| !v.is_empty());
+    }
+    let _ = (at, nudge);
+    drag_files()
+}
+
+/// Drop `files` onto whatever is under the pointer, as if they had been
+/// dragged there from a file manager. Blocks for up to a few seconds.
+/// Returns false if nothing there accepted them.
+pub fn drop_files(files: &[PathBuf]) -> bool {
+    if files.is_empty() {
+        return false;
+    }
+    imp::drop_files(files)
+}
+
 /// Cancel the local drag (sends Escape to the drag source).
 pub fn cancel_drag() {
     imp::cancel_drag()
@@ -31,7 +56,8 @@ pub fn note_left_down() {
 }
 
 pub fn parse_uri_list(text: &str) -> Vec<PathBuf> {
-    text.lines()
+    // Some apps (libfm/PCManFM) end the list with a NUL byte.
+    text.split(['\n', '\r', '\0'])
         .map(str::trim)
         .filter_map(|l| l.strip_prefix("file://"))
         .map(|rest| if rest.starts_with('/') { rest } else { rest.find('/').map(|i| &rest[i..]).unwrap_or(rest) })
@@ -67,7 +93,11 @@ mod imp {
     use std::time::{Duration, Instant};
     use x11rb::connection::Connection;
     use x11rb::protocol::xfixes::{ConnectionExt as _, SelectionEventMask};
-    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, KeyButMask, WindowClass};
+    use x11rb::protocol::xproto::{
+        AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, KeyButMask, PropMode, SelectionNotifyEvent, WindowClass,
+        SELECTION_NOTIFY_EVENT,
+    };
+    use x11rb::wrapper::ConnectionExt as _;
     use x11rb::protocol::xtest::ConnectionExt as _;
     use x11rb::protocol::Event;
     use x11rb::rust_connection::RustConnection;
@@ -172,6 +202,225 @@ mod imp {
         None
     }
 
+
+    fn atoms(conn: &RustConnection, names: &[&str]) -> Option<Vec<u32>> {
+        let cookies: Vec<_> = names.iter().map(|n| conn.intern_atom(false, n.as_bytes())).collect::<Result<_, _>>().ok()?;
+        cookies.into_iter().map(|c| c.reply().ok().map(|r| r.atom)).collect()
+    }
+
+    fn client_message(conn: &RustConnection, dest: u32, window: u32, kind: u32, data: [u32; 5]) {
+        let ev = ClientMessageEvent::new(32, window, kind, data);
+        let _ = conn.send_event(false, dest, EventMask::NO_EVENT, ev);
+        let _ = conn.flush();
+    }
+
+    /// The XdndAware window under the pointer: (window, where to send, version).
+    fn xdnd_target(conn: &RustConnection, root: u32, aware: u32, proxy: u32) -> Option<(u32, u32, u32)> {
+        let mut w = root;
+        for _ in 0..32 {
+            if w != root {
+                let r = conn.get_property(false, w, aware, AtomEnum::ATOM, 0, 1).ok()?.reply().ok()?;
+                if let Some(v) = r.value32().and_then(|mut i| i.next()) {
+                    let dest = conn
+                        .get_property(false, w, proxy, AtomEnum::WINDOW, 0, 1)
+                        .ok()
+                        .and_then(|c| c.reply().ok())
+                        .and_then(|r| r.value32().and_then(|mut i| i.next()))
+                        .unwrap_or(w);
+                    return Some((w, dest, v.min(5)));
+                }
+            }
+            let child = conn.query_pointer(w).ok()?.reply().ok()?.child;
+            if child == NONE {
+                return None;
+            }
+            w = child;
+        }
+        None
+    }
+
+    pub fn drop_files(files: &[PathBuf]) -> bool {
+        let Ok((conn, n)) = x11rb::connect(None) else { return false };
+        let root = conn.setup().roots[n].root;
+        let names = [
+            "XdndAware", "XdndProxy", "XdndSelection", "XdndEnter", "XdndPosition", "XdndStatus", "XdndDrop", "XdndFinished",
+            "XdndLeave", "XdndActionCopy", "text/uri-list", "TARGETS", "x-special/gnome-copied-files",
+        ];
+        let Some(a) = atoms(&conn, &names) else { return false };
+        let [aware, proxy, selection, enter, position, status, drop, finished, leave, copy, uri_list, targets, gnome] = a[..] else { return false };
+        let Ok(win) = conn.generate_id() else { return false };
+        if conn.create_window(0, win, root, -10, -10, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &CreateWindowAux::new()).is_err() {
+            return false;
+        }
+        let _ = conn.set_selection_owner(win, selection, CURRENT_TIME);
+        let _ = conn.flush();
+        let done = |ok: bool| {
+            let _ = conn.destroy_window(win);
+            let _ = conn.flush();
+            ok
+        };
+        let Some((target, dest, version)) = xdnd_target(&conn, root, aware, proxy) else {
+            log::debug!("no drop target under the pointer");
+            return done(false);
+        };
+        let Some(p) = conn.query_pointer(root).ok().and_then(|c| c.reply().ok()) else { return done(false) };
+        let (x, y) = (p.root_x as u32 & 0xffff, p.root_y as u32 & 0xffff);
+        let uris: String = files.iter().map(|f| format!("{}\r\n", crate::clipboard::file_uri(f))).collect();
+        log::debug!("XDND drop on window {target:#x} (version {version})");
+        client_message(&conn, dest, target, enter, [win, version << 24, uri_list, gnome, 0]);
+        client_message(&conn, dest, target, position, [win, 0, (x << 16) | y, CURRENT_TIME, copy]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut dropped = false;
+        let mut tries = 0;
+        while Instant::now() < deadline {
+            let ev = match conn.poll_for_event() {
+                Ok(Some(ev)) => ev,
+                Ok(None) => {
+                    std::thread::sleep(Duration::from_millis(3));
+                    continue;
+                }
+                Err(_) => return false,
+            };
+            match &ev {
+                Event::SelectionRequest(r) => log::trace!(
+                    "xdnd: request for {:?}",
+                    conn.get_atom_name(r.target).ok().and_then(|c| c.reply().ok()).map(|r| String::from_utf8_lossy(&r.name).into_owned())
+                ),
+                Event::ClientMessage(m) => log::trace!("xdnd: message {} {:?}", m.type_, m.data.as_data32()),
+                _ => {}
+            }
+            match ev {
+                Event::SelectionRequest(r) if r.selection == selection => {
+                    let prop = if r.property == NONE { r.target } else { r.property };
+                    let mut answered = prop;
+                    if r.target == targets {
+                        let _ = conn.change_property32(PropMode::REPLACE, r.requestor, prop, AtomEnum::ATOM, &[targets, uri_list, gnome]);
+                    } else if r.target == uri_list {
+                        let _ = conn.change_property8(PropMode::REPLACE, r.requestor, prop, uri_list, uris.as_bytes());
+                    } else if r.target == gnome {
+                        let body = format!("copy\n{}", uris.trim_end().replace("\r\n", "\n"));
+                        let _ = conn.change_property8(PropMode::REPLACE, r.requestor, prop, gnome, body.as_bytes());
+                    } else {
+                        answered = NONE;
+                    }
+                    let notify = SelectionNotifyEvent {
+                        response_type: SELECTION_NOTIFY_EVENT,
+                        sequence: 0,
+                        time: r.time,
+                        requestor: r.requestor,
+                        selection: r.selection,
+                        target: r.target,
+                        property: answered,
+                    };
+                    let _ = conn.send_event(false, r.requestor, EventMask::NO_EVENT, notify);
+                    let _ = conn.flush();
+                }
+                Event::ClientMessage(m) if m.type_ == status && !dropped => {
+                    let d = m.data.as_data32();
+                    if d[1] & 1 == 1 {
+                        client_message(&conn, dest, target, drop, [win, 0, CURRENT_TIME, 0, 0]);
+                        dropped = true;
+                    } else if tries >= 12 {
+                        client_message(&conn, dest, target, leave, [win, 0, 0, 0, 0]);
+                        return done(false);
+                    } else {
+                        // Targets often say "not yet" until they've looked at the
+                        // data; ask again like a moving pointer would.
+                        tries += 1;
+                        std::thread::sleep(Duration::from_millis(100));
+                        client_message(&conn, dest, target, position, [win, 0, (x << 16) | y, CURRENT_TIME, copy]);
+                    }
+                }
+                Event::ClientMessage(m) if m.type_ == finished => {
+                    let d = m.data.as_data32();
+                    // Version 5 says whether the drop worked; older ones don't.
+                    return done(version < 5 || d[1] & 1 == 1);
+                }
+                _ => {}
+            }
+        }
+        if !dropped {
+            client_message(&conn, dest, target, leave, [win, 0, 0, 0, 0]);
+        }
+        done(dropped)
+    }
+
+    /// On Wayland, a drag only shows up in X11 once it passes over an X11
+    /// window. Put a small one under the pointer and read the drag from it.
+    pub fn drag_files_wayland((px, py): (i32, i32), nudge: &mut dyn FnMut(i32)) -> Option<Vec<PathBuf>> {
+        let (conn, n) = x11rb::connect(None).ok()?;
+        let screen = &conn.setup().roots[n];
+        let root = screen.root;
+        let a = atoms(&conn, &["XdndAware", "XdndSelection", "XdndPosition", "XdndStatus", "text/uri-list", "OPENHOP_DND"])?;
+        let [aware, selection, position, status, uri_list, prop] = a[..] else { return None };
+        let win = conn.generate_id().ok()?;
+        let size = 24u16;
+        conn.create_window(
+            0,
+            win,
+            root,
+            (px - size as i32 / 2) as i16,
+            (py - size as i32 / 2) as i16,
+            size,
+            size,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new().override_redirect(1).background_pixel(screen.white_pixel).event_mask(EventMask::PROPERTY_CHANGE),
+        )
+        .ok()?;
+        conn.change_property32(PropMode::REPLACE, win, aware, AtomEnum::ATOM, &[5]).ok()?;
+        conn.map_window(win).ok()?;
+        conn.flush().ok()?;
+        let cleanup = || {
+            let _ = conn.destroy_window(win);
+            let _ = conn.flush();
+        };
+        let deadline = Instant::now() + Duration::from_millis(600);
+        let mut asked = false;
+        let mut out = None;
+        let mut wiggles = 0;
+        let mut next_wiggle = Instant::now() + Duration::from_millis(30);
+        while Instant::now() < deadline {
+            if !asked && Instant::now() >= next_wiggle {
+                nudge(if wiggles % 2 == 0 { 1 } else { -1 });
+                wiggles += 1;
+                next_wiggle = Instant::now() + Duration::from_millis(40);
+            }
+            let Ok(ev) = conn.poll_for_event() else { break };
+            let Some(ev) = ev else {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            match ev {
+                Event::ClientMessage(m) if m.type_ == position => {
+                    let src = m.data.as_data32()[0];
+                    // Politely refuse; we only want to look.
+                    client_message(&conn, src, src, status, [win, 0, 0, 0, 0]);
+                    if !asked {
+                        let _ = conn.convert_selection(win, selection, uri_list, prop, CURRENT_TIME);
+                        let _ = conn.flush();
+                        asked = true;
+                    }
+                }
+                Event::SelectionNotify(e) if e.requestor == win => {
+                    if e.property != NONE {
+                        if let Ok(Ok(r)) = conn.get_property(true, win, prop, AtomEnum::ANY, 0, 4 * 1024 * 1024).map(|c| c.reply()) {
+                            out = Some(parse_uri_list(&String::from_utf8_lossy(&r.value)));
+                        }
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        cleanup();
+        if wiggles % 2 == 1 {
+            nudge(-1);
+        }
+        out
+    }
+
     pub fn cancel_drag() {
         let Some(x) = x() else { return };
         let x = x.lock();
@@ -231,6 +480,11 @@ mod imp {
         Some(out)
     }
 
+    /// Not yet on macOS: the files land in Downloads › OpenHop and on the clipboard.
+    pub fn drop_files(_: &[PathBuf]) -> bool {
+        false
+    }
+
     pub fn cancel_drag() {
         if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
             for down in [true, false] {
@@ -246,6 +500,7 @@ mod imp {
 // ------------------------------------------------------------------ Windows
 #[cfg(windows)]
 mod imp {
+    pub use super::win_drop::drop_files;
     use super::*;
     use parking_lot::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -429,9 +684,129 @@ mod imp {
     }
 }
 
+
+// ------------------------------------------------------------------ Windows drop
+#[cfg(windows)]
+mod win_drop {
+    //! Drop received files where the pointer is, with a real OLE drag:
+    //! the same data object Explorer uses, and a drop source that lets go
+    //! after the target under the pointer has had a look.
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use windows::core::{implement, BOOL, HRESULT, HSTRING};
+    use windows::Win32::Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK};
+    use windows::Win32::System::Com::IDataObject;
+    use windows::Win32::System::Ole::{DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE};
+    use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT, MOUSE_EVENT_FLAGS};
+    use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+    use windows::Win32::UI::Shell::{ILClone, ILCreateFromPathW, ILFindLastID, ILFree, ILRemoveLastID, SHCreateDataObject};
+
+    #[implement(IDropSource)]
+    struct Source {
+        started: Instant,
+        release: Arc<AtomicBool>,
+    }
+
+    impl IDropSource_Impl for Source_Impl {
+        fn QueryContinueDrag(&self, escape: BOOL, _keys: MODIFIERKEYS_FLAGS) -> HRESULT {
+            if escape.as_bool() || self.started.elapsed() > Duration::from_secs(4) {
+                DRAGDROP_S_CANCEL
+            } else if self.release.load(Ordering::SeqCst) {
+                DRAGDROP_S_DROP
+            } else {
+                S_OK
+            }
+        }
+        fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
+            DRAGDROP_S_USEDEFAULTCURSORS
+        }
+    }
+
+    fn nudge(dx: i32) {
+        let i = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 { mi: MOUSEINPUT { dx, dy: 0, mouseData: 0, dwFlags: MOUSE_EVENT_FLAGS(0x0001), time: 0, dwExtraInfo: 0 } },
+        };
+        unsafe {
+            SendInput(&[i], std::mem::size_of::<INPUT>() as i32);
+        }
+    }
+
+    unsafe fn data_object(files: &[PathBuf]) -> Option<IDataObject> {
+        let full: Vec<*mut ITEMIDLIST> = files
+            .iter()
+            .map(|f| ILCreateFromPathW(&HSTRING::from(f.canonicalize().unwrap_or_else(|_| f.clone()).to_string_lossy().trim_start_matches(r"\\?\"))))
+            .filter(|p| !p.is_null())
+            .collect();
+        if full.is_empty() {
+            return None;
+        }
+        // All received files share a folder (Downloads › OpenHop).
+        let folder = ILClone(full[0]);
+        let _ = ILRemoveLastID(Some(folder));
+        let children: Vec<*const ITEMIDLIST> = full.iter().map(|p| ILFindLastID(*p) as *const _).collect();
+        let obj = SHCreateDataObject::<_, IDataObject>(Some(folder), Some(&children), None::<&IDataObject>).ok();
+        ILFree(Some(folder));
+        for p in full {
+            ILFree(Some(p));
+        }
+        obj
+    }
+
+    fn run(files: Vec<PathBuf>) -> bool {
+        unsafe {
+            if OleInitialize(None).is_err() {
+                return false;
+            }
+            let ok = (|| {
+                let obj = data_object(&files)?;
+                let release = Arc::new(AtomicBool::new(false));
+                let source: IDropSource = Source { started: Instant::now(), release: release.clone() }.into();
+                // Wiggle the pointer so the drag loop finds the window under it,
+                // then let go.
+                let r = release.clone();
+                std::thread::spawn(move || {
+                    for i in 0..10 {
+                        std::thread::sleep(Duration::from_millis(30));
+                        nudge(if i % 2 == 0 { 1 } else { -1 });
+                    }
+                    r.store(true, Ordering::SeqCst);
+                    for i in 0..6 {
+                        std::thread::sleep(Duration::from_millis(30));
+                        nudge(if i % 2 == 0 { 1 } else { -1 });
+                    }
+                });
+                let mut effect = DROPEFFECT_NONE;
+                let hr = DoDragDrop(&obj, &source, DROPEFFECT_COPY, &mut effect);
+                Some(hr == DRAGDROP_S_DROP && effect != DROPEFFECT_NONE)
+            })()
+            .unwrap_or(false);
+            OleUninitialize();
+            ok
+        }
+    }
+
+    pub fn drop_files(files: &[PathBuf]) -> bool {
+        let files = files.to_vec();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        if std::thread::Builder::new().name("ole-drop".into()).spawn(move || {
+            let _ = tx.send(run(files));
+        }).is_err() {
+            return false;
+        }
+        rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false)
+    }
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod imp {
     use super::*;
+    pub fn drop_files(_: &[PathBuf]) -> bool {
+        false
+    }
     pub fn left_button_down() -> bool {
         false
     }
