@@ -1095,7 +1095,9 @@ impl Server {
     fn enter(&mut self, id: u64, exit_side: Side, frac: f64) {
         match self.active {
             None => {
-                if !self.capture.grab() {
+                let carrying = self.drag.as_ref().map(|d| d.origin == self.ctx.cfg.name).unwrap_or(false);
+                let ok = if carrying { self.capture.grab_carrying_drag() } else { self.capture.grab() };
+                if !ok {
                     log::warn!("couldn't capture the mouse and keyboard; staying on this computer");
                     return;
                 }

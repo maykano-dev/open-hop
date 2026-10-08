@@ -41,8 +41,87 @@ fn x_button(b: MouseButton) -> u8 {
 }
 
 enum Cmd {
-    Grab(Sender<bool>),
+    /// Take over the mouse and keyboard. With `drag`, a file drag is being
+    /// carried off this screen and its source may hold the pointer.
+    Grab(Sender<bool>, bool),
     Release(i32, i32),
+}
+
+/// Carrying a file drag to another screen. The drag source (a file manager)
+/// holds the pointer grab, so OpenHop can't grab it; instead it follows the
+/// pointer by warping it back to the centre, over a transparent "shield"
+/// window that refuses drops, so letting go doesn't drop anything here.
+struct Carry {
+    shield: Window,
+    released: bool,
+    last_try: std::time::Instant,
+}
+
+struct XdndAtoms {
+    aware: u32,
+    position: u32,
+    status: u32,
+    drop: u32,
+    finished: u32,
+}
+
+fn make_shield(conn: &RustConnection, root: Window, (cx, cy): (i32, i32), a: &XdndAtoms) -> Result<Window> {
+    use x11rb::protocol::xproto::{ColormapAlloc, CreateWindowAux, PropMode, WindowClass};
+    use x11rb::wrapper::ConnectionExt as _;
+    let screen = conn.setup().roots.iter().find(|s| s.root == root).context("no screen")?;
+    // A see-through window needs a compositor; without one, a window with no
+    // background simply leaves what was on screen in place.
+    let n = conn.setup().roots.iter().position(|s| s.root == root).unwrap_or(0);
+    let cm = conn.intern_atom(false, format!("_NET_WM_CM_S{n}").as_bytes())?.reply()?.atom;
+    let composited = conn.get_selection_owner(cm)?.reply()?.owner != NONE;
+    let argb = screen
+        .allowed_depths
+        .iter()
+        .find(|d| d.depth == 32)
+        .and_then(|d| d.visuals.first())
+        .map(|v| v.visual_id)
+        .filter(|_| composited);
+    let win = conn.generate_id()?;
+    const R: i32 = 250;
+    let (x, y, w) = ((cx - R) as i16, (cy - R) as i16, (2 * R) as u16);
+    match argb {
+        Some(visual) => {
+            let cmap = conn.generate_id()?;
+            conn.create_colormap(ColormapAlloc::NONE, cmap, root, visual)?;
+            let aux = CreateWindowAux::new().background_pixel(0).border_pixel(0).colormap(cmap).override_redirect(1);
+            conn.create_window(32, win, root, x, y, w, w, 0, WindowClass::INPUT_OUTPUT, visual, &aux)?;
+        }
+        None => {
+            let aux = CreateWindowAux::new().background_pixmap(NONE).override_redirect(1);
+            conn.create_window(0, win, root, x, y, w, w, 0, WindowClass::INPUT_OUTPUT, 0, &aux)?;
+        }
+    }
+    conn.change_property32(PropMode::REPLACE, win, a.aware, x11rb::protocol::xproto::AtomEnum::ATOM, &[5])?;
+    conn.map_window(win)?;
+    conn.flush()?;
+    Ok(win)
+}
+
+fn left_down(conn: &RustConnection, root: Window) -> Result<bool> {
+    let p = conn.query_pointer(root)?.reply()?;
+    Ok(u16::from(p.mask) & u16::from(x11rb::protocol::xproto::KeyButMask::BUTTON1) != 0)
+}
+
+/// Answer a drag source talking to the shield: "no, you can't drop here".
+fn refuse_drop(conn: &RustConnection, shield: Window, a: &XdndAtoms, ev: &x11rb::protocol::xproto::ClientMessageEvent) {
+    use x11rb::protocol::xproto::ClientMessageEvent;
+    let src = ev.data.as_data32()[0];
+    let reply = if ev.type_ == a.position {
+        Some(ClientMessageEvent::new(32, src, a.status, [shield, 0, 0, 0, 0]))
+    } else if ev.type_ == a.drop {
+        Some(ClientMessageEvent::new(32, src, a.finished, [shield, 0, 0, 0, 0]))
+    } else {
+        None
+    };
+    if let Some(r) = reply {
+        let _ = conn.send_event(false, src, EventMask::NO_EVENT, r);
+        let _ = conn.flush();
+    }
 }
 
 pub struct X11Capture {
@@ -80,7 +159,14 @@ impl X11Capture {
 impl Capture for X11Capture {
     fn grab(&self) -> bool {
         let (tx, rx) = crossbeam_channel::bounded(1);
-        if self.cmd.send(Cmd::Grab(tx)).is_err() {
+        if self.cmd.send(Cmd::Grab(tx, false)).is_err() {
+            return false;
+        }
+        rx.recv_timeout(Duration::from_secs(2)).unwrap_or(false)
+    }
+    fn grab_carrying_drag(&self) -> bool {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        if self.cmd.send(Cmd::Grab(tx, true)).is_err() {
             return false;
         }
         rx.recv_timeout(Duration::from_secs(2)).unwrap_or(false)
@@ -94,9 +180,13 @@ impl Capture for X11Capture {
 }
 
 fn try_grab(conn: &RustConnection, root: Window) -> Result<()> {
+    try_grab_for(conn, root, 20)
+}
+
+fn try_grab_for(conn: &RustConnection, root: Window, tries: u32) -> Result<()> {
     let mask = EventMask::POINTER_MOTION | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE;
     // Another client (an open menu, a screensaver) may hold a grab briefly.
-    for _ in 0..20 {
+    for _ in 0..tries {
         let p = conn
             .grab_pointer(false, root, mask, GrabMode::ASYNC, GrabMode::ASYNC, NONE, NONE, CURRENT_TIME)?
             .reply()?;
@@ -115,13 +205,22 @@ fn try_grab(conn: &RustConnection, root: Window) -> Result<()> {
 fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<InputEvent>, cmd_rx: Receiver<Cmd>) -> Result<()> {
     let (cx, cy) = rect.center();
     let mut grabbed = false;
+    let mut carry: Option<Carry> = None;
     let mut last = (i32::MIN, i32::MIN);
     let mut held: std::collections::HashSet<u8> = Default::default();
+    let atom = |n: &[u8]| -> Result<u32> { Ok(conn.intern_atom(false, n)?.reply()?.atom) };
+    let xa = XdndAtoms {
+        aware: atom(b"XdndAware")?,
+        position: atom(b"XdndPosition")?,
+        status: atom(b"XdndStatus")?,
+        drop: atom(b"XdndDrop")?,
+        finished: atom(b"XdndFinished")?,
+    };
     loop {
         // Commands from the engine.
         loop {
             match cmd_rx.try_recv() {
-                Ok(Cmd::Grab(reply)) if !grabbed => match try_grab(&conn, root) {
+                Ok(Cmd::Grab(reply, drag)) if !grabbed && carry.is_none() => match try_grab(&conn, root) {
                     Ok(()) => {
                         grabbed = true;
                         held.clear();
@@ -130,15 +229,34 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
                         conn.flush()?;
                         let _ = reply.send(true);
                     }
+                    Err(_) if drag && left_down(&conn, root).unwrap_or(false) => match make_shield(&conn, root, (cx, cy), &xa) {
+                        Ok(shield) => {
+                            log::info!("the drag source holds the pointer; following it until the drop");
+                            held.clear();
+                            conn.xfixes_hide_cursor(root)?;
+                            conn.warp_pointer(NONE, root, 0, 0, 0, 0, cx as i16, cy as i16)?;
+                            conn.flush()?;
+                            carry = Some(Carry { shield, released: false, last_try: std::time::Instant::now() });
+                            let _ = reply.send(true);
+                        }
+                        Err(e) => {
+                            log::warn!("could not carry the drag: {e:#}");
+                            let _ = reply.send(false);
+                        }
+                    },
                     Err(e) => {
                         log::warn!("{e}");
                         let _ = reply.send(false);
                     }
                 },
-                Ok(Cmd::Grab(reply)) => {
+                Ok(Cmd::Grab(reply, _)) => {
                     let _ = reply.send(true);
                 }
                 Ok(Cmd::Release(x, y)) => {
+                    if let Some(c) = carry.take() {
+                        let _ = conn.destroy_window(c.shield);
+                        conn.xfixes_show_cursor(root)?;
+                    }
                     if grabbed {
                         conn.ungrab_keyboard(CURRENT_TIME)?;
                         conn.ungrab_pointer(CURRENT_TIME)?;
@@ -153,6 +271,10 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
                 }
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    if let Some(c) = carry.take() {
+                        let _ = conn.destroy_window(c.shield);
+                        let _ = conn.xfixes_show_cursor(root);
+                    }
                     if grabbed {
                         let _ = conn.ungrab_keyboard(CURRENT_TIME);
                         let _ = conn.ungrab_pointer(CURRENT_TIME);
@@ -162,6 +284,44 @@ fn capture_loop(conn: RustConnection, root: Window, rect: Rect, tx: Sender<Input
                     return Ok(());
                 }
             }
+        }
+
+        if let Some(c) = carry.as_mut() {
+            let p = conn.query_pointer(root)?.reply()?;
+            let (x, y) = (p.root_x as i32, p.root_y as i32);
+            if (x, y) != (cx, cy) {
+                send_delta(&tx, x - cx, y - cy);
+                conn.warp_pointer(NONE, root, 0, 0, 0, 0, cx as i16, cy as i16)?;
+                conn.flush()?;
+            }
+            let down = u16::from(p.mask) & u16::from(x11rb::protocol::xproto::KeyButMask::BUTTON1) != 0;
+            if !down && !c.released {
+                // Let go: that's the drop, on the other computer.
+                c.released = true;
+                let _ = tx.try_send(InputEvent::Button { button: MouseButton::Left, down: false });
+            }
+            while let Some(ev) = conn.poll_for_event()? {
+                if let Event::ClientMessage(m) = &ev {
+                    refuse_drop(&conn, c.shield, &xa, m);
+                }
+            }
+            // Once the drag source lets go of the pointer, take over properly.
+            if c.last_try.elapsed() > Duration::from_millis(50) {
+                c.last_try = std::time::Instant::now();
+                if try_grab_for(&conn, root, 1).is_ok() {
+                    let _ = conn.destroy_window(c.shield);
+                    conn.flush()?;
+                    log::debug!("drag over; mouse and keyboard captured");
+                    // Still held: the release will come as a normal event.
+                    if !c.released {
+                        held.clear();
+                    }
+                    carry = None;
+                    grabbed = true;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(4));
+            continue;
         }
 
         if !grabbed {

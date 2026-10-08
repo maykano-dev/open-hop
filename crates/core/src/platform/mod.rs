@@ -35,6 +35,11 @@ pub trait Capture: Send + Sync {
     /// Start swallowing local input and reporting it as events; hide the cursor.
     /// Returns false if the input couldn't be captured (then nothing changed).
     fn grab(&self) -> bool;
+    /// Like `grab`, while a file drag is being carried off this screen (the
+    /// drag source may be holding the pointer).
+    fn grab_carrying_drag(&self) -> bool {
+        self.grab()
+    }
     /// Stop swallowing input, show the cursor and put it at (x, y) (native coords).
     fn release(&self, x: i32, y: i32);
     /// Current local desktop bounds.

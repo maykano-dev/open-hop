@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.3
+
+### Fixed
+- **Linux: dragging a file from the Files app (Nautilus) stopped at the screen edge.** The file manager keeps hold of the mouse during a drag (and newer versions ignore the Escape key OpenHop used to cancel it), so OpenHop couldn't take over the pointer. OpenHop now follows the pointer itself while the drag is carried to the other computer, behind an invisible window that refuses drops, so letting go drops the files on the other computer and nothing is dropped locally. Tested with GNOME Files 46.
+
 ## v0.3.2
 
 Compatible with v0.3.x. Update every computer: the fixes are on the receiving side.
