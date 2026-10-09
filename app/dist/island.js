@@ -85,8 +85,8 @@ function restShape() {
   if (fit.bar) return { w: 196, h: Math.max(22, Math.round(fit.bar) - 2), r: Math.round(fit.bar / 2) };
   // Windows, Linux with its own lane: a pill that's always there.
   if (fit.lane) return { w: 200, h: laneH(), r: 13 };
-  // Otherwise a thin lip that lets clicks through to tabs underneath.
-  return { w: 150, h: 5, r: 3 };
+  // Otherwise a small pill (clicks go through it until the pointer rests on it).
+  return { w: 180, h: 24, r: 12 };
 }
 function shapeFor(m) {
   if (m === "live") return fit.notch ? { w: notchW() + 2 * 112, h: notchH(), r: 14 } : fit.lane ? { w: 340, h: laneH(), r: 13 } : { w: 320, h: 36, r: 18 };
@@ -100,7 +100,8 @@ function applyFit(f) {
   const changed = JSON.stringify(f) !== JSON.stringify(fit);
   fit = f;
   document.body.classList.toggle("notch", !!fit.notch);
-  document.body.classList.toggle("lip", !fit.notch && !fit.bar && !fit.lane);
+  document.body.classList.toggle("lip", false);
+  document.body.classList.toggle("small", !fit.notch && !fit.bar && !fit.lane);
   document.body.classList.toggle("lane", !!fit.lane);
   document.documentElement.style.setProperty("--notch-h", notchH() + "px");
   if (changed) setMode(mode, true);

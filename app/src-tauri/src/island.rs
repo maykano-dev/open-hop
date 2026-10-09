@@ -17,7 +17,7 @@ const LANE_TITLE: &str = "OpenHop lane";
 /// Give the island a lane of its own across the top of the screen, which
 /// maximized windows leave free. Checks the system really kept it free;
 /// otherwise it goes back to resting as a thin line.
-fn make_lane(app: &tauri::App) {
+fn make_lane(app: &AppHandle, attempt: u32) {
     if cfg!(target_os = "macos") {
         return; // The menu bar is its lane.
     }
@@ -27,26 +27,42 @@ fn make_lane(app: &tauri::App) {
     // lane. Otherwise (no helper yet, other desktops) the X11 way below
     // works through XWayland too.
     #[cfg(target_os = "linux")]
-    if openhop_core::platform::linux_is_wayland() && openhop_core::wins::gnome::available() {
-        let handle = app.handle().clone();
+    if openhop_core::platform::linux_is_wayland() {
+        // The helper may only start a little after OpenHop (both start at
+        // login): keep asking for a while.
+        let handle = app.clone();
         std::thread::spawn(move || {
-            let Some(top) = openhop_core::wins::gnome::lane(LANE as u32) else {
-                log::info!("island lane: OpenHop's GNOME Shell helper didn't make one");
+            if attempt > 0 {
                 return;
-            };
-            log::info!("island lane under GNOME's top bar at {top}");
-            let h = handle.clone();
-            let _ = handle.run_on_main_thread(move || {
-                let island = h.state::<Island>();
-                *island.lane_top.lock() = Some((top as f64 * scale).round() as i32);
-                island.fit.lock().lane = Some(LANE);
-                let g = *island.geo.lock();
-                if g.scale > 0.0 {
-                    place(&h, g.w as f64 / g.scale, g.h as f64 / g.scale);
+            }
+            for _ in 0..240 {
+                if openhop_core::wins::gnome::available() {
+                    if let Some(top) = openhop_core::wins::gnome::lane(LANE as u32) {
+                        log::info!("island lane under GNOME's top bar at {top}");
+                        let h = handle.clone();
+                        let _ = handle.run_on_main_thread(move || {
+                            // The helper's lane replaces an XWayland one.
+                            if let Some(w) = h.get_webview_window("lane") {
+                                openhop_core::extras::lane::release(0, LANE_TITLE);
+                                let _ = w.destroy();
+                            }
+                            let island = h.state::<Island>();
+                            *island.lane_top.lock() = Some((top as f64 * scale).round() as i32);
+                            island.fit.lock().lane = Some(LANE);
+                            let g = *island.geo.lock();
+                            if g.scale > 0.0 {
+                                place(&h, g.w as f64 / g.scale, g.h as f64 / g.scale);
+                            }
+                        });
+                        return;
+                    }
                 }
-            });
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
         });
-        return;
+        if openhop_core::wins::gnome::available() {
+            return;
+        }
     }
     let area = m.work_area();
     let top = if attached() { m.position().y } else { area.position.y };
@@ -81,7 +97,7 @@ fn make_lane(app: &tauri::App) {
     let raw = lane.hwnd().map(|h| h.0 as isize).unwrap_or(0);
     #[cfg(not(windows))]
     let raw = 0isize;
-    let handle = app.handle().clone();
+    let handle = app.clone();
     std::thread::spawn(move || {
         // The window has to be on screen first.
         std::thread::sleep(std::time::Duration::from_millis(600));
@@ -95,7 +111,7 @@ fn make_lane(app: &tauri::App) {
                 break;
             }
         }
-        log::info!("island lane: {}", if kept { "in use" } else { "not kept free by this system; resting as a thin line" });
+        log::info!("island lane: {}", if kept { "in use" } else { "not kept free by this system (yet)" });
         let h = handle.clone();
         let _ = handle.run_on_main_thread(move || {
             let island = h.state::<Island>();
@@ -106,6 +122,16 @@ fn make_lane(app: &tauri::App) {
                 openhop_core::extras::lane::release(raw, LANE_TITLE);
                 if let Some(w) = h.get_webview_window("lane") {
                     let _ = w.destroy();
+                }
+                // Try again in a moment (an older copy of OpenHop may still
+                // have been holding its lane while quitting).
+                if attempt < 3 {
+                    let h2 = h.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(4));
+                        let h3 = h2.clone();
+                        let _ = h2.run_on_main_thread(move || make_lane(&h3, attempt + 1));
+                    });
                 }
             }
             let g = *island.geo.lock();
@@ -259,8 +285,36 @@ fn watch(handle: AppHandle) {
         let mut through: Option<bool> = None;
         let mut dwell: Option<std::time::Instant> = None;
         let mut checked = std::time::Instant::now();
+        let mut sure = std::time::Instant::now() - std::time::Duration::from_secs(60);
+        let mut can = true;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(30));
+            // Wayland: only with OpenHop's GNOME helper (it may start later).
+            #[cfg(target_os = "linux")]
+            if openhop_core::platform::linux_is_wayland() && sure.elapsed() > std::time::Duration::from_secs(3) {
+                sure = std::time::Instant::now();
+                let now = openhop_core::wins::gnome::available();
+                if now != can {
+                    can = now;
+                    let island = handle.state::<Island>();
+                    island.fit.lock().watch = now;
+                    log::info!("island follows the pointer itself: {now}");
+                    if let Some(w) = handle.get_webview_window("island") {
+                        let _ = w.set_ignore_cursor_events(false);
+                    }
+                    through = None;
+                    let g = *island.geo.lock();
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        if g.scale > 0.0 {
+                            place(&h, g.vis_w.max(20.0), g.vis_h.max(4.0));
+                        }
+                    });
+                }
+            }
+            if !can {
+                continue;
+            }
             let Some(win) = handle.get_webview_window("island") else { continue };
             let Some((mut px, mut py, button)) = probe.read() else { continue };
             let g = *handle.state::<Island>().geo.lock();
@@ -290,7 +344,9 @@ fn watch(handle: AppHandle) {
             let vw = g.vis_w * g.scale;
             let vh = g.vis_h * g.scale;
             let left = g.x as f64 + (g.w as f64 - vw) / 2.0;
-            let lip = g.vis_h <= 10.0;
+            // Resting outside a lane (a thin line, or a small pill under a
+            // top bar): clicks go through until the pointer rests on it.
+            let lip = handle.state::<Island>().fit.lock().lane.is_none() && !cfg!(target_os = "macos") && g.vis_h <= 30.0;
             // A thin lip is easy to miss: count the strip above it, and a bit to the sides.
             let pad = if lip { 14.0 * g.scale } else { 2.0 };
             let inside = (px as f64) >= left - pad
@@ -375,10 +431,16 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         }
     }
     place(app.handle(), PILL.0, PILL.1);
-    make_lane(app);
-    if watch_pointer {
-        watch(app.handle().clone());
-    }
+    // After older copies of OpenHop have quit (they may hold a lane).
+    let handle = app.handle().clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let h = handle.clone();
+        let _ = handle.run_on_main_thread(move || make_lane(&h, 0));
+    });
+    // Always: on Wayland it starts following the pointer once OpenHop's
+    // GNOME helper is there.
+    watch(app.handle().clone());
     Ok(())
 }
 

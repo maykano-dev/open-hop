@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.5
+
+### Fixed
+- **The island shrank to a thin line after an update or a restart.** Its lane was set up while the previous copy of OpenHop was still quitting (or before GNOME's helper had started at login), failed, and wasn't tried again. It now waits for older copies to quit and keeps trying until the lane is there.
+- **Without a lane the island is still visible**: a small pill instead of a thin line (clicks still go through it until the pointer rests on it).
+- On Wayland, the island starts following the pointer as soon as OpenHop's GNOME helper is running, without restarting OpenHop.
+
+
 ## v0.9.4
 
 ### Fixed
