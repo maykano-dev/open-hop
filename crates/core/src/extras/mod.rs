@@ -5,10 +5,12 @@
 //! The [`Hub`] lives next to the engine. It talks to other computers with
 //! [`Ext`] messages addressed by computer name (the server forwards them).
 
+pub mod apps;
+pub mod menus;
 pub mod system;
 
 use crate::platform::InjectOp;
-use crate::protocol::{Ext, MouseButton, Os, Patch, PcStatus, WinEvent, WinInfo};
+use crate::protocol::{AppEntry, ClipData, Ext, MouseButton, Os, Patch, PcStatus, ShelfItem, WinEvent, WinInfo};
 use crate::wins;
 use parking_lot::{Condvar, Mutex, RwLock};
 use serde::Serialize;
@@ -62,6 +64,36 @@ pub enum UiEvent {
         body: String,
         icon: String,
     },
+}
+
+/// Something copied on one of the computers (clipboard history).
+#[derive(Debug, Clone, Serialize)]
+pub struct ClipItem {
+    pub id: u64,
+    /// "text", "image" or "files".
+    pub kind: &'static str,
+    /// The text (shortened), or the file names.
+    pub text: String,
+    /// A small picture of an image, as a data: URL.
+    pub thumb: Option<String>,
+    pub from: String,
+    /// Seconds since 1970.
+    pub at: u64,
+    pub pinned: bool,
+}
+
+/// Shelf items from every computer.
+#[derive(Debug, Clone, Serialize)]
+pub struct ShelfEntry {
+    pub origin: String,
+    pub item: ShelfItem,
+}
+
+/// Apps from every computer (for the launcher).
+#[derive(Debug, Clone, Serialize)]
+pub struct AppsOf {
+    pub name: String,
+    pub apps: Vec<AppEntry>,
 }
 
 /// A computer at a glance, for the Control Center.
@@ -230,6 +262,15 @@ pub struct Hub {
     fullscreen: AtomicBool,
     /// We locked or woke this screen ourselves (not to be sent back).
     lock_expect: Mutex<Option<Instant>>,
+    /// What was copied lately on every computer, newest first, and the
+    /// content to copy again.
+    history: Mutex<Vec<(ClipItem, ClipData)>>,
+    /// Puts something on this computer's clipboard (set by the engine).
+    clip_setter: Mutex<Option<Box<dyn Fn(ClipData) + Send>>>,
+    /// Shelf items: this computer's own, and every other computer's.
+    shelves: Mutex<BTreeMap<String, Vec<ShelfItem>>>,
+    /// Installed apps on every computer.
+    apps: Mutex<BTreeMap<String, Vec<AppEntry>>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -268,6 +309,10 @@ impl Hub {
             pointer_here: AtomicBool::new(true),
             fullscreen: AtomicBool::new(false),
             lock_expect: Mutex::new(None),
+            history: Mutex::new(load_pins()),
+            clip_setter: Mutex::new(None),
+            shelves: Mutex::new(BTreeMap::new()),
+            apps: Mutex::new(BTreeMap::new()),
             stop: Arc::new(AtomicBool::new(false)),
         });
         let h = hub.clone();
@@ -328,13 +373,9 @@ impl Hub {
 
     /// Every computer at a glance, this one first.
     pub fn computers(&self) -> Vec<Computer> {
-        let online: BTreeSet<String> = self.lists.lock().keys().cloned().collect();
+        // Status arrives every couple of seconds (a window list can take longer).
         let stats = self.stats.lock();
-        let mut v: Vec<Computer> = stats
-            .iter()
-            .filter(|(n, _)| **n == self.me || online.contains(*n))
-            .map(|(n, st)| Computer { name: n.clone(), this: *n == self.me, status: st.clone() })
-            .collect();
+        let mut v: Vec<Computer> = stats.iter().map(|(n, st)| Computer { name: n.clone(), this: *n == self.me, status: st.clone() }).collect();
         v.sort_by_key(|c| (!c.this, c.name.clone()));
         v
     }
@@ -410,6 +451,166 @@ impl Hub {
 
     pub fn pointer_here(&self) -> bool {
         self.pointer_here.load(Ordering::SeqCst)
+    }
+
+    // ------------------------------------------------------ clipboard history
+
+    /// How the engine puts something on this computer's clipboard.
+    pub fn set_clip_setter(&self, f: Box<dyn Fn(ClipData) + Send>) {
+        *self.clip_setter.lock() = Some(f);
+    }
+
+    /// Something was copied (here, or on `from`).
+    pub fn clip_seen(&self, from: &str, data: &ClipData) {
+        let (kind, text, thumb) = match data {
+            ClipData::Text(t) => {
+                if t.trim().is_empty() {
+                    return;
+                }
+                ("text", t.chars().take(400).collect::<String>(), None)
+            }
+            ClipData::Png(png) => ("image", String::new(), thumbnail(png)),
+            ClipData::Files(paths) => {
+                let names: Vec<String> = paths.iter().filter_map(|p| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+                ("files", names.join(", "), None)
+            }
+        };
+        let mut h = self.history.lock();
+        // The same thing again (copied once more, or arriving from another computer): move it up.
+        if let Some(i) = h.iter().position(|(item, d)| item.kind == kind && same_clip(d, data)) {
+            let (mut item, d) = h.remove(i);
+            item.at = now_secs();
+            h.insert(0, (item, d));
+            return;
+        }
+        let item = ClipItem { id: crate::files::new_id() & ((1 << 52) - 1), kind, text, thumb, from: from.into(), at: now_secs(), pinned: false };
+        h.insert(0, (item, data.clone()));
+        // Keep 40 (pinned ones always), and the full pictures of the latest few only.
+        let mut kept = 0;
+        h.retain(|(item, _)| {
+            if item.pinned {
+                return true;
+            }
+            kept += 1;
+            kept <= 40
+        });
+        let mut images = 0;
+        for (item, d) in h.iter_mut() {
+            if let ClipData::Png(_) = d {
+                images += 1;
+                if images > 8 && !item.pinned {
+                    *d = ClipData::Text(String::new());
+                }
+            }
+        }
+        h.retain(|(item, d)| !(item.kind == "image" && matches!(d, ClipData::Text(t) if t.is_empty())));
+    }
+
+    pub fn clip_history(&self) -> Vec<ClipItem> {
+        self.history.lock().iter().map(|(i, _)| i.clone()).collect()
+    }
+
+    /// Copy an item from the history again (on this computer).
+    pub fn clip_use(&self, id: u64) {
+        let data = self.history.lock().iter().find(|(i, _)| i.id == id).map(|(_, d)| d.clone());
+        if let (Some(d), Some(set)) = (data, self.clip_setter.lock().as_ref()) {
+            set(d);
+        }
+    }
+
+    pub fn clip_pin(&self, id: u64, pinned: bool) {
+        {
+            let mut h = self.history.lock();
+            if let Some((item, _)) = h.iter_mut().find(|(i, _)| i.id == id) {
+                item.pinned = pinned;
+            }
+        }
+        self.save_pins();
+    }
+
+    pub fn clip_forget(&self, id: u64) {
+        self.history.lock().retain(|(i, _)| i.id != id);
+        self.save_pins();
+    }
+
+    fn save_pins(&self) {
+        let pins: Vec<(String, String)> = self
+            .history
+            .lock()
+            .iter()
+            .filter(|(i, _)| i.pinned)
+            .filter_map(|(i, d)| match d {
+                ClipData::Text(t) => Some((i.from.clone(), t.clone())),
+                _ => None,
+            })
+            .collect();
+        if let Some(path) = pins_path() {
+            let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+            let text: String = pins.iter().map(|(from, t)| format!("{}\t{}\n", esc(from), esc(t))).collect();
+            let _ = std::fs::write(path, text);
+        }
+    }
+
+    // ------------------------------------------------------ shelf
+
+    /// This computer put files on the shelf (served by offer `item.id`).
+    pub fn shelf_add(&self, item: ShelfItem) {
+        let list = {
+            let mut sh = self.shelves.lock();
+            let mine = sh.entry(self.me.clone()).or_default();
+            mine.insert(0, item);
+            mine.clone()
+        };
+        self.send("*", Ext::Shelf { items: list });
+    }
+
+    /// Take an item off the shelf (any computer's).
+    pub fn shelf_remove(&self, origin: &str, id: u64) {
+        if origin == self.me {
+            let list = {
+                let mut sh = self.shelves.lock();
+                let mine = sh.entry(self.me.clone()).or_default();
+                mine.retain(|i| i.id != id);
+                mine.clone()
+            };
+            self.send("*", Ext::Shelf { items: list });
+        } else {
+            if let Some(l) = self.shelves.lock().get_mut(origin) {
+                l.retain(|i| i.id != id);
+            }
+            self.send(origin, Ext::ShelfRemove { id });
+        }
+    }
+
+    pub fn shelf(&self) -> Vec<ShelfEntry> {
+        let sh = self.shelves.lock();
+        let online: BTreeSet<String> = self.stats.lock().keys().cloned().collect();
+        sh.iter()
+            .filter(|(o, _)| **o == self.me || online.contains(*o))
+            .flat_map(|(o, items)| items.iter().map(move |i| ShelfEntry { origin: o.clone(), item: i.clone() }))
+            .collect()
+    }
+
+    pub fn shelf_item(&self, origin: &str, id: u64) -> Option<ShelfItem> {
+        self.shelves.lock().get(origin).and_then(|l| l.iter().find(|i| i.id == id).cloned())
+    }
+
+    // ------------------------------------------------------ launcher
+
+    pub fn apps(&self) -> Vec<AppsOf> {
+        let mut v: Vec<AppsOf> = self.apps.lock().iter().map(|(n, a)| AppsOf { name: n.clone(), apps: a.clone() }).collect();
+        v.sort_by_key(|a| (a.name != self.me, a.name.clone()));
+        v
+    }
+
+    /// Open app `id` on computer `on`.
+    pub fn launch(&self, on: &str, id: &str) {
+        if on == self.me {
+            let id = id.to_string();
+            std::thread::spawn(move || apps::launch(&id));
+        } else {
+            self.send(on, Ext::Launch { id: id.into() });
+        }
     }
 
     /// A full-screen app is in front on computer `name` (this one: "").
@@ -507,6 +708,25 @@ impl Hub {
                 send_as(&origin, Ext::Windows { list });
             }
         }
+        // And how every computer is doing, its apps and its shelf.
+        let stats = self.stats.lock().clone();
+        for (origin, st) in stats {
+            if origin != name {
+                send_as(&origin, Ext::Status(st));
+            }
+        }
+        let apps = self.apps.lock().clone();
+        for (origin, list) in apps {
+            if origin != name {
+                send_as(&origin, Ext::Apps { list });
+            }
+        }
+        let shelves = self.shelves.lock().clone();
+        for (origin, items) in shelves {
+            if origin != name && !items.is_empty() {
+                send_as(&origin, Ext::Shelf { items });
+            }
+        }
         let quiet: Vec<String> = self.quiet_from.lock().iter().cloned().collect();
         for q in quiet {
             if q != name {
@@ -519,6 +739,8 @@ impl Hub {
     pub fn peer_left(&self, name: &str) {
         self.lists.lock().remove(name);
         self.stats.lock().remove(name);
+        self.apps.lock().remove(name);
+        self.shelves.lock().remove(name);
         self.quiet_from.lock().remove(name);
         self.update_dnd();
         let gone: Vec<u64> = self.viewers.lock().iter().filter(|(_, v)| v.origin == name).map(|(k, _)| *k).collect();
@@ -708,6 +930,19 @@ impl Hub {
                 std::thread::spawn(system::wake_display);
             }
             Ext::Locate => self.locate_here(),
+            Ext::Apps { list } => {
+                self.apps.lock().insert(from.into(), list);
+            }
+            Ext::Launch { id } => {
+                // Only apps from our own list.
+                if self.apps.lock().get(&self.me).map(|l| l.iter().any(|a| a.id == id)).unwrap_or(false) {
+                    std::thread::spawn(move || apps::launch(&id));
+                }
+            }
+            Ext::Shelf { items } => {
+                self.shelves.lock().insert(from.into(), items);
+            }
+            Ext::ShelfRemove { id } => self.shelf_remove(&self.me.clone(), id),
             Ext::Notice { title, body, icon } => self.notice_here(&title, &body, &icon),
             Ext::Theme { dark } => {
                 if self.settings.read().theme_sync && system::dark_mode() != Some(dark) {
@@ -1187,6 +1422,7 @@ impl Hub {
         let mut last_quiet = false;
         let mut tick = 0u64;
         let mut status_sent = Instant::now() - Duration::from_secs(60);
+        let mut apps_at = Instant::now() - Duration::from_secs(3600);
         let mut last_status: Option<PcStatus> = None;
         let mut disk = (system::disk(), Instant::now());
         // Battery warnings already given (thresholds), reset when plugged in.
@@ -1202,6 +1438,17 @@ impl Hub {
                 let list = wins::list();
                 self.lists.lock().insert(self.me.clone(), list.clone());
                 let resend = self.resend.swap(false, Ordering::SeqCst);
+                if resend || apps_at.elapsed() > Duration::from_secs(600) {
+                    // Installed apps (for the launcher), now and then.
+                    apps_at = Instant::now();
+                    let mine = apps::list();
+                    self.apps.lock().insert(self.me.clone(), mine.clone());
+                    if connected {
+                        self.send("*", Ext::Apps { list: mine });
+                        let shelf = self.shelves.lock().get(&self.me).cloned().unwrap_or_default();
+                        self.send("*", Ext::Shelf { items: shelf });
+                    }
+                }
                 if connected && (resend || last_list.as_ref() != Some(&list) || list_sent.elapsed() > Duration::from_secs(20)) {
                     self.send("*", Ext::Windows { list: list.clone() });
                     list_sent = Instant::now();
@@ -1323,6 +1570,88 @@ impl Hub {
             system::set_dnd(prev);
         }
     }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn same_clip(a: &ClipData, b: &ClipData) -> bool {
+    match (a, b) {
+        (ClipData::Text(x), ClipData::Text(y)) => x == y,
+        (ClipData::Png(x), ClipData::Png(y)) => x.len() == y.len() && x == y,
+        (ClipData::Files(x), ClipData::Files(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// A small PNG of a copied picture (for the history list), as a data: URL.
+fn thumbnail(png: &[u8]) -> Option<String> {
+    let img = image::load_from_memory(png).ok()?;
+    let small = img.thumbnail(160, 120);
+    let mut out = std::io::Cursor::new(Vec::new());
+    small.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(format!("data:image/png;base64,{}", base64(&out.into_inner())))
+}
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        s.push(T[(n >> 18) as usize & 63] as char);
+        s.push(T[(n >> 12) as usize & 63] as char);
+        s.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        s.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    s
+}
+
+/// Pinned clipboard items survive restarts (text only).
+fn pins_path() -> Option<std::path::PathBuf> {
+    Some(dirs::config_dir()?.join("openhop").join("clipboard-pins.txt"))
+}
+
+fn esc(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n")
+}
+
+fn unesc(s: &str) -> String {
+    let mut out = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            match it.next() {
+                Some('t') => out.push('\t'),
+                Some('n') => out.push('\n'),
+                Some(o) => out.push(o),
+                None => {}
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn load_pins() -> Vec<(ClipItem, ClipData)> {
+    let Some(text) = pins_path().and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
+    text.lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(from, t)| {
+            let t = unesc(t);
+            let item = ClipItem {
+                id: crate::files::new_id() & ((1 << 52) - 1),
+                kind: "text",
+                text: t.chars().take(400).collect(),
+                thumb: None,
+                from: unesc(from),
+                at: now_secs(),
+                pinned: true,
+            };
+            (item, ClipData::Text(t))
+        })
+        .collect()
 }
 
 /// Milliseconds clock for timing traces.

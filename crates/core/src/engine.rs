@@ -238,6 +238,20 @@ enum Control {
     Jump(Side),
     /// Keep the pointer on the screen it's on (or let it move again).
     Pin,
+    /// Send files to a computer ("*" = everyone).
+    SendFiles {
+        to: String,
+        paths: Vec<String>,
+    },
+    ShelfAdd(Vec<String>),
+    ShelfTake {
+        origin: String,
+        id: u64,
+    },
+    /// Move the pointer to this computer's screen.
+    GoTo(String),
+    /// Arrange these computers by moving the mouse toward each in turn.
+    Learn(Vec<String>),
 }
 
 /// Server-side pairing state: the current code and brute-force protection.
@@ -436,6 +450,31 @@ impl Engine {
     /// Keep the pointer on the screen it's on, or let it move again.
     pub fn pin(&self) {
         let _ = self.ctl.send(Control::Pin);
+    }
+
+    /// Send files to computer `to` ("*" = every computer).
+    pub fn send_files(&self, to: String, paths: Vec<String>) {
+        let _ = self.ctl.send(Control::SendFiles { to, paths });
+    }
+
+    /// Put files on the shelf, reachable from every computer.
+    pub fn shelf_add(&self, paths: Vec<String>) {
+        let _ = self.ctl.send(Control::ShelfAdd(paths));
+    }
+
+    /// Bring a shelf item here (it lands on the clipboard).
+    pub fn shelf_take(&self, origin: String, id: u64) {
+        let _ = self.ctl.send(Control::ShelfTake { origin, id });
+    }
+
+    /// Move the pointer to computer `name`'s screen.
+    pub fn go_to(&self, name: String) {
+        let _ = self.ctl.send(Control::GoTo(name));
+    }
+
+    /// Arrange the screens by moving the mouse toward each computer in turn.
+    pub fn learn(&self, names: Vec<String>) {
+        let _ = self.ctl.send(Control::Learn(names));
     }
 
     /// Forget a paired computer (it will need the code again).
@@ -701,11 +740,54 @@ struct Common {
 
 impl Common {
     fn new(ctx: Ctx, clip_set: Option<Sender<ClipData>>) -> Common {
+        if let Some(set) = clip_set.clone() {
+            // Clipboard history: copy an item again.
+            ctx.hub.set_clip_setter(Box::new(move |d| {
+                let _ = set.send(d);
+            }));
+        }
         Common { ctx, clip_set, assembler: ClipAssembler::default(), pending_offer: None, pending_note: None, dropped_at: None }
+    }
+
+    /// Files to send to computer `to` ("*" = everyone). Returns the message.
+    fn send_files(&mut self, to: &str, paths: &[String]) -> Option<Msg> {
+        let Some(Msg::FileOffer { offer, origin, files, .. }) = self.offer_local_files(paths, OfferKind::Send) else { return None };
+        let label = files::label_for(&files);
+        let whom = if to == "*" { "every computer".to_string() } else { to.to_string() };
+        self.ctx.hub.notice_everywhere(&format!("Sending {label}"), &format!("To {whom}."), "files");
+        Some(Msg::SendFiles { to: to.into(), offer, origin, files })
+    }
+
+    /// Put files on the shelf (kept offered until taken off).
+    fn shelf_add(&mut self, paths: &[String]) {
+        let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+        match files::collect(&paths) {
+            Ok(entries) if !entries.is_empty() => {
+                // Small enough for the island's JavaScript to keep exact.
+                let offer = files::new_id() & ((1 << 52) - 1);
+                let metas: Vec<FileMeta> = entries.iter().map(|e| e.meta.clone()).collect();
+                let item = crate::protocol::ShelfItem { id: offer, label: files::label_for(&metas), size: files::total_size(&metas), files: metas };
+                self.ctx.outbox.keep(offer, entries);
+                self.ctx.hub.shelf_add(item);
+            }
+            Ok(_) => {}
+            Err(e) => self.ctx.note(note("Couldn't put that on the shelf", e, vec![])),
+        }
+    }
+
+    /// Take a shelf item from another computer: it arrives on the clipboard.
+    fn shelf_take(&mut self, origin: &str, id: u64) -> Option<Msg> {
+        let Some(item) = self.ctx.hub.shelf_item(origin, id) else {
+            log::info!("shelf item {id} from {origin} is gone");
+            return None;
+        };
+        log::info!("taking {} from {origin}'s shelf", item.label);
+        self.request(id, origin.to_string(), OfferKind::Clipboard, item.files)
     }
 
     /// Clipboard content arrived from another computer.
     fn on_remote_clip(&mut self, origin: &str, data: ClipData, here: bool) {
+        self.ctx.hub.clip_seen(origin, &data);
         if let ClipData::Text(t) = &data {
             if is_link(t) {
                 let n = note(format!("Link copied on {origin}"), t.trim(), vec![action("Open", "open_url", t.trim())]);
@@ -755,6 +837,9 @@ impl Common {
             self.dropped_at = Some(Instant::now());
             self.ctx.hub.incoming(&files::label_for(&files), &origin);
         }
+        if kind == OfferKind::Send && self.ctx.hub.pointer_here() {
+            self.ctx.hub.incoming(&files::label_for(&files), &origin);
+        }
         self.request(offer, origin, kind, files)
     }
 
@@ -797,6 +882,15 @@ impl Common {
                     format!("Copied on {}. Paste it into a folder, chat or document, or find it in Downloads › OpenHop.", f.origin),
                     vec![action("Show in folder", "reveal", first)],
                 ));
+            }
+            OfferKind::Send => {
+                self.ctx.hub.landed(&label);
+                let mut actions = vec![];
+                if f.tops.len() == 1 && f.tops[0].is_file() {
+                    actions.push(action("Open", "open_path", first.clone()));
+                }
+                actions.push(action("Show in folder", "reveal", first));
+                self.ctx.note(note(format!("Received {label}"), format!("From {}. Saved to Downloads › OpenHop.", f.origin), actions));
             }
             OfferKind::Drop => {
                 // Drop the files into whatever is under the pointer, like a local
@@ -920,6 +1014,8 @@ struct Server {
     push: i32,
     shake: Shake,
     last_local: (i32, i32),
+    /// Arranging the screens by moving the mouse toward each of these in turn.
+    learning: Vec<String>,
 }
 
 impl Server {
@@ -1006,6 +1102,7 @@ impl Server {
             push: 0,
             shake: Shake::default(),
             last_local: (0, 0),
+            learning: vec![],
         };
         s.update_status();
         s.ctx.hub.set_screen(s.capture.screen());
@@ -1023,6 +1120,19 @@ impl Server {
                     Ok(Control::Pair { .. }) | Ok(Control::PairAddr { .. }) => {}
                     Ok(Control::Jump(side)) => s.jump(side),
                     Ok(Control::Pin) => s.toggle_pin(),
+                    Ok(Control::SendFiles { to, paths }) => {
+                        if let Some(m) = s.common.send_files(&to, &paths) {
+                            s.route_send(m, None);
+                        }
+                    }
+                    Ok(Control::ShelfAdd(paths)) => s.common.shelf_add(&paths),
+                    Ok(Control::ShelfTake { origin, id }) => {
+                        if let Some(req) = s.common.shelf_take(&origin, id) {
+                            s.send_to_name(&origin, req);
+                        }
+                    }
+                    Ok(Control::GoTo(name)) => s.go_to(&name),
+                    Ok(Control::Learn(names)) => s.start_learning(names),
                     Ok(Control::Stop) | Err(_) => break,
                 },
                 recv(pinger) -> _ => {
@@ -1299,6 +1409,25 @@ impl Server {
             Msg::SetLayout(l) => {
                 self.set_layout(l);
             }
+            Msg::SendFiles { to, offer, origin, files } => {
+                let me = self.me();
+                if to == me || to == "*" {
+                    if let Some(req) = self.common.on_offer(offer, origin.clone(), OfferKind::Send, files.clone(), here) {
+                        self.send_to_name(&origin, req);
+                    }
+                }
+                if to != me {
+                    self.route_send(Msg::SendFiles { to, offer, origin, files }, Some(id));
+                }
+            }
+            Msg::GoTo { name } => {
+                if self.driver.is_none() || self.driver == Some(id) {
+                    let target = if name == self.me() { SERVER.to_string() } else { name };
+                    self.drive_to(id, &target, Side::Left, 0.5);
+                    self.center_pointer();
+                }
+            }
+            Msg::Learn { names } => self.start_learning(names),
             _ => {}
         }
     }
@@ -1313,6 +1442,8 @@ impl Server {
     }
 
     fn on_local_clip(&mut self, c: ClipData) {
+        let me = self.me();
+        self.ctx.hub.clip_seen(&me, &c);
         match c {
             ClipData::Files(paths) => {
                 if let Some(offer) = self.common.offer_local_files(&paths, OfferKind::Clipboard) {
@@ -1352,10 +1483,11 @@ impl Server {
                     self.edge_wait = None;
                     return;
                 };
-                let Some(target) = self.ctx.cfg.layout.neighbor(SERVER, side).map(str::to_string) else {
-                    return;
-                };
                 let frac = edge_fraction(&screen, side, x, y);
+                let neighbor = self.ctx.cfg.layout.neighbor(SERVER, side).map(str::to_string);
+                if neighbor.is_none() && self.learning.is_empty() {
+                    return;
+                }
                 // Corners never hop; a full-screen game or video keeps the
                 // pointer; and the pointer rests a moment against the edge.
                 if self.pinned || !(CORNER..=1.0 - CORNER).contains(&frac) || self.ctx.hub.fullscreen("") {
@@ -1370,6 +1502,11 @@ impl Server {
                         return;
                     }
                 }
+                if !self.learning.is_empty() {
+                    self.learn_place(SERVER, side);
+                    return;
+                }
+                let Some(target) = neighbor else { return };
                 match self.peer_by_name(&target) {
                     Some(id) => {
                         self.start_local_drag_if_any();
@@ -1618,6 +1755,101 @@ impl Server {
         }
     }
 
+    // ---------- sending, launching, arranging
+
+    /// Pass "Send with OpenHop" files on to their computer (or everyone).
+    fn route_send(&mut self, m: Msg, from: Option<u64>) {
+        let Msg::SendFiles { to, .. } = &m else { return };
+        if to == "*" {
+            self.broadcast(&m, from);
+        } else {
+            let to = to.clone();
+            self.send_to_name(&to, m);
+        }
+    }
+
+    /// Put the pointer in the middle of the screen it's on.
+    fn center_pointer(&mut self) {
+        match self.active {
+            Some((THIS, _, _)) => {
+                let r = self.capture.screen();
+                let (x, y) = (r.w / 2, r.h / 2);
+                self.local_move(x, y);
+                self.active = Some((THIS, x, y));
+            }
+            Some((id, _, _)) => {
+                let Some((w, h)) = self.peers.get(&id).map(|p| (p.screen.w, p.screen.h)) else { return };
+                self.active = Some((id, w / 2, h / 2));
+                self.send(id, Msg::Move { x: w / 2, y: h / 2 });
+            }
+            None => {
+                if self.driver.is_none() {
+                    let (cx, cy) = self.capture.screen().center();
+                    self.injected.add((cx, cy));
+                    self.capture.release(cx, cy);
+                }
+            }
+        }
+    }
+
+    /// Move the pointer to computer `name`'s screen (from the launcher).
+    fn go_to(&mut self, name: &str) {
+        if let Some(c) = self.driver {
+            let target = if name == self.me() { SERVER.to_string() } else { name.to_string() };
+            self.drive_to(c, &target, Side::Left, 0.5);
+            self.center_pointer();
+            return;
+        }
+        if name == self.me() {
+            if self.active.is_some() {
+                self.go_local(Side::Left, 0.5);
+            }
+        } else if let Some(id) = self.peer_by_name(name) {
+            self.enter(id, Side::Left, 0.5);
+        }
+        self.center_pointer();
+    }
+
+    fn start_learning(&mut self, names: Vec<String>) {
+        let me = self.me();
+        self.learning = names.into_iter().filter(|n| *n != me && n != SERVER).collect();
+        if let Some(first) = self.learning.first().cloned() {
+            self.ctx.hub.notice_everywhere(&format!("Move the pointer toward {first}"), "Push it against the screen edge on the side where it stands.", "pin");
+        }
+    }
+
+    /// The pointer was pushed against `next_to`'s edge on `side`: the
+    /// computer being arranged stands there.
+    fn learn_place(&mut self, next_to: &str, side: Side) {
+        if self.learning.is_empty() {
+            return;
+        }
+        let name = self.learning.remove(0);
+        let (x, y) = if next_to == SERVER { (0, 0) } else { self.ctx.cfg.layout.position(next_to).unwrap_or((0, 0)) };
+        let (dx, dy) = match side {
+            Side::Left => (-1, 0),
+            Side::Right => (1, 0),
+            Side::Top => (0, -1),
+            Side::Bottom => (0, 1),
+        };
+        let mut layout = self.ctx.cfg.layout.clone();
+        layout.place(&name, x + dx, y + dy);
+        self.set_layout(layout);
+        let word = match side {
+            Side::Left => "left",
+            Side::Right => "right",
+            Side::Top => "above",
+            Side::Bottom => "below",
+        };
+        let at = if next_to == SERVER { "this computer".to_string() } else { next_to.to_string() };
+        let body = match self.learning.first() {
+            Some(n) => format!("Now move the pointer toward {n}."),
+            None => "All set: move the pointer across to hop.".to_string(),
+        };
+        let pos = if word == "above" || word == "below" { format!("is {word} {at}") } else { format!("is to the {word} of {at}") };
+        self.ctx.hub.notice_everywhere(&format!("{name} {pos}"), &body, "pin");
+    }
+
     // ---------- any computer drives the others
 
     /// Let go of keys and buttons another computer held on this screen.
@@ -1667,7 +1899,30 @@ impl Server {
         if self.driver == Some(c) {
             return;
         }
+        // Arranging the screens: this tells where the next computer is.
+        if !self.learning.is_empty() {
+            self.learn_place(&cname, side);
+            return;
+        }
         let Some(target) = self.ctx.cfg.layout.neighbor(&cname, side).map(str::to_string) else { return };
+        self.drive_to(c, &target, side, frac);
+    }
+
+    /// Client `c`'s keyboard and mouse drive onto screen `target` (SERVER: this one).
+    fn drive_to(&mut self, c: u64, target: &str, side: Side, frac: f64) {
+        let Some(cname) = self.peers.get(&c).map(|p| p.name.clone()) else { return };
+        if target == cname {
+            // Home: its own keyboard and mouse work there directly.
+            if self.driver == Some(c) {
+                self.drive_leave();
+                let (cw, ch) = self.peers.get(&c).map(|p| (p.screen.w, p.screen.h)).unwrap_or((0, 0));
+                self.send(c, Msg::DriveStop { x: cw / 2, y: ch / 2 });
+                self.driver = None;
+                self.update_status();
+            }
+            return;
+        }
+        let target = target.to_string();
         let to_peer = if target == SERVER { None } else { Some(self.peer_by_name(&target)) };
         if to_peer == Some(None) {
             self.maybe_wake(&target);
@@ -2623,6 +2878,7 @@ impl Client {
                     Err(_) => break Err(anyhow!("connection lost")),
                 },
                 recv(clip_rx) -> c => if let Ok(c) = c {
+                    self.ctx.hub.clip_seen(&self.ctx.cfg.name, &c);
                     match c {
                         ClipData::Files(paths) => {
                             if let Some(offer) = self.common.offer_local_files(&paths, OfferKind::Clipboard) {
@@ -2657,6 +2913,23 @@ impl Client {
                         // The arrangement is kept by the hub: change it there.
                         self.ctx.status.lock().layout = l.clone();
                         link.send(Msg::SetLayout(l));
+                    }
+                    Ok(Control::SendFiles { to, paths }) => {
+                        if let Some(m) = self.common.send_files(&to, &paths) {
+                            link.send(m);
+                        }
+                    }
+                    Ok(Control::ShelfAdd(paths)) => self.common.shelf_add(&paths),
+                    Ok(Control::ShelfTake { origin, id }) => {
+                        if let Some(req) = self.common.shelf_take(&origin, id) {
+                            link.send(req);
+                        }
+                    }
+                    Ok(Control::GoTo(name)) => {
+                        link.send(Msg::GoTo { name });
+                    }
+                    Ok(Control::Learn(names)) => {
+                        link.send(Msg::Learn { names });
                     }
                 },
                 recv(self.cap_rx) -> ev => if let Ok(ev) = ev { self.on_local_input(ev, screen, &link) },
@@ -2824,6 +3097,12 @@ impl Client {
             }
             Msg::FileOffer { offer, origin, kind, files } => {
                 if let Some(req) = self.common.on_offer(offer, origin, kind, files, self.here) {
+                    link.send(req);
+                }
+                Ok(())
+            }
+            Msg::SendFiles { offer, origin, files, .. } => {
+                if let Some(req) = self.common.on_offer(offer, origin, OfferKind::Send, files, self.here) {
                     link.send(req);
                 }
                 Ok(())

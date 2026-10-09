@@ -84,9 +84,78 @@
     body.attached .panel { padding-top: 12px; }
 
     .head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-    .head .title { flex: 1; min-width: 0; }
-    .head h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -.02em; }
-    .head p { margin: 1px 0 0; font-size: 12px; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status { margin: 0 2px 14px; font-size: 12.5px; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Segmented control: a thumb that glides between the tabs. */
+    .seg { position: relative; flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); background: var(--glass); border-radius: 10px; padding: 2px; }
+    .seg button { position: relative; z-index: 1; font-size: 12.5px; font-weight: 600; color: var(--soft); height: 28px; border-radius: 8px; transition: color .2s; }
+    .seg button[aria-selected="true"] { color: var(--ink); }
+    .seg button:not([aria-selected="true"]):hover { color: var(--ink); }
+    .seg-thumb { position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc((100% - 4px) / 4); border-radius: 8px; background: rgba(255, 255, 255, .17);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, .35); transition: transform .38s var(--spring); }
+
+    .view { display: none; }
+    .view.on { display: block; animation: viewIn .32s var(--ease); }
+    @keyframes viewIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .foot { margin: 12px 2px 0; font-size: 11.5px; color: var(--faint); line-height: 1.4; }
+
+    .search { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border-radius: 11px; background: var(--glass); margin-bottom: 10px; }
+    .search:focus-within { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 85%, transparent); }
+    .search svg { width: 15px; height: 15px; color: var(--faint); display: block; }
+    .search input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; color: var(--ink); font: inherit; font-size: 13.5px; }
+    .search input::placeholder { color: var(--faint); }
+
+    .list { max-height: 296px; overflow-y: auto; margin: 0 -6px; padding: 0 6px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.2) transparent; }
+    .row { box-sizing: border-box; display: flex; align-items: center; gap: 11px; width: 100%; text-align: left; padding: 8px 9px; border-radius: 12px; position: relative; }
+    .row:hover, .row.sel { background: var(--glass); }
+    .row.sel { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
+    .row .lead { width: 34px; height: 34px; border-radius: 9px; flex: none; display: grid; place-items: center; background: var(--glass-hi); color: var(--soft); overflow: hidden; }
+    .row .lead svg { width: 17px; height: 17px; }
+    .row .lead img { width: 100%; height: 100%; object-fit: cover; }
+    .row .lead.app { color: #fff; font-weight: 700; font-size: 15px; }
+    .row .body { flex: 1; min-width: 0; }
+    .row .main { font-size: 13px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+    .apps .row .main { -webkit-line-clamp: 1; font-weight: 600; }
+    .row .meta { font-size: 11px; color: var(--faint); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row .tail { display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
+    .row:hover .tail, .row.sel .tail, .row .tail .on { opacity: 1; }
+    .row .tail button { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; color: var(--soft); }
+    .row .tail button:hover { background: var(--glass-hi); color: var(--ink); }
+    .row .tail button.on { color: var(--warn); }
+    .row .tail svg { width: 14px; height: 14px; }
+    .row .where { font-size: 11px; color: var(--soft); padding: 3px 8px; border-radius: 999px; background: var(--glass); white-space: nowrap; flex: none; }
+    .row.done { animation: done .5s var(--ease); }
+    @keyframes done { 40% { background: color-mix(in srgb, var(--good) 30%, transparent); } }
+
+    .chips { display: flex; gap: 6px; margin-bottom: 8px; overflow-x: auto; scrollbar-width: none; }
+    .chips button { font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: 999px; background: var(--glass); color: var(--soft); white-space: nowrap; }
+    .chips button.on { background: var(--ink); color: #000; }
+
+    .shelf { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; min-height: 120px; }
+    .tile { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 6px 10px; border-radius: 16px; background: var(--glass); text-align: center; }
+    .tile:hover { background: var(--glass-hi); }
+    .tile .doc { width: 38px; height: 46px; border-radius: 6px 12px 6px 6px; display: grid; place-items: center; font-size: 10px; font-weight: 800; letter-spacing: .02em; color: #fff; }
+    .tile .n { font-size: 12px; font-weight: 600; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tile .o { font-size: 10.5px; color: var(--faint); width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tile .x { position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; border-radius: 50%; background: #3a3a3c; color: var(--ink); display: grid; place-items: center; opacity: 0; transform: scale(.7); transition: opacity .15s, transform .25s var(--spring); }
+    .tile:hover .x { opacity: 1; transform: none; }
+    .tile .x svg { width: 10px; height: 10px; }
+    .tile.busy { animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .55; } }
+    .shelf .blank { grid-column: 1 / -1; display: grid; place-items: center; gap: 8px; border: 1.5px dashed rgba(255, 255, 255, .18); border-radius: 18px; padding: 22px 10px; color: var(--soft); font-size: 12.5px; text-align: center; }
+    .shelf .blank svg { width: 26px; height: 26px; color: var(--faint); }
+
+    body.dropping .head { display: none; }
+    .drop-title { margin: 6px 2px 2px; font-size: 17px; font-weight: 700; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .targets { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
+    .target { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px 8px 12px; border-radius: 18px; background: var(--glass); font-size: 12.5px; font-weight: 600;
+      transition: transform .3s var(--spring), background .2s, box-shadow .2s; }
+    .target svg { width: 30px; height: 30px; color: var(--soft); transition: color .2s; }
+    .target.hot { background: color-mix(in srgb, var(--accent) 32%, transparent); transform: scale(1.06); box-shadow: inset 0 0 0 1.5px var(--accent); }
+    .target.hot svg { color: #fff; }
+    .pc { text-align: left; color: inherit; }
+    .pc.go { cursor: default; }
+    .pc.go:hover { background: var(--glass-hi); }
     .iconbtn { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--glass); color: var(--soft); }
     .iconbtn:hover { background: var(--glass-hi); color: var(--ink); }
     .iconbtn svg { width: 16px; height: 16px; }
@@ -139,7 +208,8 @@
     .empty { font-size: 12px; color: var(--faint); padding: 4px 2px 0; }
 
     @media (prefers-reduced-motion: reduce) {
-      .island, .rest, .act, .panel, .ctl .disc { transition-duration: .01s !important; transition-delay: 0s !important; }
+      .island, .rest, .act, .panel, .ctl .disc, .seg-thumb, .target, .tile .x { transition-duration: .01s !important; transition-delay: 0s !important; }
+      .view.on, .row.done, .tile.busy { animation: none; }
     }
   </style>
 </head>
@@ -156,18 +226,52 @@
     </div>
     <div class="panel" id="panel">
       <div class="head">
-        <div class="title"><h1 id="headTitle">OpenHop</h1><p id="headSub"></p></div>
+        <div class="seg" id="tabs" role="tablist">
+          <i class="seg-thumb" id="segThumb"></i>
+          <button role="tab" data-tab="home">Home</button>
+          <button role="tab" data-tab="clips">Clipboard</button>
+          <button role="tab" data-tab="shelf">Shelf</button>
+          <button role="tab" data-tab="open">Open</button>
+        </div>
         <button class="iconbtn" id="openApp" title="Open OpenHop" aria-label="Open OpenHop"></button>
       </div>
-      <div class="controls">
-        <button class="ctl" id="cFocus"><span class="disc"></span><span class="lbl">Focus</span></button>
-        <button class="ctl" id="cFind"><span class="disc"></span><span class="lbl">Find pointer</span></button>
-        <button class="ctl" id="cLock"><span class="disc"></span><span class="lbl">Lock all</span></button>
-        <button class="ctl" id="cSleep"><span class="disc"></span><span class="lbl">Sleep all</span></button>
-      </div>
-      <div class="pcs" id="pcs"></div>
-      <div class="section" id="winsTitle">Windows on your other computers</div>
-      <div class="wins" id="wins"></div>
+
+      <section class="view" data-view="home">
+        <p class="status" id="headSub"></p>
+        <div class="controls">
+          <button class="ctl" id="cFocus"><span class="disc"></span><span class="lbl">Focus</span></button>
+          <button class="ctl" id="cFind"><span class="disc"></span><span class="lbl">Find pointer</span></button>
+          <button class="ctl" id="cLock"><span class="disc"></span><span class="lbl">Lock all</span></button>
+          <button class="ctl" id="cSleep"><span class="disc"></span><span class="lbl">Sleep all</span></button>
+        </div>
+        <div class="pcs" id="pcs"></div>
+        <div class="section" id="winsTitle">Windows on your other computers</div>
+        <div class="wins" id="wins"></div>
+      </section>
+
+      <section class="view" data-view="clips">
+        <label class="search"><span id="clipGlass"></span><input id="clipQuery" placeholder="Search everything you copied" spellcheck="false" autocomplete="off"></label>
+        <div class="list" id="clipList"></div>
+        <p class="foot">Pick one to copy it again, on any computer. Ctrl+Alt+V opens this list.</p>
+      </section>
+
+      <section class="view" data-view="shelf">
+        <div class="shelf" id="shelfGrid"></div>
+        <p class="foot">Drop files on the island to keep them here. Click one from another computer to copy it to this one.</p>
+      </section>
+
+      <section class="view" data-view="open">
+        <label class="search"><span id="openGlass"></span><input id="appQuery" placeholder="Open an app on any computer" spellcheck="false" autocomplete="off"></label>
+        <div class="chips" id="appWhere"></div>
+        <div class="list apps" id="appList"></div>
+        <p class="foot">Opening an app on another computer moves the pointer there. Ctrl+Alt+O opens this search.</p>
+      </section>
+
+      <section class="view" data-view="drop">
+        <h2 class="drop-title" id="dropTitle">Send</h2>
+        <p class="status">Let go over a computer to send it there, or anywhere else to keep it on the shelf.</p>
+        <div class="targets" id="dropTargets"></div>
+      </section>
     </div>
   </div>
   <script src="island.js"></script>

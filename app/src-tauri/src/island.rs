@@ -127,6 +127,17 @@ pub fn toggle(handle: &AppHandle) {
     }
 }
 
+/// Open the island on one of its tabs ("clips", "open"), or close it.
+pub fn show_tab(handle: &AppHandle, tab: &str) {
+    if let Some(w) = handle.get_webview_window("island") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        // Keyboard focus inside the page too, so typing goes to its search.
+        let _ = AsRef::<tauri::Webview>::as_ref(&w).set_focus();
+        let _ = tauri::Emitter::emit_to(&w, "island", "tab", tab);
+    }
+}
+
 pub fn push(handle: &AppHandle, a: Activity) {
     let island = handle.state::<Island>();
     let mut q = island.activities.lock();

@@ -87,6 +87,10 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 📁 **Copy & paste files** | Copy files, folders or videos in Explorer, Finder or Files, hop over, and paste: the real files arrive, not a path. A copied picture file pastes as a picture too, into chats, documents and image editors. |
 | 🫳 **Drag & drop files across screens** | Drag files off one computer's screen and drop them into a folder or app on another's, just like a local drag. |
 | 🏝 **The island** | A small pill at the top of the screen (around a MacBook's notch) that opens into the Control Center: Focus for every computer, Find My Pointer, Lock All, Sleep All, every computer's battery and storage, and their windows. Notifications and "plug in your laptop" warnings pop out of it on the screen you're using. |
+| 📤 **Send with OpenHop** | Right-click files in Explorer, Finder, Files, Dolphin, Nemo, Thunar or Caja and choose **Send with OpenHop** › a computer (or all of them, or the shelf). OpenHop doesn't need to be open. On Windows it's also in **Send to**; on a Mac it's a Quick Action. |
+| 🗂 **Clipboard history** | Everything copied on any computer, searchable, in the island (**Ctrl+Alt+V**). Pick one to copy it again; pin the ones you want to keep. |
+| 🧺 **Shelf** | Drop files on the island to keep them within reach of every computer, then take them from any of them. Or drop them on a computer's name to send them there. |
+| 🚀 **Open anything, anywhere** | **Ctrl+Alt+O** searches the apps on every computer and opens one where it lives; the pointer goes there. |
 | ⌨️ **Shortcuts** | Ctrl+Alt+Space opens the Control Center. Ctrl+Alt+Shift+arrows jump to the next screen; Ctrl+Alt+Shift+L keeps the pointer where it is. Shake the mouse to find the pointer. |
 | 🎮 **Game guard** | A full-screen game or video keeps the pointer on its screen. Corners never hop, and the pointer rests a moment at an edge first, so you don't hop by accident. |
 | 🪟 **Windows from any computer** | The Control Center (**Ctrl+Alt+Space**, or hover the island) shows the open windows of every computer. Click one and it opens live on the computer you're using, with its own title bar: you see it update and can click, scroll and type in it. Or just drag a window by its title bar off the screen edge, and drag it back the same way. |
@@ -103,7 +107,7 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 🔌 **No router needed** | Join two computers with an Ethernet, USB-C or Thunderbolt cable and they connect directly, while each keeps its own Wi-Fi. |
 | 🐢 **Bandwidth friendly** | Mouse and keyboard use under 0.1 Mbps. Big file transfers can be capped with **Speed Limit** so they never hog your Wi-Fi. |
 | ⬆️ **One-click updates** | **Check for Updates** downloads and installs the new version for you. |
-| 🗺 **Drag-and-drop arrangement** | Arrange screens the way they sit on your desk: left, right, above, below, or chained (A → B → C). |
+| 🗺 **Drag-and-drop arrangement** | Arrange screens the way they sit on your desk: left, right, above, below, or chained (A → B → C). Or choose **Arrange by moving the mouse** and push the pointer toward each computer. |
 | 🖥 **Multi-monitor aware** | Each computer's full desktop (all of its monitors) counts as one screen. |
 | 🌗 **Native-feeling app** | An Apple-inspired settings window and iOS-style notifications, in light and dark mode. It keeps running in the system tray. |
 | 🛟 **Resilient connections** | Mouse and keyboard travel on a priority lane that never waits behind a file transfer, and a computer that sleeps or drops off Wi-Fi is detected and reconnected automatically. |
@@ -287,6 +291,10 @@ Update **every computer** to the same version: computers only connect to others 
   <img src="docs/screenshots/toast-dark.png" width="40%" alt="Notifications for a copied link and a received file (dark)">
 </p>
 
+- **Send with OpenHop:** select files or folders in your file manager, right-click, and choose **Send with OpenHop** › the computer's name (**All Computers** sends to every one, **Put on the Shelf** keeps them on the shelf). On Windows 11 it's under **Show more options**, and also in **Send to**; on a Mac, under **Quick Actions** (or **Services**). The menu lists every computer OpenHop has seen and updates itself. Files arrive in `Downloads/OpenHop`. On Linux the menu is added for Files (Nautilus), Dolphin, Nemo, Thunar and Caja.
+- **Clipboard history:** press **Ctrl+Alt+V** (or open the island's **Clipboard** tab) to see what was copied on every computer. Type to search, use the arrow keys and Enter (or click) to copy one again, pin one to keep it.
+- **Shelf:** drag files onto the island. While you drag it opens: let go over a computer's name to send them there, or anywhere else to put them on the shelf. The shelf (in the island) lists what's on every computer's shelf; click one from another computer and it's copied here, onto the clipboard, ready to paste.
+- **Open an app anywhere:** **Ctrl+Alt+O**, type a few letters, Enter. Apps from every computer are listed; one on another computer opens there and the pointer moves to it. Clicking another computer's card in the island's **Home** tab moves the pointer there too.
 - **Links:** copy a web link on one computer. When you move to another, a notification offers to open it there.
 - **Waking a sleeping computer:** pushing the pointer toward a computer that's asleep sends it a Wake-on-LAN packet. Its tile shows **Asleep** in the arrangement. Wake-on-LAN must be enabled on that computer: in the BIOS/UEFI and network adapter settings on PCs, or with **Wake for network access** on Macs (works when plugged in). It works best over Ethernet.
 - **Connect once:** you don't need to keep the window open, or open OpenHop again after a restart. Closing the window hides OpenHop to the tray or menu bar and sharing carries on, and it starts by itself (in the background, already connected) every time you sign in. It stays that way until you switch it off with the switch at the top of its window (or **Turn OpenHop Off** in the tray menu).
@@ -537,6 +545,8 @@ open-hop/
 
 ## Roadmap
 
+**Done in v0.8:** Send with OpenHop in every file manager's right-click menu, clipboard history, the shelf, open apps on any computer, drop files on the island, arrange by moving the mouse.
+
 **Done in v0.7:** the island and Control Center, Focus everywhere, low-battery warnings on the screen you're using, lock and sleep together, find my pointer, shortcuts, game guard, edge comfort.
 
 **Done in v0.6:** every computer's keyboard and mouse work on every screen (no more "control" or "be controlled"), one pointer at a time, live windows that maximize to the screen they're on, smoother scrolling and typing next to live windows.
@@ -553,9 +563,8 @@ open-hop/
 
 - [ ] **Wayland as server** via the XDG InputCapture portal (GNOME 45+, KDE 6+), plus drag-out from Wayland apps
 - [ ] **Built-in wireless link** without any network: Wi-Fi Direct (Windows and Linux have APIs, macOS doesn't) or a Bluetooth RFCOMM/L2CAP transport (needs a separate implementation for each OS's Bluetooth stack)
-- [ ] **Hotkeys**: jump to a screen, or lock the pointer to the current one
 - [ ] **Keep awake / smart sleep**: keep controlled computers awake while connected, and let an idle one sleep while the others stay up
-- [ ] **Universal launcher** (`Ctrl+Space`): search apps and files on every connected computer and launch them where they live
+- [ ] **Shared folder**, **notifications in one place**, **audio follows you**, a **whole-screen view** of another computer, and a **phone companion** (a web page opened from a QR code) are planned for v0.9
 - [ ] Per-monitor edges (cross from any monitor, not just the desktop's outer edge)
 - [ ] Code-signed and notarised builds (needs paid Apple and Windows signing certificates)
 

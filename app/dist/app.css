@@ -110,6 +110,8 @@ h1 { margin: 0; font-size: 32px; font-weight: 700; letter-spacing: -0.025em; }
 .footer { margin: 7px 16px 0; font-size: 13px; color: var(--secondary); }
 .footer.center { text-align: center; }
 .footer:empty { display: none; }
+.learn-row { margin: 2px 16px 0; }
+.learn-row .link { font-size: 13px; }
 
 .row { display: flex; align-items: center; gap: 12px; min-height: 46px; padding: 6px 16px; position: relative; cursor: default; }
 .row + .row::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; height: 0.5px; background: var(--separator); }

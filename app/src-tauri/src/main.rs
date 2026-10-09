@@ -2,6 +2,8 @@
 
 mod island;
 mod live;
+mod send;
+mod tools;
 mod updater;
 
 use openhop_core::engine::{Note, NoteAction};
@@ -412,6 +414,7 @@ fn pair_addr(app: State<App>, addr: String, code: String) -> Result<(), String> 
 
 #[tauri::command]
 fn forget(app: State<App>, device: String) -> Result<(), String> {
+    send::forget_all();
     // Leaving the group this computer joined: it stands on its own again
     // (others can join it).
     let leaving = {
@@ -508,7 +511,11 @@ fn main() {
     tauri::Builder::default()
         // Only one copy may run (it owns the network port); opening OpenHop
         // again just brings the existing window forward.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            // "Send with OpenHop" from the file manager: no window needed.
+            if send::queue(app, &args, std::path::Path::new(&cwd)) {
+                return;
+            }
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 let _ = w.unminimize();
@@ -533,6 +540,8 @@ fn main() {
                         Code::ArrowUp => engine.as_ref().map(|e| e.jump(Side::Top)).unwrap_or(()),
                         Code::ArrowDown => engine.as_ref().map(|e| e.jump(Side::Bottom)).unwrap_or(()),
                         Code::KeyL => engine.as_ref().map(|e| e.pin()).unwrap_or(()),
+                        Code::KeyV => island::show_tab(app, "clips"),
+                        Code::KeyO => island::show_tab(app, "open"),
                         _ => {}
                     }
                 })
@@ -540,6 +549,7 @@ fn main() {
         )
         .manage(state)
         .manage(island::Island::default())
+        .manage(send::Outgoing::default())
         .invoke_handler(tauri::generate_handler![
             snapshot,
             save_config,
@@ -575,7 +585,18 @@ fn main() {
             island::overview,
             live::viewer_log,
             live::viewer_fit,
-            live::viewer_title
+            live::viewer_title,
+            tools::tools_state,
+            tools::clip_use,
+            tools::clip_pin,
+            tools::clip_forget,
+            tools::shelf_put,
+            tools::shelf_take,
+            tools::shelf_remove,
+            tools::app_launch,
+            tools::go_to,
+            tools::send_paths,
+            tools::learn_layout
         ])
         .setup(move |app| {
             // Keep sharing in the background: closing the window hides it to the tray.
@@ -643,6 +664,8 @@ fn main() {
                     Shortcut::new(Some(all), Code::ArrowUp),
                     Shortcut::new(Some(all), Code::ArrowDown),
                     Shortcut::new(Some(all), Code::KeyL),
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyV),
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyO),
                 ];
                 for sc in keys {
                     if let Err(e) = app.global_shortcut().register(sc) {
@@ -657,8 +680,14 @@ fn main() {
                 let h = handle.clone();
                 let _ = handle.run_on_main_thread(move || live::pump(&h));
             });
+            // Started from the file manager's "Send with OpenHop": send, and
+            // stay in the tray like at login.
+            let args: Vec<String> = std::env::args().collect();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let sending = send::queue(app.handle(), &args, &cwd);
+            send::start(app.handle().clone());
             // Started at login: stay in the tray.
-            if std::env::args().any(|a| a == "--hidden") {
+            if sending || std::env::args().any(|a| a == "--hidden") {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
                 }

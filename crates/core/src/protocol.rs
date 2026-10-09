@@ -4,7 +4,7 @@
 use crate::layout::{Layout, Side};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -91,6 +91,9 @@ pub enum OfferKind {
     Clipboard,
     /// Dragged across screens and dropped: save and offer to open.
     Drop,
+    /// Sent to this computer on purpose ("Send with OpenHop"): save it in
+    /// Downloads and say so.
+    Send,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -247,6 +250,23 @@ pub enum Msg {
     },
     /// Client -> server: change the arrangement.
     SetLayout(Layout),
+    /// Files sent to one computer ("Send with OpenHop"), or to everyone
+    /// ("*"). The server passes it on.
+    SendFiles {
+        to: String,
+        offer: u64,
+        origin: String,
+        files: Vec<FileMeta>,
+    },
+    /// Client -> server: move the pointer to computer `name`'s screen.
+    GoTo {
+        name: String,
+    },
+    /// Client -> server: arrange these computers by moving the mouse
+    /// toward each in turn.
+    Learn {
+        names: Vec<String>,
+    },
 
     /// Everything beyond keyboard, mouse, clipboard and files, addressed by
     /// computer name. `to` is "*" for everyone. The server forwards these.
@@ -415,6 +435,39 @@ pub enum Ext {
         body: String,
         icon: String,
     },
+    /// The sender's installed apps (for the launcher).
+    Apps {
+        list: Vec<AppEntry>,
+    },
+    /// Open one of your apps (`id` from [`Ext::Apps`]).
+    Launch {
+        id: String,
+    },
+    /// The files the sender keeps on the shelf (its whole list).
+    Shelf {
+        items: Vec<ShelfItem>,
+    },
+    /// Take this item off your shelf.
+    ShelfRemove {
+        id: u64,
+    },
+}
+
+/// An app that can be opened from the launcher.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppEntry {
+    pub id: String,
+    pub name: String,
+}
+
+/// Files kept on the shelf: reachable from every computer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShelfItem {
+    /// The file offer that serves them.
+    pub id: u64,
+    pub label: String,
+    pub size: u64,
+    pub files: Vec<FileMeta>,
 }
 
 /// A computer's state at a glance.

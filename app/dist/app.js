@@ -11,6 +11,7 @@ let snap = null;      // last snapshot from the backend
 let form = null;      // editable copy of the config
 let dirty = false;
 let dragging = null;
+let learning = null;  // arranging by moving the mouse
 
 // ------------------------------------------------------------------ helpers
 
@@ -280,7 +281,8 @@ function renderStatus() {
   $("grid").hidden = false;
   $("clientView").hidden = true;
   $("stageTitle").textContent = "Arrangement";
-  $("stageHint").textContent = "Drag screens to match where they sit on your desk. Then move any computer's pointer off an edge to hop across, with its own keyboard.";
+  if (!learning) $("stageHint").textContent = "Drag screens to match where they sit on your desk. Then move any computer's pointer off an edge to hop across, with its own keyboard.";
+  $("learnBtn").hidden = !(running && st.peers.length);
   renderRole();
 }
 
@@ -451,6 +453,17 @@ async function submitPair() {
 $("pairCancel").addEventListener("click", closePair);
 $("pairGo").addEventListener("click", submitPair);
 $("byAddr").addEventListener("click", () => openPair(null));
+// Arrange by moving the mouse: push the pointer toward each computer in turn.
+$("learnBtn").addEventListener("click", async () => {
+  try {
+    await invoke("learn_layout");
+    $("stageHint").textContent = "Push the pointer against the edge of this screen on the side where the computer named at the top of the screen stands. Repeat for each one.";
+    clearTimeout(learning);
+    learning = setTimeout(() => { learning = null; renderStatus(); }, 45000);
+  } catch (e) {
+    $("stageHint").textContent = String(e);
+  }
+});
 for (const id of ["pairInput", "addrInput"]) {
   $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") submitPair(); if (e.key === "Escape") closePair(); });
 }

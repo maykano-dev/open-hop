@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.8.0
+
+**Update every computer** (protocol 10). v0.7.0 was never published; its changes are part of this release.
+
+### Added
+- **Send with OpenHop** in the right-click menu of Explorer (and its **Send to** menu), Finder (a Quick Action), Files, Dolphin, Nemo, Thunar and Caja. Choose a computer, **All Computers** or **Put on the Shelf**; OpenHop doesn't have to be open. The menu keeps itself up to date with your computers.
+- **Clipboard history** for every computer, in the island's **Clipboard** tab or with **Ctrl+Alt+V**: search it, copy an item again with a click or Enter, pin items to keep them.
+- **The shelf**: drop files on the island to keep them reachable from every computer; click an item from another computer to copy it here.
+- **Drop files on the island** to send them: while you drag, it opens with your computers as targets.
+- **Open apps on any computer** (island **Open** tab, **Ctrl+Alt+O**): search the apps of every computer and open one where it lives; the pointer goes there.
+- **Arrange by moving the mouse**: push the pointer toward each computer in turn instead of dragging screens.
+- Click another computer in the island's **Home** tab to move the pointer there.
+
+### Fixed
+- A computer that joins now sees the others' status, apps and shelf straight away, instead of after up to half a minute.
+
+
 ## v0.7.0
 
 **Update every computer** (protocol 9).
