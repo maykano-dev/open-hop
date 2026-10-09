@@ -34,12 +34,19 @@
       transition: width .46s var(--spring), height .46s var(--spring), border-radius .46s var(--ease);
     }
     body.floating .island { border-radius: var(--r, 17px); }
+    /* Hanging from the top edge like a notch: concave shoulders blend it in. */
+    .shoulder { position: absolute; top: 0; width: 12px; height: 12px; display: none; pointer-events: none;
+      transition: left .46s var(--spring), right .46s var(--spring); }
+    body.attached:not(.notch) .shoulder { display: block; }
+    body.lip .shoulder { display: none; }
+    .shoulder.l { right: calc(50% + var(--w, 210px) / 2); background: radial-gradient(circle at 0 100%, transparent 11.5px, #000 12px); }
+    .shoulder.r { left: calc(50% + var(--w, 210px) / 2); background: radial-gradient(circle at 100% 100%, transparent 11.5px, #000 12px); }
     /* Resting as a thin lip (Windows, Linux): out of the way of tabs and title bars. */
     body.lip .island:not(.open):not(.activity):not(.live) { background: rgba(0, 0, 0, .78); }
     body.lip .rest { display: none; }
     /* In its own lane: a slim, always-visible pill with a soft shadow. */
     body.lane .rest { height: var(--h); font-size: 12px; }
-    body.lane .island:not(.open):not(.activity) { box-shadow: 0 1px 0 rgba(255,255,255,.06) inset; }
+    body.lane .rest { justify-content: center; }
     /* Around a MacBook notch: the middle is the camera, content goes either side. */
     body.notch .rest .where span, body.notch .rest #restName { display: none; }
     body.notch .rest { justify-content: space-between; padding: 0 10px; }
@@ -321,6 +328,7 @@
   </style>
 </head>
 <body>
+  <i class="shoulder l"></i><i class="shoulder r"></i>
   <div class="island" id="island">
     <div class="rest" id="rest">
       <div class="where"><i class="dot" id="dot"></i><b id="restName">OpenHop</b><span id="restSub"></span></div>

@@ -12,7 +12,6 @@ use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, State, WebviewUr
 
 /// The lane's height and the gap above the island in it (logical pixels).
 pub const LANE: f64 = 34.0;
-const LANE_GAP: f64 = 3.0;
 const LANE_TITLE: &str = "OpenHop lane";
 
 /// Give the island a lane of its own across the top of the screen, which
@@ -217,7 +216,8 @@ fn place(handle: &AppHandle, w: f64, h: f64) {
     let lane_top = *handle.state::<Island>().lane_top.lock();
     let top = match lane_top {
         // In its lane: a little gap above it.
-        Some(t) => t + (LANE_GAP * scale).round() as i32,
+        // Hanging from the top of its lane, like a notch.
+        Some(t) => t,
         None if attached() => m.position().y,
         None => area.position.y,
     };
@@ -252,18 +252,21 @@ fn watch(handle: AppHandle) {
                 px = (px as f64 * g.scale) as i32;
                 py = (py as f64 * g.scale) as i32;
             }
-            // Now and then make sure the window is still where it belongs
-            // (screens change, and some systems move new windows).
-            if checked.elapsed() > std::time::Duration::from_secs(2) {
+            // Where the window really is (a window manager may have moved
+            // it): hit-test against that, never against where we asked.
+            if checked.elapsed() > std::time::Duration::from_millis(500) {
                 checked = std::time::Instant::now();
                 if let Ok(p) = win.outer_position() {
-                    if (p.x - g.x).abs() > 2 || (p.y - g.y).abs() > 2 {
-                        let h = handle.clone();
-                        let (w, hh) = (g.w as f64 / g.scale, g.h as f64 / g.scale);
-                        let _ = handle.run_on_main_thread(move || place(&h, w, hh));
+                    let st = handle.state::<Island>();
+                    let mut gg = st.geo.lock();
+                    if (p.x - gg.x).abs() > 2 || (p.y - gg.y).abs() > 2 {
+                        log::debug!("island is at {},{} (asked for {},{})", p.x, p.y, gg.x, gg.y);
+                        gg.x = p.x;
+                        gg.y = p.y;
                     }
                 }
             }
+            let g = *handle.state::<Island>().geo.lock();
             let vw = g.vis_w * g.scale;
             let vh = g.vis_h * g.scale;
             let left = g.x as f64 + (g.w as f64 - vw) / 2.0;
@@ -320,7 +323,17 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         .resizable(true)
         .min_inner_size(20.0, 4.0)
         .focused(false)
+        .visible(false)
         .build()?;
+    // Linux: a dock window, like a panel. Window managers then leave it where
+    // it's put (normal windows get pushed below the top bar and the lane)
+    // and keep it above other windows.
+    #[cfg(target_os = "linux")]
+    if let Ok(g) = win.gtk_window() {
+        use gtk::prelude::GtkWindowExt;
+        g.set_type_hint(gtk::gdk::WindowTypeHint::Dock);
+    }
+    let _ = win.show();
     #[cfg(target_os = "macos")]
     above_menu_bar(&win);
     let _ = win;
@@ -519,6 +532,16 @@ pub fn media_cmd(app: State<App>, on: String, cmd: String, at: Option<f64>) {
         let hub = e.hub();
         let on = if on.is_empty() { hub.me().to_string() } else { on };
         hub.media_cmd(&on, cmd);
+    }
+}
+
+/// Typing in the island's search: ask for the keyboard (a dock window
+/// only gets it when it asks).
+#[tauri::command]
+pub fn island_take_focus(handle: AppHandle) {
+    if let Some(w) = handle.get_webview_window("island") {
+        let _ = w.set_focus();
+        let _ = AsRef::<tauri::Webview>::as_ref(&w).set_focus();
     }
 }
 

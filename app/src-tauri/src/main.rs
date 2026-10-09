@@ -622,6 +622,7 @@ fn main() {
             island::island_state,
             island::island_size,
             island::island_focus,
+            island::island_take_focus,
             island::island_lock_all,
             island::island_sleep_all,
             island::island_find_pointer,

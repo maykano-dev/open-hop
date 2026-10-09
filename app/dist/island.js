@@ -70,7 +70,11 @@ let snap = null;
 let fit = { notch: null, bar: null, watch: false };
 const notchW = () => (fit.notch ? Math.ceil(fit.notch[0]) : 0);
 const notchH = () => (fit.notch ? Math.ceil(fit.notch[1]) : 0);
-const laneH = () => Math.round(fit.lane) - 6;
+const laneH = () => Math.round(fit.lane) - 4;
+// Hanging from the top edge (a notch): it has curved shoulders either side.
+const SHOULDER = 12;
+const hanging = () => document.body.classList.contains("attached") && !document.body.classList.contains("lip");
+const winW = (w) => w + (hanging() ? 2 * SHOULDER : 0);
 let shown = { w: 0, h: 0, r: 0 };
 
 function restShape() {
@@ -80,12 +84,12 @@ function restShape() {
   // Mac without a notch: a pill inside the menu bar.
   if (fit.bar) return { w: 196, h: Math.max(22, Math.round(fit.bar) - 2), r: Math.round(fit.bar / 2) };
   // Windows, Linux with its own lane: a pill that's always there.
-  if (fit.lane) return { w: 200, h: laneH(), r: laneH() / 2 };
+  if (fit.lane) return { w: 200, h: laneH(), r: 13 };
   // Otherwise a thin lip that lets clicks through to tabs underneath.
   return { w: 150, h: 5, r: 3 };
 }
 function shapeFor(m) {
-  if (m === "live") return fit.notch ? { w: notchW() + 2 * 112, h: notchH(), r: 14 } : fit.lane ? { w: 340, h: laneH(), r: laneH() / 2 } : { w: 320, h: 36, r: 18 };
+  if (m === "live") return fit.notch ? { w: notchW() + 2 * 112, h: notchH(), r: 14 } : fit.lane ? { w: 340, h: laneH(), r: 13 } : { w: 320, h: 36, r: 18 };
   if (m === "activity") return { w: 430, h: 76 + notchH(), r: 32 };
   if (m === "open") return { w: 520, h: Math.ceil($("panel").offsetHeight), r: 30 };
   return restShape();
@@ -110,7 +114,7 @@ async function setMode(next, force) {
   const grow = to.w >= shown.w && to.h >= shown.h;
   if (grow) {
     // Make room first (the window is transparent), then morph.
-    try { await invoke("island_size", { w: to.w, h: to.h, vw: to.w, vh: to.h }); } catch (_) {}
+    try { await invoke("island_size", { w: winW(to.w), h: to.h, vw: to.w, vh: to.h }); } catch (_) {}
   } else {
     // Clicks outside the new shape go through straight away.
     invoke("island_size", { w: 0, h: 0, vw: to.w, vh: to.h }).catch(() => {});
@@ -121,12 +125,12 @@ async function setMode(next, force) {
     document.body.classList.toggle(c, next === c);
     island.classList.toggle(c, next === c);
   }
-  island.style.setProperty("--w", to.w + "px");
-  island.style.setProperty("--h", to.h + "px");
-  island.style.setProperty("--r", to.r + "px");
+  document.documentElement.style.setProperty("--w", to.w + "px");
+  document.documentElement.style.setProperty("--h", to.h + "px");
+  document.documentElement.style.setProperty("--r", to.r + "px");
   if (!grow) {
     // Shrink the window once the morph has finished.
-    shrinkTimer = setTimeout(() => { if (mode === next) invoke("island_size", { w: to.w, h: to.h, vw: to.w, vh: to.h }).catch(() => {}); }, 480);
+    shrinkTimer = setTimeout(() => { if (mode === next) invoke("island_size", { w: winW(to.w), h: to.h, vw: to.w, vh: to.h }).catch(() => {}); }, 480);
   }
 }
 
@@ -182,10 +186,15 @@ for (const b of $("tabs").querySelectorAll("button")) {
 }
 function focusSearch() {
   const input = tab === "clips" ? $("clipQuery") : tab === "open" ? $("appQuery") : null;
+  if (input && T) invoke("island_take_focus").catch(() => {});
   if (input) setTimeout(() => { input.focus(); input.select(); }, 60);
 }
-// Typing in the island keeps it open until it's dismissed.
-for (const id of ["clipQuery", "appQuery"]) $(id).addEventListener("focus", () => { pinned = true; });
+// Typing in the island keeps it open until it's dismissed. (The island is
+// a dock-like window: it gets the keyboard only when it asks.)
+for (const id of ["clipQuery", "appQuery"]) {
+  $(id).addEventListener("focus", () => { pinned = true; });
+  $(id).addEventListener("pointerdown", () => { if (T) invoke("island_take_focus").catch(() => {}); });
+}
 
 // Hover: the app watches the pointer (it also makes clicks pass through
 // everywhere else); on Wayland the page's own mouse events do.
@@ -213,8 +222,10 @@ document.addEventListener("pointermove", () => { lastInside = Date.now(); if (mo
 // A missed "pointer left" (some systems don't say while a drag or click is
 // going on): close once nothing has happened on it for a while.
 setInterval(() => {
-  if (mode !== "open" || dropping || busy()) return;
+  if (mode !== "open" || dropping) return;
   const idle = Date.now() - lastInside;
+  // A search left half-typed doesn't keep it open forever.
+  if (busy()) { if (!hovering && idle > 20000) close(); return; }
   if ((!hovering && entered && idle > 1200) || idle > 12000) close();
 }, 500);
 if (T) T.event.listen("hover", (e) => { if (fit.watch) onHover(!!e.payload); });
@@ -482,8 +493,10 @@ function render() {
   const s = snap;
   if (!s) return;
   document.documentElement.style.setProperty("--accent", ACCENTS[s.accent] || ACCENTS.blue);
-  document.body.classList.toggle("attached", !!s.attached && !fit.lane);
-  document.body.classList.toggle("floating", !s.attached || !!fit.lane);
+  // In its lane it hangs from the top of the lane, like a notch.
+  const att = !!s.attached || !!fit.lane;
+  document.body.classList.toggle("attached", att);
+  document.body.classList.toggle("floating", !att);
 
   // At rest: where the pointer is, and small live hints.
   const where = s.active || s.me;

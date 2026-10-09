@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.2
+
+### Fixed
+- **The island sat below its lane** on GNOME (the window manager pushed it under the strip, over browser tabs) and then stopped responding to the pointer, so it wouldn't close. It's now a panel-type window that stays in its lane, and the pointer is tracked against where the island really is.
+- **The island looks like a notch**: in its lane it hangs from the top edge with curved shoulders, like a MacBook's notch, and opens downward from there.
+- A half-typed search no longer keeps the island open forever.
+
+
 ## v0.9.1
 
 **Update every computer** (protocol 12).
