@@ -38,9 +38,12 @@ pub fn slug(name: &str) -> String {
     }
 }
 
-/// Write (or rewrite) the menus for `names`, run by `exe`.
-pub fn install(exe: &Path, names: &[String]) {
-    let t = targets(names);
+/// Write (or rewrite) the menus for `names` (and a paired phone), run by `exe`.
+pub fn install(exe: &Path, names: &[String], phone: bool) {
+    let mut t = targets(names);
+    if phone {
+        t.insert(t.len() - 1, Target { label: "Your Phone".into(), args: vec!["--phone".into()], key: "phone".into() });
+    }
     if let Err(e) = imp::install(exe, &t) {
         log::warn!("couldn't add Send with OpenHop to the file manager: {e:#}");
     } else {

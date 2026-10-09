@@ -185,6 +185,8 @@ pub struct Activity {
     pub title: String,
     pub body: String,
     pub icon: String,
+    /// Shown briefly.
+    pub short: bool,
 }
 
 /// What the island has to fit around at the top of the screen.
@@ -508,18 +510,29 @@ pub fn show_tab(handle: &AppHandle, tab: &str) {
 }
 
 pub fn push(handle: &AppHandle, a: Activity) {
-    let island = handle.state::<Island>();
-    let mut q = island.activities.lock();
-    q.push_back(a);
-    while q.len() > 6 {
-        q.pop_front();
+    {
+        let island = handle.state::<Island>();
+        let mut q = island.activities.lock();
+        q.push_back(a);
+        while q.len() > 6 {
+            q.pop_front();
+        }
+    }
+    poke(handle);
+}
+
+/// Tell the island something changed, so it shows it now rather than at its
+/// next look.
+pub fn poke(handle: &AppHandle) {
+    if let Some(w) = handle.get_webview_window("island") {
+        let _ = tauri::Emitter::emit_to(&w, "island", "poke", ());
     }
 }
 
 // ------------------------------------------------------------------ commands
 
 #[tauri::command]
-pub fn island_state(app: State<App>, island: State<Island>) -> IslandState {
+pub fn island_state(handle: AppHandle, app: State<App>, island: State<Island>) -> IslandState {
     let status = app.engine.lock().as_ref().map(|e| (e.status(), e.hub()));
     let fit = *island.fit.lock();
     let media: Vec<MediaOf> = status.as_ref().map(|(_, hub)| hub.media().into_iter().map(|(name, now)| MediaOf { name, now }).collect()).unwrap_or_default();
@@ -539,7 +552,7 @@ pub fn island_state(app: State<App>, island: State<Island>) -> IslandState {
             connected: st.peers.len(),
             computers: hub.computers(),
             windows: st.windows.clone(),
-            transfers: st.transfers.into_iter().filter(|t| !t.finished).collect(),
+            transfers: st.transfers.into_iter().chain(crate::phone::transfers(&handle)).filter(|t| !t.finished).collect(),
             notes,
             activities,
             accent: cfg.ui_accent,
@@ -559,7 +572,7 @@ pub fn island_state(app: State<App>, island: State<Island>) -> IslandState {
             connected: 0,
             computers: vec![],
             windows: vec![],
-            transfers: vec![],
+            transfers: crate::phone::transfers(&handle),
             notes,
             activities,
             accent: cfg.ui_accent,

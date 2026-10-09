@@ -85,6 +85,13 @@ pub struct Config {
     /// Sleep All puts this computer to sleep too.
     #[serde(default = "yes")]
     pub allow_sleep: bool,
+    /// Meeting points for phones (Nostr relays, wss://…). Empty: OpenHop's
+    /// default public ones. A school or company can run its own.
+    #[serde(default)]
+    pub phone_relays: Vec<String>,
+    /// Where the phone app lives (empty: OpenHop's own, on GitHub Pages).
+    #[serde(default)]
+    pub phone_app_url: Option<String>,
 }
 
 fn yes() -> bool {
@@ -150,6 +157,8 @@ impl Default for Config {
             allow_focus: true,
             allow_lock: true,
             allow_sleep: true,
+            phone_relays: vec![],
+            phone_app_url: None,
         }
     }
 }

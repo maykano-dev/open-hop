@@ -627,6 +627,7 @@ fn main() {
             island::island_take_focus,
             phone::phone_state,
             phone::phone_send,
+            phone::phone_renew,
             island::island_lock_all,
             island::island_sleep_all,
             island::island_find_pointer,
@@ -760,6 +761,7 @@ fn main() {
                                     title: "Log out and back in once".into(),
                                     body: "So OpenHop can see this computer's windows and pointer (GNOME on Wayland).".into(),
                                     icon: "info".into(),
+                                    short: false,
                                 },
                             );
                         }
@@ -774,6 +776,12 @@ fn main() {
             }
             // Always started at login (in the background).
             apply_login(app.handle(), true);
+            // Paired phones can reach this computer from now on.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                phone::start_if_paired(&handle);
+            });
             // Move notifications from the engine to the toast window.
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {
@@ -781,11 +789,14 @@ fn main() {
                 let state = handle.state::<App>();
                 let notes = state.engine.lock().as_ref().map(|e| e.take_notes()).unwrap_or_default();
                 if !notes.is_empty() {
-                    let mut q = state.toasts.lock();
-                    q.extend(notes);
-                    while q.len() > 5 {
-                        q.pop_front();
+                    {
+                        let mut q = state.toasts.lock();
+                        q.extend(notes);
+                        while q.len() > 5 {
+                            q.pop_front();
+                        }
                     }
+                    island::poke(&handle);
                 }
             });
             // Check for a new version shortly after launch, then once a day.

@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.11.0
+
+### New
+- **OpenHop for your phone, on any network.** Scan the code in the island once with an iPhone or Android phone and you get the OpenHop phone app. Add it to the home screen and it's there whenever you need it (no app store). From then on the phone finds your computer by itself, on the same Wi‑Fi or not, at home, at work, on mobile data.
+- **Encrypted end to end.** The phone and the computer connect directly (the same technology as video calls), with a second layer of encryption inside, keyed from the code you scanned. They meet through public relays to set up, and those relays only ever see scrambled data. Schools and companies can run their own relay (`phone_relays` in the settings file).
+- **Send from the phone to any computer, all of them, or the shelf.** Photos, videos, files, text and links. The computer the phone is connected to passes them on, and the phone shows them on their way.
+- **Files fly into the notch.** Sending, the files fly up into the phone app's notch, which grows into a live progress ring. Receiving, they drop into the list with a Save button (the share sheet on iPhone, so they go to Photos or Files in one tap; straight to Downloads on Android).
+- **On the computer, live progress right away.** The island shows files from the phone as they arrive, not only when they're done.
+- **Your computers' shelf and clipboard history on the phone**: take anything from the shelf, copy any past clip on the phone, or send what you copied on the phone to the computer.
+- **Remote**: a trackpad (tap to click, two fingers to scroll or right-click), typing in any language, arrow keys, presenter buttons, the music that's playing, and Focus, Lock All and Sleep All.
+- **Send with OpenHop › Your Phone** in the file manager's right-click menu, once a phone is paired.
+- **No internet?** The same app is also served by the computer itself on the local Wi‑Fi.
+- **New code** in the island's phone view: phones paired before can't connect anymore.
+
+### Changed
+- The island opens and closes faster on hover, and notifications show up as soon as they happen.
 ## v0.10.0
 
 ### New

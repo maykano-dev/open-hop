@@ -31,13 +31,13 @@
       width: var(--w, 210px); height: var(--h, 34px);
       background: #000; overflow: hidden;
       border-radius: 0 0 var(--r, 17px) var(--r, 17px);
-      transition: width .42s var(--morph, var(--spring)), height .42s var(--morph, var(--spring)), border-radius .42s var(--ease);
+      transition: width .34s var(--morph, var(--spring)), height .34s var(--morph, var(--spring)), border-radius .34s var(--ease);
       will-change: width, height;
     }
     body.floating .island { border-radius: var(--r, 17px); }
     /* Hanging from the top edge like a notch: concave shoulders blend it in. */
     .shoulder { position: absolute; top: 0; width: 12px; height: 12px; display: none; pointer-events: none;
-      transition: left .42s var(--morph, var(--spring)), right .42s var(--morph, var(--spring)); }
+      transition: left .34s var(--morph, var(--spring)), right .34s var(--morph, var(--spring)); }
     body.attached:not(.notch) .shoulder { display: block; }
     body.lip .shoulder { display: none; }
     .shoulder.l { right: calc(50% + var(--w, 210px) / 2); background: radial-gradient(circle at 0 100%, transparent 11.5px, #000 12px); }
@@ -310,7 +310,9 @@
     .ph-state.on { color: var(--ink); }
     .ph-state.on i { background: var(--good); box-shadow: 0 0 0 3px rgba(48,209,88,.22); }
     .ph-tip { font-size: 11.5px; color: var(--faint); line-height: 1.45; margin: 0; }
-    .ph-url { font-size: 11px; color: var(--faint); margin: 8px 0 0; user-select: text; word-break: break-all; }
+    .ph-renew { margin-top: 10px; font-size: 11.5px; color: var(--soft); background: var(--glass); border-radius: 999px; padding: 4px 10px; }
+    .ph-renew:hover { color: var(--ink); background: var(--glass-hi); }
+    .ph-renew.armed { background: var(--bad); color: #fff; }
     .qk.phone.on { background: var(--good); color: #fff; }
     .controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
     .ctl { display: flex; flex-direction: column; align-items: center; gap: 7px; font-size: 11.5px; color: var(--soft); }
@@ -452,10 +454,10 @@
             <h2 class="drop-title">Your phone</h2>
             <div class="ph-state" id="phState"><i></i><span id="phStateText">Starting…</span></div>
             <p class="ph-tip" id="phTip">Point the camera of your iPhone or Android phone at the code. It needs to be on the same Wi‑Fi.</p>
-            <p class="ph-url" id="phUrl"></p>
+            <button class="ph-renew" id="phRenew">New code</button>
           </div>
         </div>
-        <p class="foot">What you send from the phone lands in Downloads › OpenHop. Drop files on Phone in the island to pick them up on the phone.</p>
+        <p class="foot">From the phone: files land in Downloads › OpenHop, or go to any computer, all of them, or the shelf. The phone also gets the shelf, clipboard history, music and a trackpad.</p>
       </section>
 
       <section class="view" data-view="drop">

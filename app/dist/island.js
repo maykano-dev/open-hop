@@ -137,7 +137,7 @@ async function setMode(next, force) {
   document.documentElement.style.setProperty("--r", to.r + "px");
   if (!grow) {
     // Shrink the window once the morph has finished.
-    shrinkTimer = setTimeout(() => { if (mode === next) invoke("island_size", { w: winW(to.w), h: to.h, vw: to.w, vh: to.h }).catch(() => {}); }, 480);
+    shrinkTimer = setTimeout(() => { if (mode === next) invoke("island_size", { w: winW(to.w), h: to.h, vw: to.w, vh: to.h }).catch(() => {}); }, 380);
   }
 }
 
@@ -221,10 +221,10 @@ function onHover(on) {
   if (on) {
     lastInside = Date.now();
     if (mode === "open") entered = true;
-    else hoverTimer = setTimeout(() => { if (hovering) { open(false); entered = true; } }, mode === "activity" ? 300 : 90);
+    else hoverTimer = setTimeout(() => { if (hovering) { open(false); entered = true; } }, mode === "activity" ? 140 : 25);
   } else if (mode === "open" && !dropping && (entered || !pinned) && !busy()) {
     // Pointer away: it closes by itself.
-    leaveTimer = setTimeout(() => { if (!hovering && !dropping && !busy()) close(); }, 260);
+    leaveTimer = setTimeout(() => { if (!hovering && !dropping && !busy()) close(); }, 110);
   }
 }
 document.addEventListener("pointermove", () => { lastInside = Date.now(); if (mode === "open") entered = true; });
@@ -1185,7 +1185,7 @@ async function onDrag(e) {
           open(true, "phone");
           return;
         }
-        liveFlash = { kind: "sending", label: n ? itemsLabel(paths) : "Folders", to: n ? "ready on your phone" : "can't go to a phone; send files", until: Date.now() + 3200 };
+        liveFlash = { kind: "sending", label: n ? itemsLabel(paths) : "Folders", to: n ? `to your ${phoneSnap.device || "phone"}` : "can't go to a phone; send files", until: Date.now() + 3200 };
       } else if (to === "") {
         invoke("shelf_put", { paths }).catch(() => {});
         liveFlash = { kind: "shelved", label: itemsLabel(paths), until: Date.now() + 2200 };
@@ -1227,15 +1227,22 @@ function renderPhone() {
   $("phState").classList.toggle("on", !!p.connected);
   const waiting = (p.offered || []).length;
   $("phStateText").textContent = p.error ? p.error
+    : p.connected ? `${p.device} connected · ${p.how === "direct" ? "encrypted, any network" : "on this Wi‑Fi"}` + (waiting ? ` · ${waiting} file${waiting > 1 ? "s" : ""} for it` : "")
     : !p.url ? "Not on a network"
-    : p.connected ? `${p.device} is connected` + (waiting ? ` · ${waiting} file${waiting > 1 ? "s" : ""} on its page` : "")
     : waiting ? `${waiting} file${waiting > 1 ? "s" : ""} waiting · scan to get ${waiting > 1 ? "them" : "it"}`
     : "Waiting for your phone";
-  $("phTip").textContent = !p.url && !p.error ? "Connect this computer to Wi‑Fi or Ethernet, then come back here."
-    : p.connected ? "Send photos and files from the page on the phone. Keep it open while they go."
-    : "Point the camera of your iPhone or Android phone at the code. It needs to be on the same Wi‑Fi.";
-  $("phUrl").textContent = p.url || "";
+  $("phTip").textContent = p.connected ? "Send from the OpenHop app on the phone, or drop files on Phone here. They go straight to it."
+    : p.relays === 0 ? "No internet here: the phone needs to be on this computer's Wi‑Fi."
+    : "Point your iPhone or Android camera at the code. Works on any network. Then add OpenHop to the phone's home screen.";
 }
+$("phRenew").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const b = $("phRenew");
+  if (!b.classList.contains("armed")) { b.classList.add("armed"); b.textContent = "Tap again: phones paired before won't connect"; setTimeout(() => { b.classList.remove("armed"); b.textContent = "New code"; }, 3500); return; }
+  b.classList.remove("armed"); b.textContent = "New code";
+  try { phoneSnap = await invoke("phone_renew"); } catch (_) {}
+  renderPhone();
+});
 $("cPhone").addEventListener("click", (e) => { e.stopPropagation(); pinned = true; setTab("phone"); });
 
 // ------------------------------------------------------------------ media player
@@ -1356,7 +1363,11 @@ function drawPlayer() {
 // The clock runs between updates.
 setInterval(() => { if (mode === "open" && tab === "home") drawPlayer(); }, 500);
 
+let pollTimer = null;
+// The app says something changed (a notification, a transfer): look now.
+if (T) T.event.listen("poke", () => { clearTimeout(pollTimer); poll(); });
 async function poll() {
+  clearTimeout(pollTimer);
   try {
     snap = await invoke("island_state");
     applyFit(snap.fit);
@@ -1373,7 +1384,7 @@ async function poll() {
   } catch (_) {}
   if (mode === "open" && tab === "phone") refreshPhone();
   else if (mode === "open" && tab !== "home" && tab !== "drop") refreshTools();
-  setTimeout(poll, mode === "open" ? 450 : 900);
+  pollTimer = setTimeout(poll, mode === "open" ? 450 : 700);
 }
 setTab("home");
 applyFit(fit);
@@ -1418,7 +1429,7 @@ function demo() {
         if (on) svg += `<rect x="${x}" y="${y}" width="1" height="1"/>`;
       }
       svg += "</svg>";
-      return { url: "http://192.168.1.24:24852/4f1c…/", qr: "data:image/svg+xml;base64," + btoa(svg), connected: location.hash.includes("phoneon"), device: "iPhone", offered: [] };
+      return { url: "http://192.168.1.24:24852/4f1c…/", qr: "data:image/svg+xml;base64," + btoa(svg), connected: location.hash.includes("phoneon"), device: "iPhone", how: "direct", relays: 3, offered: [] };
     }
     if (cmd === "tools_state") {
       const now = Date.now() / 1000;

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="light dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="OpenHop">
+<meta name="referrer" content="no-referrer">
+<title>OpenHop</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <!-- The notch: where the computer is, and where files go. -->
+  <header class="top">
+    <button class="notch" id="notch" aria-live="polite">
+      <span class="n-dot" id="nDot"></span>
+      <span class="n-text" id="nText">OpenHop</span>
+      <span class="n-ring" id="nRing" hidden></span>
+    </button>
+  </header>
+
+  <!-- First time: pair with a computer. -->
+  <section class="welcome" id="welcome" hidden>
+    <div class="w-art" aria-hidden="true"><i></i><b></b></div>
+    <h1>Your phone, on every computer</h1>
+    <p>On your computer, open OpenHop's island and tap the phone button. Then scan the code it shows.</p>
+    <button class="primary" id="wScan">Scan the code</button>
+    <button class="plain" id="wPaste">Paste a pairing link</button>
+  </section>
+
+  <main id="main" hidden>
+    <!-- Send -->
+    <section class="tab" data-tab="send">
+      <h1 class="title">Send</h1>
+      <div class="to" id="toRow" role="radiogroup" aria-label="Send to"></div>
+      <div class="picks">
+        <label class="pick photos">
+          <span class="p-ic" data-icon="photo"></span>
+          <span class="p-l">Photos &amp; videos</span>
+          <input type="file" id="pickPhotos" accept="image/*,video/*" multiple>
+        </label>
+        <label class="pick files">
+          <span class="p-ic" data-icon="file"></span>
+          <span class="p-l">Files</span>
+          <input type="file" id="pickFiles" multiple>
+        </label>
+        <button class="pick text" id="pickText">
+          <span class="p-ic" data-icon="text"></span>
+          <span class="p-l">Text or link</span>
+        </button>
+      </div>
+      <div class="onward" id="onward"></div>
+      <div class="sect-head">
+        <h2>Recent</h2>
+        <button class="link" id="saveAll" hidden>Save all</button>
+      </div>
+      <div class="feed" id="feed"></div>
+      <p class="empty" id="feedEmpty">What you send and receive shows up here. Files dropped on <b>Phone</b> in the island come straight to this screen.</p>
+    </section>
+
+    <!-- Shelf -->
+    <section class="tab" data-tab="shelf" hidden>
+      <h1 class="title">Shelf</h1>
+      <p class="lede">Files your computers keep within reach. Tap one to get it on this phone.</p>
+      <div id="shelfList"></div>
+    </section>
+
+    <!-- Clipboard -->
+    <section class="tab" data-tab="clips" hidden>
+      <h1 class="title">Clipboard</h1>
+      <button class="wide" id="pasteToPc"><span data-icon="up"></span><span id="pasteToPcL">Send what's copied on this phone</span></button>
+      <label class="search"><span data-icon="search"></span><input id="clipQ" placeholder="Search everything you copied" autocomplete="off" spellcheck="false"></label>
+      <div class="list" id="clipList"></div>
+    </section>
+
+    <!-- Remote -->
+    <section class="tab" data-tab="remote" hidden>
+      <h1 class="title">Remote</h1>
+      <div class="player" id="player" hidden>
+        <div class="art" id="pArt"></div>
+        <div class="p-meta"><b id="pTitle"></b><span id="pArtist"></span><i id="pWhere"></i></div>
+        <div class="p-ctl">
+          <button id="pPrev" aria-label="Previous" data-icon="prev"></button>
+          <button id="pPlay" class="big" aria-label="Play or pause" data-icon="play"></button>
+          <button id="pNext" aria-label="Next" data-icon="next"></button>
+        </div>
+      </div>
+      <div class="pad-wrap">
+        <div class="pad" id="pad" aria-label="Trackpad"><span id="padHint">Trackpad for <b id="padPc"></b><br>Tap to click · two fingers to scroll or right-click</span></div>
+        <div class="pad-btns"><button id="padL">Click</button><button id="padR">Right-click</button></div>
+      </div>
+      <form class="typer" id="typer"><input id="typeIn" placeholder="Type on the computer" autocomplete="off" autocapitalize="off"><button aria-label="Send" data-icon="return"></button></form>
+      <div class="keys">
+        <button data-key="left" aria-label="Left" data-icon="left"></button>
+        <button data-key="right" aria-label="Right" data-icon="right"></button>
+        <button data-key="up" aria-label="Up" data-icon="upk"></button>
+        <button data-key="down" aria-label="Down" data-icon="down"></button>
+        <button data-key="backspace" aria-label="Delete" data-icon="del"></button>
+        <button data-key="esc">esc</button>
+      </div>
+      <div class="present">
+        <button data-key="left" class="slide"><span data-icon="left"></span>Previous slide</button>
+        <button data-key="right" class="slide">Next slide<span data-icon="right"></span></button>
+      </div>
+      <div class="quick" id="quick">
+        <button id="qFocus"><span data-icon="moon"></span><span>Focus</span></button>
+        <button id="qLock"><span data-icon="lock"></span><span>Lock all</span></button>
+        <button id="qSleep"><span data-icon="power"></span><span>Sleep all</span></button>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabs" id="tabs" hidden>
+    <button data-go="send" aria-current="page"><span data-icon="send"></span>Send</button>
+    <button data-go="shelf"><span data-icon="tray"></span>Shelf</button>
+    <button data-go="clips"><span data-icon="clip"></span>Clipboard</button>
+    <button data-go="remote"><span data-icon="remote"></span>Remote</button>
+  </nav>
+
+  <!-- Sheets -->
+  <div class="scrim" id="scrim" hidden></div>
+  <div class="sheet" id="pcSheet" hidden role="dialog" aria-label="Your computers">
+    <div class="grab"></div>
+    <h2>Your computers</h2>
+    <div class="list" id="pcList"></div>
+    <button class="wide" id="addPc"><span data-icon="plus"></span>Add a computer</button>
+    <div class="how" id="howBox"></div>
+    <button class="plain" id="installBtn" hidden>Install OpenHop on this phone</button>
+    <p class="fine" id="installHelp" hidden>To keep OpenHop on your home screen: tap <span data-icon="share"></span> Share, then <b>Add to Home Screen</b>.</p>
+  </div>
+  <div class="sheet" id="textSheet" hidden role="dialog" aria-label="Send text">
+    <div class="grab"></div>
+    <h2>Text or link</h2>
+    <textarea id="textIn" placeholder="Type or paste"></textarea>
+    <div class="row2">
+      <button class="primary" id="textCopy">Copy on computer</button>
+      <button class="secondary" id="textOpen" hidden>Open on computer</button>
+    </div>
+  </div>
+  <div class="sheet" id="scanSheet" hidden role="dialog" aria-label="Scan">
+    <div class="grab"></div>
+    <h2>Scan the code</h2>
+    <div class="cam"><video id="cam" playsinline muted></video><i class="frame"></i></div>
+    <p class="fine">Open the island on your computer and tap the phone button.</p>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

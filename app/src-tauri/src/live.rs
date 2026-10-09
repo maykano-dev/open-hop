@@ -112,7 +112,7 @@ pub fn pump(handle: &AppHandle) {
         match ev {
             UiEvent::OpenViewer { stream, origin, title, w, h, at } => open_viewer(handle, stream, &origin, &title, w, h, at),
             UiEvent::Locate { x, y } => show_fx(handle, x, y, serde_json::json!({ "kind": "locate" })),
-            UiEvent::Notice { title, body, icon } => crate::island::push(handle, crate::island::Activity { title, body, icon }),
+            UiEvent::Notice { title, body, icon } => crate::island::push(handle, crate::island::Activity { title, body, icon, short: false }),
             UiEvent::MaximizeViewer { stream, on } => {
                 let label = format!("view-{stream}");
                 if let Some(w) = handle.get_webview_window(&label) {

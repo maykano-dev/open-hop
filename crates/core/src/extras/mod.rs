@@ -417,6 +417,18 @@ impl Hub {
         self.whole_clicks.store(whole_clicks, Ordering::SeqCst);
     }
 
+    /// Input on this computer from elsewhere (the phone's trackpad). False
+    /// when this computer can't take input that way.
+    pub fn inject(&self, ops: &[InjectOp]) -> bool {
+        match self.inject.lock().as_mut() {
+            Some(inj) => {
+                inj(ops);
+                true
+            }
+            None => false,
+        }
+    }
+
     // ------------------------------------------------------ Control Center
 
     /// Every computer at a glance, this one first.
@@ -1940,7 +1952,7 @@ fn thumbnail(png: &[u8]) -> Option<String> {
     Some(format!("data:image/png;base64,{}", base64(&out.into_inner())))
 }
 
-fn base64(data: &[u8]) -> String {
+pub(crate) fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut s = String::with_capacity(data.len().div_ceil(3) * 4);
     for c in data.chunks(3) {

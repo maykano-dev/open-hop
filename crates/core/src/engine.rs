@@ -255,6 +255,7 @@ pub struct Engine {
     inbox: Inbox,
     discovery: Arc<Discovery>,
     hub: Arc<Hub>,
+    outbox: Outbox,
     main: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -315,6 +316,7 @@ impl Engine {
         files::set_speed_limit_mbps(cfg.transfer_limit_mbps);
         dnd::init();
         let hub = Hub::new(cfg.name.clone(), extras::Settings::from_config(&cfg));
+        let outbox = Outbox::default();
 
         let ctx = Ctx {
             hub: hub.clone(),
@@ -325,7 +327,7 @@ impl Engine {
             stop: stop.clone(),
             notes: notes.clone(),
             inbox: inbox.clone(),
-            outbox: Outbox::default(),
+            outbox: outbox.clone(),
             trust: Arc::new(Mutex::new(cfg.trusted.clone())),
             pair: Arc::new(Mutex::new(PairState { code: new_code(), failures: 0, locked_until: None })),
         };
@@ -365,7 +367,7 @@ impl Engine {
                 })?
             }
         };
-        Ok(Engine { stop, ctl: ctl_tx, status, notes, inbox, discovery, hub, main: Some(main) })
+        Ok(Engine { stop, ctl: ctl_tx, status, notes, inbox, discovery, hub, outbox, main: Some(main) })
     }
 
     pub fn status(&self) -> Status {
@@ -423,6 +425,12 @@ impl Engine {
     }
 
     /// Bring a shelf item here (it lands on the clipboard).
+    /// The files of something this computer offers (its own shelf items):
+    /// (file on disk, name inside the item).
+    pub fn local_files(&self, offer: u64) -> Option<Vec<(PathBuf, String)>> {
+        self.outbox.get(offer).map(|v| v.into_iter().map(|e| (e.abs, e.meta.path)).collect())
+    }
+
     pub fn shelf_take(&self, origin: String, id: u64) {
         let _ = self.ctl.send(Control::ShelfTake { origin, id });
     }

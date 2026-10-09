@@ -87,7 +87,7 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 📁 **Copy & paste files** | Copy files, folders or videos in Explorer, Finder or Files, hop over, and paste: the real files arrive, not a path. A copied picture file pastes as a picture too, into chats, documents and image editors. |
 | 🫳 **Drag & drop files across screens** | Drag files off one computer's screen and drop them into a folder or app on another's, just like a local drag. |
 | 🏝 **The island** | Lives at the top of the screen and stays out of your way: on a MacBook it wraps around the notch, on other Macs it sits in the menu bar, and on Windows and Linux it gets a lane of its own across the top of the screen (maximized windows leave it free, so it never covers a tab), or, where the system can't keep a strip free, rests as a thin line that clicks pass through. Rest the pointer on it and it opens into the Control Center: music, Focus, Lock All, Sleep All, every computer's battery and storage, and their windows. Live pills show files flying with a progress ring, a song starting, a copy; notices pop out of it on the screen you're using. |
-| 📱 **Phones, no app needed** | Scan the QR code in the island with an iPhone or Android phone and a page opens on it: send photos, videos, files and text to the computer, and pick up files you drop on **Phone** in the island. Same Wi‑Fi; the address has a random key only your phone gets. |
+| 📱 **Your phone, on any network** | Scan the code in the island once and the OpenHop phone app goes on your iPhone or Android home screen (no app store). It finds your computer by itself, on any network, encrypted end to end: send photos, videos, files and text to any computer, all of them or the shelf; get files dropped on **Phone** in the island; use the shelf, clipboard history, a trackpad, music controls, Focus, Lock All and Sleep All. |
 | 🏫 **Choose what's shared** | For schools, offices and shared computers: switch off being controlled, sharing this keyboard and mouse, or Focus, Lock All and Sleep All for this computer. Switched-off actions leave the island, and it shows what's off. |
 | 🎵 **Media controls** | What's playing on any computer (Spotify, a video in the browser, a music app), with cover art, a progress bar, play/pause, skip and shuffle, from any computer. |
 | 📤 **Send with OpenHop** | Right-click files in Explorer, Finder, Files, Dolphin, Nemo, Thunar or Caja and choose **Send with OpenHop** › a computer (or all of them, or the shelf). OpenHop doesn't need to be open. On Windows it's also in **Send to**; on a Mac it's a Quick Action. |
@@ -395,6 +395,7 @@ share_input = true          # this keyboard and mouse may go to the others
 allow_focus = true          # Focus, Lock All and Sleep All reach this computer
 allow_lock = true
 allow_sleep = true
+# phone_relays = ["wss://relay.example.org"]  # your own meeting point for phones
 # device_id, [trusted.*] and server_device are written by pairing; don't edit by hand
 # server_addr = "192.168.1.20"  # client: skip discovery
 # server_name = "desk-pc"       # client: only join this server
@@ -415,7 +416,7 @@ y = 0
 - **No guessing.** The code (or passphrase) is mixed in *after* a fresh key exchange, so someone recording your network can't brute-force it offline. Online guesses are limited too: after five wrong codes, pairing pauses for a minute and the code changes.
 - **Forget a computer** under **Paired Computers** at any time. Its key stops working immediately.
 - **Local only.** OpenHop never sends your input, clipboard or files over the internet. There's no account, telemetry or cloud relay. The one exception is **Check for Updates**, which reads the public GitHub releases page.
-- **Phone page.** Only runs once you open the phone view in the island. It listens on port 24852 on your local network, and every address includes a random 128-bit key (in the QR code, kept in `phone-key` beside the config file); without it the page answers "not found". It's plain HTTP on your own network, so use it on Wi‑Fi you trust.
+- **Phones.** Pairing puts a random 256-bit secret in the QR code, in the part of the address that browsers never send anywhere (it's kept in `phone.json` beside the config file). The phone and the computer meet through public Nostr relays to set up a connection; those messages are sealed with AES-256-GCM using a key derived from the secret, so relays see only a random topic name and unreadable data, and nobody without the secret can forge or alter one (which is what stops someone in the middle swapping the connection's keys). The files then go over a direct WebRTC connection (DTLS-encrypted), with a second layer of AES-256-GCM inside, keyed per connection, with numbered messages so nothing can be replayed or reordered. **New code** in the island makes a new secret. Without internet, the computer also serves the app on the local network (port 24852, behind a random 128-bit key in the address); that fallback is plain HTTP, so use it on Wi‑Fi you trust.
 - **Discovery beacons** broadcast only a computer name, a random device ID, the OS and a port. They contain nothing secret.
 
 ## Troubleshooting
@@ -556,6 +557,8 @@ open-hop/
 ```
 
 ## Roadmap
+
+**Done in v0.11:** the phone app (any network, end-to-end encrypted, installable), sending to any computer, all of them or the shelf from the phone, the shelf, clipboard and a remote on the phone.
 
 **Done in v0.10:** phone sharing through a QR code in the island, choosing what each computer shares (for schools and offices), a smaller island, smoother opening and closing on Linux.
 

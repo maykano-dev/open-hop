@@ -15,6 +15,7 @@ use tauri::{AppHandle, Manager};
 pub enum Dest {
     Computer(String),
     Shelf,
+    Phone,
 }
 
 /// Requests waiting to go out. Explorer opens OpenHop once per selected
@@ -27,9 +28,12 @@ pub struct Outgoing {
 /// `--send NAME FILES…` or `--shelf FILES…` in a command line (relative
 /// file names are in `cwd`).
 pub fn parse(args: &[String], cwd: &Path) -> Option<(Dest, Vec<String>)> {
-    let i = args.iter().position(|a| a == "--send" || a == "--shelf")?;
-    let (dest, rest) =
-        if args[i] == "--shelf" { (Dest::Shelf, &args[i + 1..]) } else { (Dest::Computer(args.get(i + 1)?.clone()), args.get(i + 2..).unwrap_or(&[])) };
+    let i = args.iter().position(|a| a == "--send" || a == "--shelf" || a == "--phone")?;
+    let (dest, rest) = match args[i].as_str() {
+        "--shelf" => (Dest::Shelf, &args[i + 1..]),
+        "--phone" => (Dest::Phone, &args[i + 1..]),
+        _ => (Dest::Computer(args.get(i + 1)?.clone()), args.get(i + 2..).unwrap_or(&[])),
+    };
     let files: Vec<String> = rest
         .iter()
         .filter(|a| !a.is_empty())
@@ -93,6 +97,15 @@ fn flush(handle: &AppHandle) {
     if q.is_empty() {
         return;
     }
+    // Phones don't need OpenHop's connections.
+    q.retain(|(dest, files, at)| {
+        if *dest != Dest::Phone || at.elapsed() < Duration::from_millis(350) {
+            return true;
+        }
+        let paths: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
+        crate::phone::link(handle).offer(&paths);
+        false
+    });
     let engine = app.engine.lock();
     q.retain(|(dest, files, at)| {
         let quiet = at.elapsed() > Duration::from_millis(350);
@@ -101,7 +114,7 @@ fn flush(handle: &AppHandle) {
             if too_old {
                 crate::island::push(
                     handle,
-                    crate::island::Activity { title: "OpenHop is off".into(), body: "Turn it on to send files.".into(), icon: "files".into() },
+                    crate::island::Activity { title: "OpenHop is off".into(), body: "Turn it on to send files.".into(), icon: "files".into(), short: false },
                 );
             }
             return !too_old;
@@ -110,6 +123,7 @@ fn flush(handle: &AppHandle) {
             return true;
         }
         match dest {
+            Dest::Phone => false,
             Dest::Shelf => {
                 e.shelf_add(files.clone());
                 false
@@ -134,7 +148,7 @@ fn known_path() -> PathBuf {
 
 /// Keep the right-click menu listing the computers (ones seen before stay,
 /// so the menu doesn't change while one is asleep).
-fn refresh_menu(handle: &AppHandle, installed: &mut Option<Vec<String>>) {
+fn refresh_menu(handle: &AppHandle, installed: &mut Option<(Vec<String>, bool)>) {
     let Some(exe) = menus::exe() else { return };
     let app = handle.state::<App>();
     let (me, now): (String, Vec<String>) = match app.engine.lock().as_ref() {
@@ -149,9 +163,11 @@ fn refresh_menu(handle: &AppHandle, installed: &mut Option<Vec<String>>) {
         let _ = std::fs::write(known_path(), all.iter().cloned().collect::<Vec<_>>().join("\n"));
     }
     let names: Vec<String> = all.into_iter().collect();
-    if installed.as_ref() != Some(&names) {
-        menus::install(&exe, &names);
-        *installed = Some(names);
+    let phone = app.path.parent().map(|d| d.join("phone.json").is_file()).unwrap_or(false);
+    let want = (names, phone);
+    if installed.as_ref() != Some(&want) {
+        menus::install(&exe, &want.0, want.1);
+        *installed = Some(want);
     }
 }
 
@@ -188,6 +204,7 @@ mod tests {
             Some((Dest::Computer("Laptop".into()), vec!["/home/me/Pictures/a.png".into(), "/tmp/b".into()]))
         );
         assert_eq!(parse(&a(&["x", "--shelf", "file:///tmp/a%20b.txt"]), cwd), Some((Dest::Shelf, vec!["/tmp/a b.txt".into()])));
+        assert_eq!(parse(&a(&["x", "--phone", "c.pdf"]), cwd), Some((Dest::Phone, vec!["/home/me/Pictures/c.pdf".into()])));
         assert_eq!(parse(&a(&["x", "--hidden"]), cwd), None);
         assert_eq!(parse(&a(&["x", "--send"]), cwd), None);
     }
