@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.4
+
+### Fixed
+- **The island jumped when opening, closing and switching tabs.** Its window no longer changes size or moves at all where OpenHop follows the pointer (everything around the island lets clicks through), and where it has to (Wayland without the helper), it moves and resizes in one step.
+
+
 ## v0.9.3
 
 ### Fixed

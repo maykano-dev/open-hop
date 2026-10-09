@@ -18,6 +18,12 @@ pub fn kept(top: i32, height: i32) -> bool {
     imp::work_top().map(|t| t >= top + height - 2).unwrap_or(false)
 }
 
+/// Move and resize a window in one step (two separate steps make it jump
+/// on screen). False if this system can't.
+pub fn move_resize(window: isize, title: &str, x: i32, y: i32, w: u32, h: u32) -> bool {
+    imp::move_resize(window, title, x, y, w, h)
+}
+
 /// Give the strip back.
 pub fn release(window: isize, title: &str) {
     imp::release(window, title);
@@ -138,6 +144,26 @@ mod imp {
         v.get(1).map(|y| *y as i32)
     }
 
+    pub fn move_resize(_: isize, title: &str, x: i32, y: i32, w: u32, h: u32) -> bool {
+        use std::sync::Mutex;
+        // One connection, and the window found once.
+        static CONN: Mutex<Option<(x11rb::rust_connection::RustConnection, Window)>> = Mutex::new(None);
+        let Ok(mut g) = CONN.lock() else { return false };
+        if g.is_none() {
+            let Ok((c, n)) = x11rb::connect(None) else { return false };
+            let root = c.setup().roots[n].root;
+            let Some(win) = find(&c, root, title, 0) else { return false };
+            *g = Some((c, win));
+        }
+        let Some((c, win)) = g.as_ref() else { return false };
+        let aux = x11rb::protocol::xproto::ConfigureWindowAux::new().x(x).y(y).width(w).height(h);
+        let ok = c.configure_window(*win, &aux).is_ok() && c.flush().is_ok();
+        if !ok {
+            *g = None;
+        }
+        ok
+    }
+
     pub fn release(_: isize, title: &str) {
         let Ok((c, n)) = x11rb::connect(None) else { return };
         let root = c.setup().roots[n].root;
@@ -186,6 +212,11 @@ mod imp {
         Some(rc.top)
     }
 
+    pub fn move_resize(window: isize, _: &str, x: i32, y: i32, w: u32, h: u32) -> bool {
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+        unsafe { SetWindowPos(HWND(window as *mut _), None, x, y, w as i32, h as i32, SWP_NOZORDER | SWP_NOACTIVATE).is_ok() }
+    }
+
     pub fn release(window: isize, _: &str) {
         unsafe {
             let mut d = data(window);
@@ -200,6 +231,9 @@ mod imp {
         false
     }
     pub fn release(_: isize, _: &str) {}
+    pub fn move_resize(_: isize, _: &str, _: i32, _: i32, _: u32, _: u32) -> bool {
+        false
+    }
     pub fn work_top() -> Option<i32> {
         None
     }

@@ -91,7 +91,7 @@ function restShape() {
 function shapeFor(m) {
   if (m === "live") return fit.notch ? { w: notchW() + 2 * 112, h: notchH(), r: 14 } : fit.lane ? { w: 340, h: laneH(), r: 13 } : { w: 320, h: 36, r: 18 };
   if (m === "activity") return { w: 430, h: 76 + notchH(), r: 32 };
-  if (m === "open") return { w: 520, h: Math.ceil($("panel").offsetHeight), r: 30 };
+  if (m === "open") return { w: 520, h: Math.min(760, Math.ceil($("panel").offsetHeight)), r: 30 };
   return restShape();
 }
 

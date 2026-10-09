@@ -183,6 +183,8 @@
       opacity: 0; transform: scale(.94) translateY(-10px); transform-origin: 50% 0;
       transition: opacity .18s var(--ease), transform .4s var(--spring); pointer-events: none;
     }
+    .panel { max-height: 760px; overflow-y: auto; scrollbar-width: none; }
+    .panel::-webkit-scrollbar { display: none; }
     .open .panel { opacity: 1; transform: none; pointer-events: auto; transition-delay: .06s; }
     /* Below a MacBook notch. */
     body.notch .panel { padding-top: calc(var(--notch-h, 0px) + 8px); }

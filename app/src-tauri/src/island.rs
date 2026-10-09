@@ -132,6 +132,12 @@ pub fn release_lane(handle: &AppHandle) {
     }
 }
 
+/// The island's window when OpenHop follows the pointer itself: big enough
+/// for the island at its largest, so it never has to be resized or moved
+/// (which shows as a jump). Clicks go through everywhere the island isn't.
+const STAGE: (f64, f64) = (580.0, 780.0);
+const ISLAND_TITLE: &str = "OpenHop Island";
+
 /// Collapsed size (logical pixels).
 pub const PILL: (f64, f64) = (210.0, 34.0);
 
@@ -209,6 +215,8 @@ pub struct IslandState {
 /// Linux desktops the top bar is there, so just below it.
 fn place(handle: &AppHandle, w: f64, h: f64) {
     let Some(win) = handle.get_webview_window("island") else { return };
+    let fixed = handle.state::<Island>().fit.lock().watch;
+    let (w, h) = if fixed { STAGE } else { (w, h) };
     let Some(m) = win.primary_monitor().ok().flatten().or_else(|| win.current_monitor().ok().flatten()) else { return };
     let scale = m.scale_factor();
     let (pw, ph) = ((w * scale).round() as u32, (h * scale).round() as u32);
@@ -224,10 +232,20 @@ fn place(handle: &AppHandle, w: f64, h: f64) {
         None => area.position.y,
     };
     let x = m.position().x + (m.size().width as i32 - pw as i32) / 2;
-    let _ = win.set_size(PhysicalSize::new(pw, ph));
-    let _ = win.set_position(PhysicalPosition::new(x, top));
     let island = handle.state::<Island>();
     let mut g = island.geo.lock();
+    let same = g.x == x && g.y == top && g.w == pw && g.h == ph && g.scale == scale;
+    if !same {
+        // Both at once where the system allows: no jump in between.
+        #[cfg(windows)]
+        let raw = win.hwnd().map(|h| h.0 as isize).unwrap_or(0);
+        #[cfg(not(windows))]
+        let raw = 0isize;
+        if !openhop_core::extras::lane::move_resize(raw, ISLAND_TITLE, x, top, pw, ph) {
+            let _ = win.set_size(PhysicalSize::new(pw, ph));
+            let _ = win.set_position(PhysicalPosition::new(x, top));
+        }
+    }
     *g = Geo { x, y: top, w: pw, h: ph, scale, screen_top: top, vis_w: g.vis_w, vis_h: g.vis_h };
 }
 
@@ -312,7 +330,7 @@ fn attached() -> bool {
 
 pub fn create(app: &tauri::App) -> tauri::Result<()> {
     let win = WebviewWindowBuilder::new(app, "island", WebviewUrl::App("island.html".into()))
-        .title("OpenHop")
+        .title(ISLAND_TITLE)
         .inner_size(PILL.0, PILL.1)
         .decorations(false)
         .transparent(true)
