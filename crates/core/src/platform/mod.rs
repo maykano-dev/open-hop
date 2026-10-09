@@ -116,9 +116,10 @@ fn monitors_now() -> Vec<Rect> {
     }
     #[cfg(windows)]
     {
-        use windows::core::BOOL;
-        use windows::Win32::Foundation::{LPARAM, RECT};
-        use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
+        // (`::windows`: this module has a `windows` of its own.)
+        use ::windows::core::BOOL;
+        use ::windows::Win32::Foundation::{LPARAM, RECT};
+        use ::windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
         unsafe extern "system" fn each(_: HMONITOR, _: HDC, r: *mut RECT, data: LPARAM) -> BOOL {
             let v = &mut *(data.0 as *mut Vec<Rect>);
             let r = &*r;
