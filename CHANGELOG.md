@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.3
+
+### Fixed
+- **No lane on Linux with Wayland** (e.g. Ubuntu's default session) until OpenHop's GNOME helper was running: the lane now comes straight away through XWayland, and the helper takes over after the next login.
+
+
 ## v0.9.2
 
 ### Fixed

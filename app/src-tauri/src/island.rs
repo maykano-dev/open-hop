@@ -23,13 +23,15 @@ fn make_lane(app: &tauri::App) {
     }
     let Some(m) = app.primary_monitor().ok().flatten() else { return };
     let scale = m.scale_factor();
-    // GNOME on Wayland: OpenHop's Shell helper makes the lane.
+    // GNOME on Wayland with OpenHop's Shell helper running: it makes the
+    // lane. Otherwise (no helper yet, other desktops) the X11 way below
+    // works through XWayland too.
     #[cfg(target_os = "linux")]
-    if openhop_core::platform::linux_is_wayland() {
+    if openhop_core::platform::linux_is_wayland() && openhop_core::wins::gnome::available() {
         let handle = app.handle().clone();
         std::thread::spawn(move || {
             let Some(top) = openhop_core::wins::gnome::lane(LANE as u32) else {
-                log::info!("island lane: needs OpenHop's GNOME Shell helper (after the next login)");
+                log::info!("island lane: OpenHop's GNOME Shell helper didn't make one");
                 return;
             };
             log::info!("island lane under GNOME's top bar at {top}");
