@@ -1,10 +1,11 @@
-# Publishes the phone app (web/phone) to the gh-pages branch, which GitHub
-# Pages serves over HTTPS at https://<owner>.github.io/open-hop/.
-name: Phone app
+# Publishes the website (site/) and the phone app (web/phone, at /phone/) to
+# the gh-pages branch, which GitHub Pages serves over HTTPS at
+# https://<owner>.github.io/open-hop/.
+name: Website and phone app
 on:
   push:
     branches: [main]
-    paths: ["web/phone/**", ".github/workflows/pages.yml"]
+    paths: ["web/phone/**", "site/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 permissions:
   contents: write
@@ -18,7 +19,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Push to gh-pages
         run: |
-          cd web/phone
+          mkdir -p out
+          cp -r site/. out/
+          mkdir -p out/phone
+          cp -r web/phone/. out/phone/
+          cd out
           touch .nojekyll
           git init -q -b gh-pages
           git config user.name "github-actions[bot]"

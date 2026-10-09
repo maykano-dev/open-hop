@@ -281,9 +281,9 @@
     .statusrow { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; min-height: 30px; }
     .statusrow .status { flex: 1; min-width: 0; margin: 0 2px; }
     .quick { display: flex; gap: 6px; flex: none; }
-    .qk { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--glass); color: var(--soft); position: relative;
+    .qk { width: 30px; height: 30px; padding: 0; border-radius: 50%; display: grid; place-items: center; background: var(--glass); color: var(--soft); position: relative;
       transition: background .2s var(--ease), color .2s, transform .25s var(--spring), width .25s var(--ease); }
-    .qk .disc { display: grid; place-items: center; }
+    .qk .disc { display: grid; place-items: center; width: 100%; height: 100%; }
     .qk svg { width: 15px; height: 15px; display: block; }
     .qk .lbl { display: none; }
     .qk:hover { background: var(--glass-hi); color: var(--ink); }
@@ -314,6 +314,13 @@
     .ph-renew:hover { color: var(--ink); background: var(--glass-hi); }
     .ph-renew.armed { background: var(--bad); color: #fff; }
     .qk.phone.on { background: var(--good); color: #fff; }
+    /* Remote help: a recording-style dot, and Stop. */
+    .c-ico.helped { background: rgba(255,59,48,.18); display: grid; place-items: center; }
+    .c-ico.helped .rec { width: 9px; height: 9px; border-radius: 50%; background: #ff3b30; animation: rec 1.6s ease-in-out infinite; }
+    @keyframes rec { 50% { opacity: .35; } }
+    .c-stop { background: #ff3b30; color: #fff; font-size: 12px; font-weight: 700; border-radius: 999px; padding: 4px 11px; pointer-events: auto; }
+    .win .app.scr { background: var(--glass-hi); color: var(--ink); display: grid; place-items: center; }
+    .win .app.scr svg { width: 22px; height: 22px; }
     .controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
     .ctl { display: flex; flex-direction: column; align-items: center; gap: 7px; font-size: 11.5px; color: var(--soft); }
     .ctl .disc {
@@ -425,7 +432,7 @@
         </div>
         <div class="offs" id="offs"></div>
         <div class="pcs" id="pcs"></div>
-        <div class="section" id="winsTitle">Windows on your other computers</div>
+        <div class="section" id="winsTitle">Screens and windows on your other computers</div>
         <div class="wins" id="wins"></div>
       </section>
 

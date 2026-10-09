@@ -128,6 +128,61 @@ pub fn touching_edge(r: &Rect, x: i32, y: i32) -> Option<Side> {
     }
 }
 
+/// Is this point on one of the monitors?
+fn covered(mons: &[Rect], x: i32, y: i32) -> bool {
+    mons.iter().any(|m| x >= m.x && x <= m.right() && y >= m.y && y <= m.bottom())
+}
+
+/// Like [`touching_edge`], but also at a monitor's own edge where there's no
+/// other monitor beyond it (a smaller monitor beside a bigger one, or two
+/// monitors offset from each other): those count as the desktop's edge too.
+pub fn touching_edge_mon(r: &Rect, mons: &[Rect], x: i32, y: i32) -> Option<Side> {
+    if let Some(s) = touching_edge(r, x, y) {
+        return Some(s);
+    }
+    let m = mons.iter().find(|m| x >= m.x && x <= m.right() && y >= m.y && y <= m.bottom())?;
+    if x <= m.x && !covered(mons, x - 1, y) {
+        Some(Side::Left)
+    } else if x >= m.right() && !covered(mons, x + 1, y) {
+        Some(Side::Right)
+    } else if y <= m.y && !covered(mons, x, y - 1) {
+        Some(Side::Top)
+    } else if y >= m.bottom() && !covered(mons, x, y + 1) {
+        Some(Side::Bottom)
+    } else {
+        None
+    }
+}
+
+/// [`apply_delta`] on a computer with several monitors (`mons`, relative to
+/// its desktop's top-left): moving off a monitor where no other monitor
+/// continues leaves through that side; otherwise the pointer stays on the
+/// monitor it was on (as the system itself would keep it).
+pub fn apply_delta_mon(w: i32, h: i32, mons: &[Rect], x: i32, y: i32, dx: i32, dy: i32) -> Result<(i32, i32), (Side, f64)> {
+    let r = apply_delta(w, h, x, y, dx, dy)?;
+    if mons.len() < 2 || covered(mons, r.0, r.1) {
+        return Ok(r);
+    }
+    let Some(m) = mons.iter().find(|m| covered(std::slice::from_ref(m), x, y)) else { return Ok(r) };
+    let (nx, ny) = r;
+    let fy = |v: i32| (v.clamp(0, h - 1)) as f64 / (h.max(2) - 1) as f64;
+    let fx = |v: i32| (v.clamp(0, w - 1)) as f64 / (w.max(2) - 1) as f64;
+    let (cx, cy) = (nx.clamp(m.x, m.right()), ny.clamp(m.y, m.bottom()));
+    if nx < m.x && !covered(mons, m.x - 1, cy) {
+        return Err((Side::Left, fy(cy)));
+    }
+    if nx > m.right() && !covered(mons, m.right() + 1, cy) {
+        return Err((Side::Right, fy(cy)));
+    }
+    if ny < m.y && !covered(mons, cx, m.y - 1) {
+        return Err((Side::Top, fx(cx)));
+    }
+    if ny > m.bottom() && !covered(mons, cx, m.bottom() + 1) {
+        return Err((Side::Bottom, fx(cx)));
+    }
+    Ok((cx, cy))
+}
+
 /// Fraction (0..1) along the edge that was crossed.
 pub fn edge_fraction(r: &Rect, side: Side, x: i32, y: i32) -> f64 {
     let f = match side {
@@ -176,6 +231,30 @@ pub fn apply_delta(w: i32, h: i32, x: i32, y: i32, dx: i32, dy: i32) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitor_edges() {
+        // A 1920x1080 monitor, and a 1280x720 one to its right, top-aligned.
+        let mons = [Rect { x: 0, y: 0, w: 1920, h: 1080 }, Rect { x: 1920, y: 0, w: 1280, h: 720 }];
+        let desk = Rect { x: 0, y: 0, w: 3200, h: 1080 };
+        // Right edge of the small one: the desktop's edge.
+        assert_eq!(touching_edge_mon(&desk, &mons, 3199, 100), Some(Side::Right));
+        // Bottom of the small one, nothing below: an edge now.
+        assert_eq!(touching_edge_mon(&desk, &mons, 2500, 719), Some(Side::Bottom));
+        // Between the two monitors: not an edge.
+        assert_eq!(touching_edge_mon(&desk, &mons, 1919, 300), None);
+        // Right edge of the big one below the small one: an edge.
+        assert_eq!(touching_edge_mon(&desk, &mons, 1919, 900), Some(Side::Right));
+        // One monitor: as before.
+        assert_eq!(touching_edge_mon(&desk, &mons[..1], 1000, 500), None);
+
+        // Driving a remote pointer: from the big monitor rightwards below the small one.
+        assert_eq!(apply_delta_mon(3200, 1080, &mons, 1900, 900, 40, 0).unwrap_err().0, Side::Right);
+        // Into the small one: fine.
+        assert_eq!(apply_delta_mon(3200, 1080, &mons, 1900, 300, 40, 0), Ok((1940, 300)));
+        // Down off the small one: leaves through the bottom.
+        assert_eq!(apply_delta_mon(3200, 1080, &mons, 2500, 715, 0, 20).unwrap_err().0, Side::Bottom);
+    }
 
     #[test]
     fn auto_place_and_neighbors() {

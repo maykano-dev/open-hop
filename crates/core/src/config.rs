@@ -92,6 +92,15 @@ pub struct Config {
     /// Where the phone app lives (empty: OpenHop's own, on GitHub Pages).
     #[serde(default)]
     pub phone_app_url: Option<String>,
+    /// Notifications from the other computers show on the one you're using.
+    #[serde(default = "yes")]
+    pub mirror_notifications: bool,
+    /// A folder kept the same on every computer.
+    #[serde(default = "yes")]
+    pub shared_folder_on: bool,
+    /// Where (empty: "OpenHop Shared" in the home folder).
+    #[serde(default)]
+    pub shared_folder: Option<String>,
 }
 
 fn yes() -> bool {
@@ -159,6 +168,9 @@ impl Default for Config {
             allow_sleep: true,
             phone_relays: vec![],
             phone_app_url: None,
+            mirror_notifications: true,
+            shared_folder_on: true,
+            shared_folder: None,
         }
     }
 }

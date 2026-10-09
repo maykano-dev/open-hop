@@ -88,6 +88,9 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 🫳 **Drag & drop files across screens** | Drag files off one computer's screen and drop them into a folder or app on another's, just like a local drag. |
 | 🏝 **The island** | Lives at the top of the screen and stays out of your way: on a MacBook it wraps around the notch, on other Macs it sits in the menu bar, and on Windows and Linux it gets a lane of its own across the top of the screen (maximized windows leave it free, so it never covers a tab), or, where the system can't keep a strip free, rests as a thin line that clicks pass through. Rest the pointer on it and it opens into the Control Center: music, Focus, Lock All, Sleep All, every computer's battery and storage, and their windows. Live pills show files flying with a progress ring, a song starting, a copy; notices pop out of it on the screen you're using. |
 | 📱 **Your phone, on any network** | Scan the code in the island once and the OpenHop phone app goes on your iPhone or Android home screen (no app store). It finds your computer by itself, on any network, encrypted end to end: send photos, videos, files and text to any computer, all of them or the shelf; get files dropped on **Phone** in the island; use the shelf, clipboard history, a trackpad, music controls, Focus, Lock All and Sleep All. |
+| 🖥 **Whole screen and remote help** | See and use another computer's whole screen in a window. On a computer that doesn't let others in, its owner is asked each time, sees a red frame while someone helps, and can stop it any time. |
+| 📂 **Shared folder** | “OpenHop Shared” in your home folder stays the same on every computer. |
+| 🔔 **Notifications in one place** | Notifications from your Linux computers show on the computer you're using. |
 | 🏫 **Choose what's shared** | For schools, offices and shared computers: switch off being controlled, sharing this keyboard and mouse, or Focus, Lock All and Sleep All for this computer. Switched-off actions leave the island, and it shows what's off. |
 | 🎵 **Media controls** | What's playing on any computer (Spotify, a video in the browser, a music app), with cover art, a progress bar, play/pause, skip and shuffle, from any computer. |
 | 📤 **Send with OpenHop** | Right-click files in Explorer, Finder, Files, Dolphin, Nemo, Thunar or Caja and choose **Send with OpenHop** › a computer (or all of them, or the shelf). OpenHop doesn't need to be open. On Windows it's also in **Send to**; on a Mac it's a Quick Action. |
@@ -395,6 +398,9 @@ share_input = true          # this keyboard and mouse may go to the others
 allow_focus = true          # Focus, Lock All and Sleep All reach this computer
 allow_lock = true
 allow_sleep = true
+mirror_notifications = true
+shared_folder_on = true
+# shared_folder = "/home/me/OpenHop Shared"
 # phone_relays = ["wss://relay.example.org"]  # your own meeting point for phones
 # device_id, [trusted.*] and server_device are written by pairing; don't edit by hand
 # server_addr = "192.168.1.20"  # client: skip discovery
@@ -558,6 +564,8 @@ open-hop/
 
 ## Roadmap
 
+**Done in v0.12:** whole-screen view and remote help with consent, crossing from any monitor's edge, keep awake while in use, a shared folder, notifications in one place, the website.
+
 **Done in v0.11:** the phone app (any network, end-to-end encrypted, installable), sending to any computer, all of them or the shelf from the phone, the shelf, clipboard and a remote on the phone.
 
 **Done in v0.10:** phone sharing through a QR code in the island, choosing what each computer shares (for schools and offices), a smaller island, smoother opening and closing on Linux.
@@ -584,11 +592,8 @@ open-hop/
 
 - [ ] **Wayland as server** via the XDG InputCapture portal (GNOME 45+, KDE 6+), plus drag-out from Wayland apps
 - [ ] **Built-in wireless link** without any network: Wi-Fi Direct (Windows and Linux have APIs, macOS doesn't) or a Bluetooth RFCOMM/L2CAP transport (needs a separate implementation for each OS's Bluetooth stack)
-- [ ] **Keep awake / smart sleep**: keep controlled computers awake while connected, and let an idle one sleep while the others stay up
-- [ ] **Shared folder**, **notifications in one place**, **audio follows you**, a **whole-screen view** of another computer are planned
-- [ ] **Remote help**: take over a computer whose owner switched off control, only after they accept, while seeing its screen
+- [ ] **Audio follows you**, and the **phone's camera as a webcam** for the computer
 - [ ] **Quick Share** with Android phones directly (no page), answering phone calls on the computer, and AirDrop on Linux with a compatible Wi‑Fi adapter
-- [ ] Per-monitor edges (cross from any monitor, not just the desktop's outer edge)
 - [ ] Code-signed and notarised builds (needs paid Apple and Windows signing certificates)
 
 **Phase 2: window streaming**

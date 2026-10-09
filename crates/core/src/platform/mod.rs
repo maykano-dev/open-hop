@@ -87,6 +87,66 @@ pub fn apply(inj: &mut dyn Injector, op: InjectOp) -> Result<()> {
     }
 }
 
+/// This computer's monitors (native desktop coordinates), refreshed every
+/// few seconds. Empty when the system can't say.
+pub fn monitors() -> Vec<Rect> {
+    use parking_lot::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, Vec<Rect>)>> = Mutex::new(None);
+    let mut c = CACHE.lock();
+    if let Some((at, v)) = c.as_ref() {
+        if at.elapsed() < Duration::from_secs(3) {
+            return v.clone();
+        }
+    }
+    let v = monitors_now();
+    *c = Some((Instant::now(), v.clone()));
+    v
+}
+
+fn monitors_now() -> Vec<Rect> {
+    #[cfg(target_os = "linux")]
+    {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::randr::ConnectionExt as _;
+        let Ok((conn, n)) = x11rb::connect(None) else { return vec![] };
+        let root = conn.setup().roots[n].root;
+        let Some(r) = conn.randr_get_monitors(root, true).ok().and_then(|c| c.reply().ok()) else { return vec![] };
+        return r.monitors.iter().map(|m| Rect { x: m.x as i32, y: m.y as i32, w: m.width as i32, h: m.height as i32 }).collect();
+    }
+    #[cfg(windows)]
+    {
+        use windows::core::BOOL;
+        use windows::Win32::Foundation::{LPARAM, RECT};
+        use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
+        unsafe extern "system" fn each(_: HMONITOR, _: HDC, r: *mut RECT, data: LPARAM) -> BOOL {
+            let v = &mut *(data.0 as *mut Vec<Rect>);
+            let r = &*r;
+            v.push(Rect { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top });
+            BOOL(1)
+        }
+        let mut v: Vec<Rect> = vec![];
+        unsafe {
+            let _ = EnumDisplayMonitors(None, None, Some(each), LPARAM(&mut v as *mut Vec<Rect> as isize));
+        }
+        return v;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use core_graphics::display::CGDisplay;
+        return CGDisplay::active_displays()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| {
+                let b = CGDisplay::new(id).bounds();
+                Rect { x: b.origin.x as i32, y: b.origin.y as i32, w: b.size.width as i32, h: b.size.height as i32 }
+            })
+            .collect();
+    }
+    #[allow(unreachable_code)]
+    Vec::new()
+}
+
 /// Where the pointer is now (native coordinates).
 pub fn cursor_pos() -> Option<(i32, i32)> {
     #[cfg(target_os = "linux")]

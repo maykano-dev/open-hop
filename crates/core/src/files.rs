@@ -30,8 +30,23 @@ pub fn set_speed_limit_mbps(mbps: u32) {
     RATE.store(mbps as u64 * 1_000_000 / 8, std::sync::atomic::Ordering::Relaxed);
 }
 
+static LAST_MOVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Files are moving (keeps the computer awake for a while).
+pub fn touch() {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    LAST_MOVED.store(now, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Did files move in the last `secs` seconds?
+pub fn moved_within(secs: u64) -> bool {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    now.saturating_sub(LAST_MOVED.load(std::sync::atomic::Ordering::Relaxed)) <= secs
+}
+
 /// Wait until `len` more bytes may be sent under the speed limit.
 pub fn pace(len: usize) {
+    touch();
     let rate = RATE.load(std::sync::atomic::Ordering::Relaxed);
     if rate == 0 {
         return;
@@ -129,6 +144,11 @@ impl Outbox {
     /// Keep offering these until taken off (the shelf).
     pub fn keep(&self, offer: u64, entries: Vec<Entry>) {
         self.kept.lock().insert(offer, entries);
+    }
+
+    /// Stop offering something kept.
+    pub fn unkeep(&self, offer: u64) {
+        self.kept.lock().remove(&offer);
     }
 
     /// Stream an offer to `dest` over `link` on a background thread.
@@ -331,7 +351,12 @@ impl Inbox {
     pub fn start(&self, offer: u64, origin: &str, kind: OfferKind, files: Vec<FileMeta>) -> Result<(), String> {
         // Dropped files go to a fresh folder first, so they keep their own
         // names when they're dropped into an app (no "photo (2).jpg").
-        let root = if kind == OfferKind::Drop { self.root.join(DROPS).join(format!("{offer:x}")) } else { self.root.clone() };
+        let root = match kind {
+            OfferKind::Drop => self.root.join(DROPS).join(format!("{offer:x}")),
+            // Shared-folder files arrive aside first, then go in place whole.
+            OfferKind::Folder => self.root.join(".sync").join(format!("{offer:x}")),
+            _ => self.root.clone(),
+        };
         std::fs::create_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
         let mut renamed: HashMap<String, String> = HashMap::new();
         let mut targets = Vec::new();
@@ -373,6 +398,7 @@ impl Inbox {
     }
 
     pub fn data(&self, offer: u64, index: u32, data: &[u8]) -> Result<(), String> {
+        touch();
         let mut st = self.inner.lock();
         let Some(d) = st.active.get_mut(&offer) else {
             return Ok(());

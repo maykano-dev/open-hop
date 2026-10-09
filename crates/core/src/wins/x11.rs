@@ -243,6 +243,25 @@ impl X {
         Some(Picture { w: pw, h: ph, bgra })
     }
 
+    /// The whole screen, as you see it.
+    fn screen_picture(&mut self) -> Option<Picture> {
+        let g = self.conn.get_geometry(self.root).ok()?.reply().ok()?;
+        let (w, h) = (g.width, g.height);
+        let need = w as usize * h as usize * 4;
+        if g.depth >= 24 && self.shm_ok {
+            if let Some(bgra) = self.shm_picture(self.root, 0, 0, w, h, need) {
+                return Some(Picture { w: w as u32, h: h as u32, bgra });
+            }
+        }
+        let img = self.conn.get_image(ImageFormat::Z_PIXMAP, self.root, 0, 0, w, h, !0).ok()?.reply().ok()?;
+        if img.data.len() < need {
+            return None;
+        }
+        let mut bgra = img.data;
+        bgra.truncate(need);
+        Some(Picture { w: w as u32, h: h as u32, bgra })
+    }
+
     /// Picture through shared memory: no copying over the X connection.
     fn shm_picture(&mut self, d: Drawable, x: i16, y: i16, w: u16, h: u16, need: usize) -> Option<Vec<u8>> {
         use x11rb::protocol::shm::ConnectionExt as _;
@@ -326,6 +345,10 @@ pub fn capture(id: u64) -> Option<Picture> {
 
 pub fn geometry(id: u64) -> Option<Rect> {
     x()?.lock().full_rect(id as Window)
+}
+
+pub fn capture_screen() -> Option<Picture> {
+    x()?.lock().screen_picture()
 }
 
 pub fn bar_height(id: u64) -> i32 {

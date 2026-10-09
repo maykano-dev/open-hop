@@ -195,6 +195,15 @@ fn save_config(app: State<App>, config: Config, restart: bool) -> Result<(), Str
     Ok(())
 }
 
+/// Show the shared folder in the file manager.
+#[tauri::command]
+fn open_shared_folder(app: State<App>) -> Result<(), String> {
+    let cfg = app.config.lock().clone();
+    let root = cfg.shared_folder.as_ref().map(PathBuf::from).unwrap_or_else(openhop_core::extras::folder::default_root);
+    let _ = std::fs::create_dir_all(&root);
+    openhop_core::engine::run_action("open_path", &root.to_string_lossy()).map_err(|e| e.to_string())
+}
+
 /// Settings that apply straight away (no restart): the accent colour.
 /// `prefs` holds just the changed fields.
 #[tauri::command]
@@ -203,7 +212,7 @@ fn update_prefs(handle: AppHandle, app: State<App>, prefs: serde_json::Value) ->
         let mut cfg = app.config.lock();
         let mut v = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
         if let (Some(obj), Some(p)) = (v.as_object_mut(), prefs.as_object()) {
-            for k in ["ui_accent", "allow_control", "share_input", "allow_focus", "allow_lock", "allow_sleep"] {
+            for k in ["ui_accent", "allow_control", "share_input", "allow_focus", "allow_lock", "allow_sleep", "mirror_notifications", "shared_folder_on"] {
                 if let Some(x) = p.get(k) {
                     obj.insert(k.into(), x.clone());
                 }
@@ -217,6 +226,10 @@ fn update_prefs(handle: AppHandle, app: State<App>, prefs: serde_json::Value) ->
     };
     if let Some(e) = app.engine.lock().as_ref() {
         e.hub().set_settings(openhop_core::extras::Settings::from_config(&cfg));
+        let root = cfg.shared_folder_on.then(|| cfg.shared_folder.as_ref().map(PathBuf::from).unwrap_or_else(openhop_core::extras::folder::default_root));
+        if root != e.hub().folder_root() {
+            e.hub().set_folder_on(root);
+        }
     }
     apply_login(&handle, true);
     Ok(())
@@ -385,6 +398,11 @@ fn toast_layout(handle: AppHandle, height: f64) {
 fn note_action(handle: AppHandle, kind: String, target: String) -> Result<(), String> {
     if kind == "install_update" {
         return update_install(handle);
+    }
+    if kind == "help_accept" || kind == "help_decline" {
+        let hub = handle.state::<App>().engine.lock().as_ref().map(|e| e.hub()).ok_or("OpenHop isn't running")?;
+        hub.help_answer(target.parse().map_err(|_| "bad request")?, kind == "help_accept");
+        return Ok(());
     }
     openhop_core::engine::run_action(&kind, &target).map_err(|e| e.to_string())
 }
@@ -628,6 +646,8 @@ fn main() {
             phone::phone_state,
             phone::phone_send,
             phone::phone_renew,
+            live::help_stop,
+            open_shared_folder,
             island::island_lock_all,
             island::island_sleep_all,
             island::island_find_pointer,

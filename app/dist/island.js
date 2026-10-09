@@ -47,9 +47,12 @@ const ICON = {
   next: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.5 6.2v11.6a.8.8 0 0 0 1.25.66L12 12.66v5.14a.8.8 0 0 0 1.25.66l8.6-5.8a.8.8 0 0 0 0-1.32l-8.6-5.8A.8.8 0 0 0 12 6.2v5.14L3.75 5.54a.8.8 0 0 0-1.25.66z"/></svg>',
   prev: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.5 6.2v11.6a.8.8 0 0 1-1.25.66L12 12.66v5.14a.8.8 0 0 1-1.25.66l-8.6-5.8a.8.8 0 0 1 0-1.32l8.6-5.8A.8.8 0 0 1 12 6.2v5.14l8.25-5.8a.8.8 0 0 1 1.25.66z"/></svg>',
   shuffle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h3.5c4.5 0 6.5 10 11 10H21M3 17h3.5c1.7 0 3-1.3 4.1-3M13.4 10c1.1-1.7 2.4-3 4.1-3H21"/><path d="m18 4 3 3-3 3M18 14l3 3-3 3"/></svg>',
+  bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg>',
   phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="2.5" width="11" height="19" rx="2.8"/><path d="M10.5 18.5h3"/></svg>',
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg>',
 };
+/** The whole screen, as a "window" (wins::SCREEN). */
+const SCREEN_ID = 2 ** 52 - 2;
 const ACCENTS = { blue: "#0a84ff", purple: "#bf5af2", pink: "#ff375f", orange: "#ff9f0a", green: "#30d158", graphite: "#98989d" };
 
 $("openApp").innerHTML = ICON.gear;
@@ -141,7 +144,9 @@ async function setMode(next, force) {
   }
 }
 
+let openedAt = 0;
 function open(byShortcut, which) {
+  openedAt = Date.now();
   pinned = !!byShortcut;
   clearTimeout(actTimer);
   if (which) setTab(which);
@@ -185,6 +190,18 @@ function setTab(t) {
   if (t === "open") renderApps();
   if (t === "phone") refreshPhone();
   if (mode === "open") setMode("open");
+}
+// Resting on a tab switches to it (like hovering a menu).
+let tabHover = null;
+for (const b of $("tabs").querySelectorAll("button")) {
+  // Only when the pointer moves onto it on purpose: not when the island has
+  // just opened under a pointer resting at the top of the screen.
+  b.addEventListener("pointermove", () => {
+    if (mode !== "open" || Date.now() - openedAt < 500 || tab === b.dataset.tab || dropping) return;
+    clearTimeout(tabHover);
+    tabHover = setTimeout(() => { if (mode === "open" && tab !== b.dataset.tab && !dropping) { setTab(b.dataset.tab); if (tab !== "home") refreshTools(); } }, 140);
+  });
+  b.addEventListener("mouseleave", () => clearTimeout(tabHover));
 }
 for (const b of $("tabs").querySelectorAll("button")) {
   b.addEventListener("click", (e) => {
@@ -235,11 +252,20 @@ setInterval(() => {
   const idle = Date.now() - lastInside;
   // A search left half-typed doesn't keep it open forever.
   if (busy()) { if (!hovering && idle > 20000) close(); return; }
-  // Resting on it (reading, scanning the phone code) keeps it open a good while.
-  const limit = !hovering ? 12000 : tab === "phone" ? 180000 : 45000;
+  // Resting on it (reading, scanning the phone code) keeps it open a good
+  // while, when OpenHop can tell the pointer is really still there.
+  const limit = !hovering ? 12000 : pointerIn === true ? (tab === "phone" ? 180000 : 60000) : 12000;
   if ((!hovering && entered && idle > 1200) || idle > limit) close();
 }, 500);
 if (T) T.event.listen("hover", (e) => { if (fit.watch) onHover(!!e.payload); });
+// Linux: OpenHop's own view of the pointer, in case the page misses it leaving.
+let pointerIn = null;
+if (T) T.event.listen("pointer_in", (e) => {
+  pointerIn = !!e.payload;
+  if (fit.watch) return;
+  if (pointerIn) lastInside = Date.now();
+  else if (hovering || mode === "open") { hovering = true; onHover(false); }
+});
 island.addEventListener("mouseenter", () => { if (!fit.watch) onHover(true); });
 island.addEventListener("mouseleave", () => { if (!fit.watch) onHover(false); });
 island.addEventListener("click", (e) => {
@@ -268,7 +294,7 @@ let actTimer = null;
 let shownNotes = new Set();
 
 const BADGE = {
-  battery: ICON.battery, focus: ICON.moon, files: ICON.files, info: ICON.info, pin: ICON.pin, copied: ICON.check, media: ICON.note, phone: ICON.phone,
+  battery: ICON.battery, focus: ICON.moon, files: ICON.files, info: ICON.info, pin: ICON.pin, copied: ICON.check, media: ICON.note, phone: ICON.phone, bell: ICON.bell,
 };
 function nextActivity() {
   if (mode === "open" || !queue.length) return;
@@ -300,7 +326,8 @@ function nextActivity() {
   void act.offsetWidth;
   act.style.animation = "";
   setMode("activity", true);
-  const stay = (a.actions || []).length ? 7000 : a.short ? 1900 : 4200;
+  const asks = (a.actions || []).some((x) => /^help_/.test(x.kind));
+  const stay = asks ? 45000 : (a.actions || []).length ? 7000 : a.short ? 1900 : 4200;
   const until = Date.now() + 15000;
   clearTimeout(actTimer);
   actTimer = setTimeout(function done() {
@@ -339,6 +366,9 @@ function earsWanted() {
   return !!(fit.notch && m && m.now.playing);
 }
 function liveNow() {
+  // Someone helping always shows (with Stop), above everything else.
+  const helped = (snap && snap.helped_by) || [];
+  if (helped.length) return { kind: "helped", names: helped };
   const tr = ((snap && snap.transfers) || []).filter((t) => !t.finished);
   if (tr.length) return { kind: "transfer", list: tr };
   finished = finished.filter((f) => f.until > Date.now());
@@ -359,18 +389,28 @@ function esc(s) { const d = document.createElement("span"); d.textContent = s; r
 function artStyle(url) { return url ? `background-image:url("${url.replace(/"/g, "%22")}")` : ""; }
 
 let liveKey = "";
+/** "a_very_long_holiday_video.mp4" → "a_very_long_ho…o.mp4": the end (and
+ * the extension) stays, so the ring beside it always shows. */
+function short(name, max = 22) {
+  name = String(name || "");
+  if (name.length <= max) return name;
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 && name.length - dot <= 6 ? name.slice(dot) : "";
+  const keep = max - ext.length - 1;
+  return name.slice(0, Math.ceil(keep * 0.7)) + "…" + name.slice(name.length - ext.length - Math.floor(keep * 0.3));
+}
 function drawLive(l) {
   let left = "", mid = "", right = "";
   if (l.kind === "transfer") {
     const t = l.list[0];
     const done = l.list.reduce((a, x) => a + x.done, 0), total = l.list.reduce((a, x) => a + x.total, 0);
     left = `<span class="c-ico files">${ICON.files}</span>`;
-    const label = l.list.length > 1 ? `${l.list.length} transfers` : t.label;
+    const label = l.list.length > 1 ? `${l.list.length} transfers` : short(t.label);
     mid = `${esc(label)}<small>${t.incoming ? "from" : "to"} ${esc(t.peer)}</small>`;
     right = ringSvg(total ? done / total : null);
   } else if (l.kind === "done") {
     left = `<span class="c-ico files">${ICON.files}</span>`;
-    mid = l.item.error ? `${esc(l.item.label)}<small>didn't arrive</small>` : `${esc(l.item.label)}<small>${l.item.incoming ? "received" : "sent"}</small>`;
+    mid = l.item.error ? `${esc(short(l.item.label))}<small>didn't arrive</small>` : `${esc(short(l.item.label))}<small>${l.item.incoming ? "received" : "sent"}</small>`;
     right = l.item.error ? `<span class="c-tag low">Failed</span>` : TICK;
   } else if (l.kind === "media") {
     const m = l.m.now;
@@ -387,15 +427,19 @@ function drawLive(l) {
     right = TICK;
   } else if (l.kind === "shelved") {
     left = `<span class="c-ico files">${ICON.tray}</span>`;
-    mid = `${esc(l.label)}<small>on the shelf</small>`;
+    mid = `${esc(short(l.label))}<small>on the shelf</small>`;
     right = TICK;
   } else if (l.kind === "opening") {
     left = `<span class="c-app" data-bg="${colorFor(l.label)}">${esc(l.label.trim().charAt(0).toUpperCase())}</span>`;
     mid = `${esc(l.label)}<small>Opening${tools && l.on !== tools.me ? " on " + esc(l.on) : ""}</small>`;
     right = ringSvg(null);
+  } else if (l.kind === "helped") {
+    left = `<span class="c-ico helped"><i class="rec"></i></span>`;
+    mid = `${esc(l.names.join(", "))}<small>is using this computer</small>`;
+    right = `<button class="c-stop" data-act="help-stop">Stop</button>`;
   } else if (l.kind === "sending") {
     left = `<span class="c-ico files">${ICON.files}</span>`;
-    mid = `${esc(l.label)}<small>${esc(l.to)}</small>`;
+    mid = `${esc(short(l.label))}<small>${esc(l.to)}</small>`;
     right = ringSvg(null);
   }
   // Only redraw what changed, so rings and bars animate smoothly.
@@ -608,6 +652,30 @@ function render() {
     }
     const wins = $("wins");
     wins.replaceChildren();
+    // Each other computer's whole screen first (asking first where its owner
+    // doesn't let others in).
+    for (const pc of (s.computers || []).filter((c) => !c.this && c.status.live !== false)) {
+      const b = document.createElement("button");
+      b.className = "win screen";
+      const ask = pc.status.controllable === false;
+      const icon = document.createElement("span");
+      icon.className = "app scr";
+      icon.innerHTML = ICON.desktop;
+      const n = document.createElement("span");
+      n.className = "n";
+      n.textContent = ask ? "Ask for screen" : "Whole screen";
+      const o = document.createElement("span");
+      o.className = "o";
+      o.textContent = pc.name;
+      b.append(icon, n, o);
+      b.title = ask ? `Ask ${pc.name} to let you see and use its screen` : `See and use ${pc.name}'s whole screen here`;
+      b.addEventListener("click", async () => {
+        try { await invoke("open_window", { origin: pc.name, window: String(SCREEN_ID) }); } catch (_) {}
+        if (ask) liveFlash = { kind: "sending", label: `Asked ${pc.name}`, to: "waiting for them to accept", until: Date.now() + 4000 };
+        close();
+      });
+      wins.append(b);
+    }
     const others = (s.windows || []).filter((g) => g.name !== s.me);
     for (const g of others) {
       for (const w of g.windows.slice(0, 12)) {
@@ -639,8 +707,8 @@ function render() {
         wins.append(b);
       }
     }
-    $("winsTitle").hidden = !others.length;
-    if (!others.length) {
+    $("winsTitle").hidden = !others.length && !wins.children.length;
+    if (!others.length && !wins.children.length) {
       const e = document.createElement("div");
       e.className = "empty";
       e.textContent = s.connected ? "No windows open on your other computers." : "";
@@ -1227,7 +1295,7 @@ function renderPhone() {
   $("phState").classList.toggle("on", !!p.connected);
   const waiting = (p.offered || []).length;
   $("phStateText").textContent = p.error ? p.error
-    : p.connected ? `${p.device} connected · ${p.how === "direct" ? "encrypted, any network" : "on this Wi‑Fi"}` + (waiting ? ` · ${waiting} file${waiting > 1 ? "s" : ""} for it` : "")
+    : p.connected ? `${p.device}${p.battery ? ` (${p.battery[0]}%)` : ""} connected · ${p.how === "direct" ? "encrypted, any network" : "on this Wi‑Fi"}` + (waiting ? ` · ${waiting} file${waiting > 1 ? "s" : ""} for it` : "")
     : !p.url ? "Not on a network"
     : waiting ? `${waiting} file${waiting > 1 ? "s" : ""} waiting · scan to get ${waiting > 1 ? "them" : "it"}`
     : "Waiting for your phone";
@@ -1242,6 +1310,10 @@ $("phRenew").addEventListener("click", async (e) => {
   b.classList.remove("armed"); b.textContent = "New code";
   try { phoneSnap = await invoke("phone_renew"); } catch (_) {}
   renderPhone();
+});
+// Stop someone helping, straight from the pill.
+$("cRight").addEventListener("click", (e) => {
+  if (e.target.closest("[data-act=help-stop]")) { e.stopPropagation(); invoke("help_stop").catch(() => {}); }
 });
 $("cPhone").addEventListener("click", (e) => { e.stopPropagation(); pinned = true; setTab("phone"); });
 

@@ -12,7 +12,7 @@ use crate::discovery::{Discovered, Discovery};
 use crate::extras::{self, Hub};
 use crate::files::{self, Finished, Inbox, Outbox, TransferInfo};
 use crate::keys;
-use crate::layout::{apply_delta, edge_fraction, entry_point, touching_edge, Layout, Side, SERVER};
+use crate::layout::{apply_delta_mon, edge_fraction, entry_point, touching_edge_mon, Layout, Side, SERVER};
 use crate::net::{derive_psk, handshake, Link, SecureReceiver, CHUNK};
 use crate::platform::{self, dnd, Capture, Injector, InputEvent};
 use crate::protocol::{ClipData, DriveEv, Ext, FileMeta, MouseButton, Msg, OfferKind, Os, Rect, WinInfo, DEFAULT_PORT, PROTOCOL_VERSION};
@@ -208,6 +208,12 @@ enum Control {
         origin: String,
         id: u64,
     },
+    /// Fetch a newer file of the shared folder.
+    FolderFetch {
+        origin: String,
+        offer: u64,
+        file: FileMeta,
+    },
     /// Move the pointer to this computer's screen.
     GoTo(String),
     /// Arrange these computers by moving the mouse toward each in turn.
@@ -317,6 +323,19 @@ impl Engine {
         dnd::init();
         let hub = Hub::new(cfg.name.clone(), extras::Settings::from_config(&cfg));
         let outbox = Outbox::default();
+        {
+            let ctl = ctl_tx.clone();
+            let root = cfg.shared_folder_on.then(|| cfg.shared_folder.as_ref().map(PathBuf::from).unwrap_or_else(extras::folder::default_root));
+            hub.set_folder(
+                root,
+                outbox.clone(),
+                Box::new(move |wants| {
+                    for (origin, offer, file) in wants {
+                        let _ = ctl.send(Control::FolderFetch { origin, offer, file });
+                    }
+                }),
+            );
+        }
 
         let ctx = Ctx {
             hub: hub.clone(),
@@ -720,9 +739,9 @@ impl Common {
     /// Files to send to computer `to` ("*" = everyone). Returns the message.
     fn send_files(&mut self, to: &str, paths: &[String]) -> Option<Msg> {
         let Some(Msg::FileOffer { offer, origin, files, .. }) = self.offer_local_files(paths, OfferKind::Send) else { return None };
-        let label = files::label_for(&files);
-        let whom = if to == "*" { "every computer".to_string() } else { to.to_string() };
-        self.ctx.hub.notice_everywhere(&format!("Sending {label}"), &format!("To {whom}."), "files");
+        // No notice everywhere: the computer receiving it shows it arriving
+        // (and the sender's island shows it going).
+        log::info!("sending {} to {}", files::label_for(&files), if to == "*" { "every computer" } else { to });
         Some(Msg::SendFiles { to: to.into(), offer, origin, files })
     }
 
@@ -829,6 +848,11 @@ impl Common {
     }
 
     fn on_finished(&mut self, f: Finished) {
+        // Shared-folder files go in place quietly (a failed one is tried again).
+        if f.kind == OfferKind::Folder {
+            self.ctx.hub.folder_landed(f.offer, &f.tops, f.error.is_none());
+            return;
+        }
         let label = f
             .tops
             .first()
@@ -841,6 +865,7 @@ impl Common {
         }
         let first = f.tops.first().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         match f.kind {
+            OfferKind::Folder => {}
             OfferKind::Clipboard => {
                 if let Some(s) = &self.clip_set {
                     let _ = s.send(ClipData::Files(f.tops.iter().map(|p| p.to_string_lossy().into_owned()).collect()));
@@ -1095,6 +1120,13 @@ impl Server {
                     Ok(Control::ShelfTake { origin, id }) => {
                         if let Some(req) = s.common.shelf_take(&origin, id) {
                             s.send_to_name(&origin, req);
+                        }
+                    }
+                    Ok(Control::FolderFetch { origin, offer, file }) => {
+                        if !s.ctx.inbox.is_active(offer) {
+                            if let Some(req) = s.common.request(offer, origin.clone(), OfferKind::Folder, vec![file]) {
+                                s.send_to_name(&origin, req);
+                            }
                         }
                     }
                     Ok(Control::GoTo(name)) => s.go_to(&name),
@@ -1442,7 +1474,7 @@ impl Server {
             (InputEvent::LocalMove { x, y }, None) => {
                 self.last_local = (x, y);
                 let screen = self.capture.screen();
-                let Some(side) = touching_edge(&screen, x, y) else {
+                let Some(side) = touching_edge_mon(&screen, &platform::monitors(), x, y) else {
                     self.edge_wait = None;
                     return;
                 };
@@ -1492,7 +1524,8 @@ impl Server {
             (InputEvent::Delta { dx, dy }, Some((id, x, y))) => {
                 let Some(p) = self.peers.get(&id) else { return };
                 let (w, h, pname) = (p.screen.w, p.screen.h, p.name.clone());
-                match apply_delta(w, h, x, y, dx, dy) {
+                let mons = self.ctx.hub.status_of(&pname).map(|s| s.monitors).unwrap_or_default();
+                match apply_delta_mon(w, h, &mons, x, y, dx, dy) {
                     Ok((nx, ny)) => {
                         self.push = 0;
                         self.active = Some((id, nx, ny));
@@ -1710,7 +1743,7 @@ impl Server {
             return;
         }
         match platform::cursor_pos() {
-            Some((x, y)) if touching_edge(&self.capture.screen(), x, y) == Some(side) => self.on_input(InputEvent::LocalMove { x, y }),
+            Some((x, y)) if touching_edge_mon(&self.capture.screen(), &platform::monitors(), x, y) == Some(side) => self.on_input(InputEvent::LocalMove { x, y }),
             _ => self.edge_wait = None,
         }
     }
@@ -2021,16 +2054,17 @@ impl Server {
         let from_os = self.peers.get(&c).map(|p| p.os).unwrap_or(Os::Other);
         match ev {
             DriveEv::Delta { dx, dy } => {
-                let (w, h, name) = if a == THIS {
+                let (w, h, name, mons) = if a == THIS {
                     let r = self.capture.screen();
-                    (r.w, r.h, SERVER.to_string())
+                    let mons = platform::monitors().into_iter().map(|m| Rect { x: m.x - r.x, y: m.y - r.y, w: m.w, h: m.h }).collect();
+                    (r.w, r.h, SERVER.to_string(), mons)
                 } else {
                     match self.peers.get(&a) {
-                        Some(p) => (p.screen.w, p.screen.h, p.name.clone()),
+                        Some(p) => (p.screen.w, p.screen.h, p.name.clone(), self.ctx.hub.status_of(&p.name).map(|s| s.monitors).unwrap_or_default()),
                         None => return,
                     }
                 };
-                match apply_delta(w, h, x, y, dx, dy) {
+                match apply_delta_mon(w, h, &mons, x, y, dx, dy) {
                     Ok((nx, ny)) => {
                         self.push = 0;
                         self.active = Some((a, nx, ny));
@@ -2905,6 +2939,13 @@ impl Client {
                             link.send(req);
                         }
                     }
+                    Ok(Control::FolderFetch { origin, offer, file }) => {
+                        if !self.ctx.inbox.is_active(offer) {
+                            if let Some(req) = self.common.request(offer, origin, OfferKind::Folder, vec![file]) {
+                                link.send(req);
+                            }
+                        }
+                    }
                     Ok(Control::GoTo(name)) => {
                         link.send(Msg::GoTo { name });
                     }
@@ -2921,7 +2962,7 @@ impl Client {
                     if let Some((side, t)) = self.edge_wait {
                         if t.elapsed() >= EDGE_DWELL && !self.driving {
                             match platform::cursor_pos() {
-                                Some((x, y)) if touching_edge(&screen, x, y) == Some(side) => {
+                                Some((x, y)) if touching_edge_mon(&screen, &platform::monitors(), x, y) == Some(side) => {
                                     self.edge_wait = None;
                                     link.send(Msg::EdgeHit { side, frac: edge_fraction(&screen, side, x, y) });
                                 }
@@ -3188,7 +3229,7 @@ impl Client {
                         link.send(Msg::LocalPos { x: x - screen.x, y: y - screen.y });
                     }
                 }
-                match touching_edge(&screen, x, y) {
+                match touching_edge_mon(&screen, &platform::monitors(), x, y) {
                     Some(side) => {
                         let frac = edge_fraction(&screen, side, x, y);
                         // Not from corners, a pinned pointer or a full-screen game;

@@ -745,3 +745,7 @@ function mockInvoke() {
     }
   };
 }
+
+// The shared folder.
+const openShared = document.getElementById("openShared");
+if (openShared) openShared.addEventListener("click", () => invoke("open_shared_folder").catch(() => {}));

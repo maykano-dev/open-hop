@@ -22,6 +22,8 @@ static NOTE_ID: AtomicU64 = AtomicU64::new(u64::MAX / 2);
 struct Host {
     handle: AppHandle,
     last_poke: Mutex<Instant>,
+    /// The lowest battery warning given since the phone was last charging.
+    warned: Mutex<u8>,
 }
 
 impl Host {
@@ -67,7 +69,7 @@ impl PhoneHost for Host {
                 };
                 handle.state::<App>().toasts.lock().push_back(Note {
                     id: NOTE_ID.fetch_add(1, Ordering::Relaxed),
-                    title: format!("Received {name}"),
+                    title: format!("Received {}", short(&name)),
                     body: format!("From your {device}, in Downloads › OpenHop.{onward}"),
                     actions: vec![
                         NoteAction { label: "Open".into(), kind: "open_path".into(), target: p.clone() },
@@ -92,6 +94,26 @@ impl PhoneHost for Host {
                 },
             ),
             PhoneEvent::Disconnected { .. } => poke(handle),
+            PhoneEvent::Battery { device, level, charging } => {
+                // Low battery, like the computers': at 20%, 10% and 5%.
+                let mut warned = self.warned.lock();
+                if charging {
+                    *warned = 101;
+                    return;
+                }
+                if let Some(&t) = [5u8, 10, 20].iter().find(|&&t| level <= t && t < *warned) {
+                    *warned = t;
+                    push(
+                        handle,
+                        Activity {
+                            title: format!("Your {device} is at {level}%"),
+                            body: if t <= 10 { "Plug it in now.".into() } else { "Plug it in soon.".into() },
+                            icon: "battery".into(),
+                            short: false,
+                        },
+                    );
+                }
+            }
             PhoneEvent::Progress => {
                 // A few times a second at most.
                 let mut last = self.last_poke.lock();
@@ -126,7 +148,7 @@ pub fn link(handle: &AppHandle) -> Arc<Link> {
         };
         (dir, relays, c.phone_app_url.clone())
     };
-    let host = Arc::new(Host { handle: handle.clone(), last_poke: Mutex::new(Instant::now()) });
+    let host = Arc::new(Host { handle: handle.clone(), last_poke: Mutex::new(Instant::now()), warned: Mutex::new(101) });
     let p = Link::start(host, &config_dir(&app), dir, relays, app_url);
     *g = Some(p.clone());
     p
@@ -164,4 +186,17 @@ pub fn phone_renew(handle: AppHandle) -> PhoneState {
     let l = link(&handle);
     l.renew();
     l.state()
+}
+
+/// A long file name with its start and end (and extension) kept.
+fn short(name: &str) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= 28 {
+        return name.to_string();
+    }
+    let ext_len = name.rfind('.').map(|i| name[i..].chars().count()).filter(|n| *n <= 6).unwrap_or(0);
+    let keep = 27 - ext_len;
+    let head: String = chars[..keep * 7 / 10].iter().collect();
+    let tail: String = chars[chars.len() - ext_len - (keep - keep * 7 / 10)..].iter().collect();
+    format!("{head}…{tail}")
 }

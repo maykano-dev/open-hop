@@ -6,6 +6,9 @@
 //! [`Ext`] messages addressed by computer name (the server forwards them).
 
 pub mod apps;
+pub mod awake;
+pub mod folder;
+pub mod notify;
 pub mod gnome_ext;
 pub mod icons;
 pub mod lane;
@@ -63,6 +66,13 @@ pub enum UiEvent {
     Locate {
         x: i32,
         y: i32,
+    },
+    /// Someone asks to see (and use) this computer's screen or a window,
+    /// and this computer doesn't let others control it: ask its owner.
+    HelpAsk {
+        id: u64,
+        from: String,
+        screen: bool,
     },
     /// Tell the user something (on this screen: they're using it).
     Notice {
@@ -154,6 +164,7 @@ pub struct Settings {
     pub allow_focus: bool,
     pub allow_lock: bool,
     pub allow_sleep: bool,
+    pub mirror: bool,
 }
 
 impl Settings {
@@ -169,6 +180,7 @@ impl Settings {
             allow_focus: c.allow_focus,
             allow_lock: c.allow_lock,
             allow_sleep: c.allow_sleep,
+            mirror: c.mirror_notifications,
         }
     }
 }
@@ -249,6 +261,17 @@ pub struct Hub {
     viewers: Mutex<HashMap<u64, Viewer>>,
     frames: Condvar,
     sources: Mutex<HashMap<u64, Arc<Source>>>,
+    /// Computers the owner let in this time (remote help), and requests
+    /// waiting for an answer: stream → (from, window, their system).
+    helpers: Mutex<std::collections::HashSet<String>>,
+    help_asks: Mutex<HashMap<u64, (String, u64, Os, Instant)>>,
+    pointer_left: Mutex<Option<Instant>>,
+    /// The shared folder, the offers serving its files, and how to fetch.
+    folder: Mutex<Option<folder::Shared>>,
+    outbox: Mutex<Option<crate::files::Outbox>>,
+    folder_fetch: Mutex<Option<Box<dyn Fn(Vec<folder::Fetch>) + Send>>>,
+    /// Kept awake while used from elsewhere, until when (by reason).
+    awake_for: Mutex<HashMap<String, Instant>>,
     quiet_from: Mutex<BTreeSet<String>>,
     /// Do Not Disturb state from before we turned it on for another computer.
     dnd_before: Mutex<Option<bool>>,
@@ -335,6 +358,13 @@ impl Hub {
             viewers: Mutex::new(HashMap::new()),
             frames: Condvar::new(),
             sources: Mutex::new(HashMap::new()),
+            awake_for: Mutex::new(HashMap::new()),
+            helpers: Mutex::new(std::collections::HashSet::new()),
+            help_asks: Mutex::new(HashMap::new()),
+            pointer_left: Mutex::new(None),
+            folder: Mutex::new(None),
+            outbox: Mutex::new(None),
+            folder_fetch: Mutex::new(None),
             quiet_from: Mutex::new(BTreeSet::new()),
             dnd_before: Mutex::new(None),
             theme_expect: Mutex::new(None),
@@ -363,6 +393,14 @@ impl Hub {
         let _ = std::thread::Builder::new().name("tasks".into()).spawn(move || h.tasks_loop(quit_rx));
         let h = hub.clone();
         let _ = std::thread::Builder::new().name("icons".into()).spawn(move || h.icons_loop(icon_rx));
+        // This computer's notifications, for the computer in use.
+        let w = Arc::downgrade(&hub);
+        notify::watch(move |n| {
+            let Some(h) = w.upgrade() else { return };
+            if h.settings.read().mirror && !h.pointer_here() && h.out.read().is_some() {
+                h.send("*", Ext::Mirror { app: n.app, title: n.title, body: n.body });
+            }
+        });
         let h = hub.clone();
         let _ = std::thread::Builder::new().name("extras".into()).spawn(move || {
             // Windows a crashed run left hidden come back.
@@ -415,6 +453,77 @@ impl Hub {
     pub fn set_injector(&self, inject: Inject, whole_clicks: bool) {
         *self.inject.lock() = Some(inject);
         self.whole_clicks.store(whole_clicks, Ordering::SeqCst);
+    }
+
+    /// The owner answered a request to see and use this computer.
+    pub fn help_answer(self: &Arc<Self>, id: u64, accept: bool) {
+        let Some((from, window, os, at)) = self.help_asks.lock().remove(&id) else { return };
+        if at.elapsed() > Duration::from_secs(120) {
+            return;
+        }
+        if accept {
+            log::info!("{from} may see and use this computer now (remote help)");
+            self.helpers.lock().insert(from.clone());
+            self.send(&from, Ext::WinPause { stream: id, paused: false, reason: String::new() });
+            self.start_source(&from, id, window, os);
+        } else {
+            self.send(&from, Ext::WinClose { stream: id });
+            let me = self.me.clone();
+            self.send(&from, Ext::Notice { title: format!("{me} said no"), body: "They didn't want to share their screen right now.".into(), icon: "info".into() });
+        }
+    }
+
+    /// Who's seeing and using this computer with its owner's OK right now.
+    pub fn helped_by(&self) -> Vec<String> {
+        let helpers = self.helpers.lock().clone();
+        let mut v: Vec<String> = self.sources.lock().values().filter(|s| helpers.contains(&s.viewer)).map(|s| s.viewer.clone()).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// The owner pressed Stop: everyone they let in is out.
+    pub fn help_stop(&self) {
+        let helpers: Vec<String> = self.helpers.lock().drain().collect();
+        for (stream, s) in self.sources.lock().iter() {
+            if helpers.contains(&s.viewer) {
+                s.stop.store(true, Ordering::SeqCst);
+                self.send(&s.viewer, Ext::WinClose { stream: *stream });
+            }
+        }
+        log::info!("remote help stopped");
+    }
+
+    /// Keep `root` the same on every computer (None: don't).
+    pub fn set_folder(&self, root: Option<std::path::PathBuf>, outbox: crate::files::Outbox, fetch: Box<dyn Fn(Vec<folder::Fetch>) + Send>) {
+        if let Some(r) = &root {
+            log::info!("shared folder: {}", r.display());
+        }
+        *self.folder.lock() = root.map(folder::Shared::new);
+        *self.outbox.lock() = Some(outbox);
+        *self.folder_fetch.lock() = Some(fetch);
+    }
+
+    /// Switch the shared folder on (at `root`) or off.
+    pub fn set_folder_on(&self, root: Option<std::path::PathBuf>) {
+        *self.folder.lock() = root.map(folder::Shared::new);
+        self.resend.store(true, Ordering::SeqCst);
+    }
+
+    pub fn folder_root(&self) -> Option<std::path::PathBuf> {
+        self.folder.lock().as_ref().map(|f| f.root.clone())
+    }
+
+    /// A shared-folder file arrived (in `tops`).
+    pub fn folder_landed(&self, offer: u64, tops: &[std::path::PathBuf], ok: bool) {
+        if let Some(f) = self.folder.lock().as_mut() {
+            f.landed(offer, tops, ok);
+        }
+    }
+
+    /// Keep this computer awake for `d` (something uses it from elsewhere).
+    pub fn keep_awake(&self, why: &str, d: Duration) {
+        self.awake_for.lock().insert(why.to_string(), Instant::now() + d);
     }
 
     /// Input on this computer from elsewhere (the phone's trackpad). False
@@ -520,6 +629,9 @@ impl Hub {
 
     /// The engine says whether the pointer is on this screen.
     pub fn set_pointer_here(&self, here: bool) {
+        if !here && self.pointer_here.load(Ordering::SeqCst) {
+            *self.pointer_left.lock() = Some(Instant::now());
+        }
         self.pointer_here.store(here, Ordering::SeqCst);
     }
 
@@ -1091,17 +1203,27 @@ impl Hub {
     // ------------------------------------------------------ live windows (viewer side)
 
     /// Open `origin`'s window here. Returns the stream id.
-    pub fn open(&self, origin: &str, window: u64, at: Option<(i32, i32)>) -> Option<u64> {
+    /// `moved`: the window is being dragged over from its own screen (not
+    /// opened from a list).
+    pub fn open(&self, origin: &str, window: u64, at: Option<(i32, i32)>, moved: bool) -> Option<u64> {
         if origin == self.me {
             wins::activate(window);
             return None;
         }
         let info = self.lists.lock().get(origin).and_then(|l| l.iter().find(|w| w.id == window).cloned());
-        let (title, w, h) = info.map(|i| (i.title, i.w, i.h)).unwrap_or_else(|| ("Window".into(), 960, 640));
+        let (title, w, h) = if window == wins::SCREEN {
+            // The whole screen, at the size of its desktop (the view scales it).
+            let mons = self.status_of(origin).map(|s| s.monitors).unwrap_or_default();
+            let w = mons.iter().map(|m| m.x + m.w).max().unwrap_or(1280);
+            let h = mons.iter().map(|m| m.y + m.h).max().unwrap_or(800);
+            (format!("{origin}'s screen"), w, h)
+        } else {
+            info.map(|i| (i.title, i.w, i.h)).unwrap_or_else(|| ("Window".into(), 960, 640))
+        };
         // Fits in a JavaScript number.
         let stream = crate::files::new_id() & ((1 << 52) - 1);
         self.viewers.lock().insert(stream, Viewer { origin: origin.into(), window, queue: vec![], received: 0, paused: None, closed: false });
-        self.send(origin, Ext::WinOpen { stream, window, os: Os::current() });
+        self.send(origin, Ext::WinOpen { stream, window, os: Os::current(), moved });
         self.ui(UiEvent::OpenViewer { stream, origin: origin.into(), title, w, h, at });
         log::info!("opening a live window from {origin}");
         Some(stream)
@@ -1217,7 +1339,7 @@ impl Hub {
     /// Ask `to` to open `origin`'s window (it was dragged onto `to`'s screen).
     pub fn offer_window(&self, to: &str, origin: &str, window: u64) {
         if to == self.me {
-            self.open(origin, window, crate::platform::cursor_pos());
+            self.open(origin, window, crate::platform::cursor_pos(), true);
         } else {
             self.send(to, Ext::WinOffer { origin: origin.into(), window });
         }
@@ -1227,6 +1349,21 @@ impl Hub {
 
     pub fn handle(self: &Arc<Self>, from: &str, ext: Ext) {
         match ext {
+            Ext::Mirror { app, title, body } => {
+                if self.settings.read().mirror && !self.focus() {
+                    let b = if body.is_empty() { format!("{app} on {from}") } else { format!("{app} on {from} · {body}") };
+                    self.notice_here(&title, &b, "bell");
+                }
+            }
+            Ext::Folder { files, gone } => {
+                let wants = self.folder.lock().as_mut().map(|f| f.compare(from, &files, &gone)).unwrap_or_default();
+                if !wants.is_empty() {
+                    log::info!("shared folder: {} file(s) newer on {from}", wants.len());
+                    if let Some(fetch) = self.folder_fetch.lock().as_ref() {
+                        fetch(wants);
+                    }
+                }
+            }
             Ext::Status(st) => {
                 self.stats.lock().insert(from.into(), st);
             }
@@ -1311,9 +1448,22 @@ impl Hub {
                 self.lists.lock().insert(from.into(), list);
             }
             Ext::WinOffer { origin, window } => {
-                self.open(&origin, window, crate::platform::cursor_pos());
+                self.open(&origin, window, crate::platform::cursor_pos(), true);
             }
-            Ext::WinOpen { stream, window, os } => self.start_source(from, stream, window, os),
+            Ext::WinOpen { stream, window, os, moved } => {
+                // Others may not control this computer: its owner decides,
+                // each time (remote help). Unless the owner is dragging their
+                // own window over (they were just using this computer).
+                let owner_moving = moved && window != wins::SCREEN && self.pointer_left.lock().map(|t| t.elapsed() < Duration::from_secs(10)).unwrap_or(false);
+                if self.settings.read().allow_control || owner_moving || self.helpers.lock().contains(from) {
+                    self.start_source(from, stream, window, os)
+                } else {
+                    self.help_asks.lock().insert(stream, (from.to_string(), window, os, Instant::now()));
+                    let me = self.me.clone();
+                    self.send(from, Ext::WinPause { stream, paused: true, reason: format!("Waiting for {me} to accept") });
+                    self.ui(UiEvent::HelpAsk { id: stream, from: from.to_string(), screen: window == wins::SCREEN });
+                }
+            }
             Ext::WinFrame { stream, seq, w, h, bar, title, patches } => {
                 log::trace!("{} got update {seq}", ms());
                 let known = {
@@ -1415,6 +1565,9 @@ impl Hub {
         let _ = std::thread::Builder::new().name("live-window".into()).spawn(move || {
             hub.stream_loop(stream, &src);
             hub.sources.lock().remove(&stream);
+            if !hub.sources.lock().values().any(|s| s.viewer == src.viewer) {
+                hub.helpers.lock().remove(&src.viewer);
+            }
             if src.returning.load(Ordering::SeqCst) {
                 hub.welcome_back(src.window);
             } else {
@@ -1778,15 +1931,47 @@ impl Hub {
         let mut warned: u8 = 101;
         let mut last_locked = system::locked();
         let mut last_dnd = system::dnd();
+        let mut awake = awake::KeepAwake::new();
+        let mut folder_sent = Instant::now() - Duration::from_secs(60);
         while !self.stop.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(500));
             tick += 1;
+            // Awake while used from elsewhere: a live window or screen shown
+            // on another computer, files moving, someone helping.
+            if tick.is_multiple_of(4) {
+                let why = if !self.helped_by().is_empty() {
+                    Some("someone is helping remotely".to_string())
+                } else if !self.sources.lock().is_empty() {
+                    Some("showing a window on another computer".to_string())
+                } else if crate::files::moved_within(20) {
+                    Some("files are moving".to_string())
+                } else {
+                    let mut r = self.awake_for.lock();
+                    r.retain(|_, until| *until > Instant::now());
+                    r.keys().next().cloned()
+                };
+                awake.set(why.is_some(), why.as_deref().unwrap_or(""));
+            }
             let connected = self.out.read().is_some();
             // Window list: every second, sent when it changes (and now and then).
             if tick.is_multiple_of(2) {
                 let list = wins::list();
                 self.lists.lock().insert(self.me.clone(), list.clone());
                 let resend = self.resend.swap(false, Ordering::SeqCst);
+                // The shared folder: look every few seconds, tell the others
+                // what changed (and now and then anyway).
+                if tick.is_multiple_of(6) || resend {
+                    let ob = self.outbox.lock().clone();
+                    let mut f = self.folder.lock();
+                    if let (Some(f), Some(ob)) = (f.as_mut(), ob) {
+                        let changed = f.scan(&ob);
+                        if connected && (changed || resend || folder_sent.elapsed() > Duration::from_secs(30)) {
+                            let (files, gone) = f.listing();
+                            self.send("*", Ext::Folder { files, gone });
+                            folder_sent = Instant::now();
+                        }
+                    }
+                }
                 if resend || apps_at.elapsed() > Duration::from_secs(60) {
                     // Installed apps (for the launcher), now and then.
                     apps_at = Instant::now();
@@ -1828,6 +2013,10 @@ impl Hub {
                 live: wins::can_stream(),
                 controllable: self.settings.read().allow_control,
                 shares: self.settings.read().share_input,
+                monitors: {
+                    let d = self.screen.lock().unwrap_or_default();
+                    crate::platform::monitors().into_iter().map(|m| crate::protocol::Rect { x: m.x - d.x, y: m.y - d.y, w: m.w, h: m.h }).collect()
+                },
             };
             self.stats.lock().insert(self.me.clone(), st.clone());
             let resend = last_status.as_ref() != Some(&st) || status_sent.elapsed() > Duration::from_secs(30);

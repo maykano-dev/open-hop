@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.12.0
+
+### New
+- **See and use another computer's whole screen**: the island lists a **Whole screen** tile for each computer, opened in a window you can use.
+- **Remote help.** On a computer whose owner switched off "Let Others Use This Computer", its screen and windows can still be shared, but only if its owner says yes each time. They see who's asking and choose **Let them in** or **Not now**. While someone is in, a thin red frame surrounds their screen and the island shows who it is, with **Stop**.
+- **Cross from any monitor's edge.** With monitors of different sizes or offset from each other, the pointer now crosses to the next computer from any edge that has nothing beyond it, not only the outside of the whole desktop.
+- **Smart about sleep.** A computer stays awake while it's busy for you elsewhere (a live window or screen, files moving, someone helping) and sleeps on its own schedule otherwise; the others never follow it to sleep.
+- **Shared folder.** "OpenHop Shared" in your home folder is kept the same on every computer: add, change or delete a file on one and the others follow (the newest change wins). Switch it off under Settings › Sharing.
+- **Notifications in one place.** Notifications from your Linux computers show on the computer you're using (Windows and macOS don't let apps read other apps' notifications).
+- **A website**: https://maykano-dev.github.io/open-hop/ with downloads for every system.
+- **Phone:** add files to the shelf from the phone; big files go straight to the phone's storage as they arrive; your computer warns you when an Android phone's battery is low (iPhones don't let web apps read it).
+- **Send to Your Phone** sends whole files of any size.
+
+### Changed
+- The phone app now lives at …/open-hop/phone/ (it works whichever branch GitHub Pages serves).
+- Files sent to a computer show up on that computer only (no more notice on every computer).
+- Long file names are shortened in the middle, so the progress ring always shows.
+- In the island, resting the pointer on a tab switches to it.
+
+### Fixed
+- **The island didn't close on some Linux computers** when the pointer left it: OpenHop now also watches the pointer itself (X11, or GNOME's helper on Wayland) and closes it.
+- The phone button's icon is centred.
+- Update every computer to v0.12: older versions can't connect to it.
 ## v0.11.0
 
 ### New

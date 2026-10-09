@@ -6,7 +6,7 @@ use windows::core::BOOL;
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
+    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, CAPTUREBLT, DIB_RGB_COLORS, SRCCOPY,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
@@ -251,6 +251,36 @@ pub fn capture(id: u64) -> Option<Picture> {
                 SelectObject(dc, old);
                 let _ = DeleteObject(bmp.into());
                 ok.then_some(Picture { w: cw as u32, h: ch as u32, bgra })
+            }
+            _ => None,
+        };
+        let _ = DeleteDC(dc);
+        ReleaseDC(None, screen);
+        out
+    }
+}
+
+/// The whole desktop (every monitor), as you see it.
+pub fn capture_screen() -> Option<Picture> {
+    unsafe {
+        let (x, y) = (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN));
+        let (w, h) = (GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let screen = GetDC(None);
+        let dc = CreateCompatibleDC(Some(screen));
+        let mut bi = BITMAPINFO::default();
+        bi.bmiHeader = BITMAPINFOHEADER { biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32, biWidth: w, biHeight: -h, biPlanes: 1, biBitCount: 32, ..Default::default() };
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let out = match CreateDIBSection(Some(dc), &bi, DIB_RGB_COLORS, &mut bits, None, 0) {
+            Ok(bmp) if !bits.is_null() => {
+                let old = SelectObject(dc, bmp.into());
+                let ok = BitBlt(dc, 0, 0, w, h, Some(screen), x, y, SRCCOPY | CAPTUREBLT).is_ok();
+                let bgra = std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize).to_vec();
+                SelectObject(dc, old);
+                let _ = DeleteObject(bmp.into());
+                ok.then_some(Picture { w: w as u32, h: h as u32, bgra })
             }
             _ => None,
         };

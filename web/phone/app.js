@@ -64,6 +64,15 @@ function size(n) {
   if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
   return (n / 1073741824).toFixed(2) + " GB";
 }
+/** Long names keep their start and end (and extension), so the ring shows. */
+function short(name, max = 24) {
+  name = String(name || "");
+  if (name.length <= max) return name;
+  const dot = name.lastIndexOf(".");
+  const e = dot > 0 && name.length - dot <= 6 ? name.slice(dot) : "";
+  const keep = max - e.length - 1;
+  return name.slice(0, Math.ceil(keep * 0.7)) + "…" + name.slice(name.length - e.length - Math.floor(keep * 0.3));
+}
 function ext(name) { const m = /\.([a-z0-9]{1,4})$/i.exec(name || ""); return m ? m[1].toUpperCase() : "FILE"; }
 function ago(sec) {
   const d = Date.now() / 1000 - sec;
@@ -239,6 +248,25 @@ class Link {
   close() { this.closed = true; }
 }
 
+/** Big files go straight to the phone's storage for this app as they arrive
+ * (not kept in memory), where the browser allows. */
+async function diskSink(name, size) {
+  if (size < (64 << 20) || !navigator.storage || !navigator.storage.getDirectory) return null;
+  try {
+    const root = await navigator.storage.getDirectory();
+    const dir = await root.getDirectoryHandle("incoming", { create: true });
+    const fname = Date.now() + "-" + name.replace(/[\\/:]/g, "_");
+    const h = await dir.getFileHandle(fname, { create: true });
+    if (!h.createWritable) return null;
+    const w = await h.createWritable();
+    return {
+      write: (b) => w.write(b),
+      async done(type) { await w.close(); const f = await h.getFile(); return type ? new Blob([f], { type }) : f; },
+      abort() { w.abort().catch(() => {}); dir.removeEntry(fname).catch(() => {}); },
+    };
+  } catch (_) { return null; }
+}
+
 class DirectLink extends Link {
   constructor(pc, relays) { super(); this.pc = pc; this.relays = relays; this.kind = "direct"; this.x = 1; this.uploads = new Map(); this.incoming = new Map(); this.chain = Promise.resolve(); this.inChain = Promise.resolve(); }
 
@@ -281,11 +309,20 @@ class DirectLink extends Link {
       const m = JSON.parse(dec.decode(p.subarray(1)));
       if (m.re != null) { const w = this.waiting.get(m.re); if (w) { this.waiting.delete(m.re); w(m); } return; }
       if (m.push === "put_done") { const u = this.uploads.get(m.x); if (u) { this.uploads.delete(m.x); u(m); } return; }
-      if (m.push === "file") { this.incoming.set(m.x, { ...m, parts: [], got: 0 }); this.onPush({ push: "file_start", file: this.incoming.get(m.x) }); return; }
+      if (m.push === "file") {
+        const f = { ...m, parts: [], got: 0, sink: await diskSink(m.name, m.size) };
+        this.incoming.set(m.x, f);
+        this.onPush({ push: "file_start", file: f });
+        return;
+      }
       if (m.push === "file_end") {
         const f = this.incoming.get(m.x);
         this.incoming.delete(m.x);
-        if (f) this.onPush({ push: "file_done", file: f, ok: m.ok, blob: m.ok ? new Blob(f.parts, { type: f.mime }) : null });
+        if (!f) return;
+        let blob = null;
+        if (m.ok) blob = f.sink ? await f.sink.done(f.mime) : new Blob(f.parts, { type: f.mime });
+        else if (f.sink) f.sink.abort();
+        this.onPush({ push: "file_done", file: f, ok: m.ok && !!blob, blob });
         return;
       }
       this.onPush(m);
@@ -293,7 +330,8 @@ class DirectLink extends Link {
       const x = new DataView(p.buffer, p.byteOffset).getUint32(1);
       const f = this.incoming.get(x);
       if (!f) return;
-      f.parts.push(p.slice(5));
+      if (f.sink) await f.sink.write(p.subarray(5));
+      else f.parts.push(p.slice(5));
       f.got += p.length - 5;
       this.onPush({ push: "file_progress", file: f });
     }
@@ -360,7 +398,7 @@ class LanLink extends Link {
   }
   /** Same-Wi-Fi: the phone fetches offered files itself. */
   async get(id, meta) {
-    const f = { x: id, id, name: meta.name, size: meta.size, mime: "", parts: [], got: 0 };
+    const f = { x: id, id, name: meta.name, size: meta.size, mime: "", parts: [], got: 0, sink: await diskSink(meta.name, meta.size) };
     this.onPush({ push: "file_start", file: f });
     const r = await fetch(this.base + "dl/" + id);
     f.mime = r.headers.get("Content-Type") || "";
@@ -368,10 +406,12 @@ class LanLink extends Link {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      f.parts.push(value); f.got += value.length;
+      if (f.sink) await f.sink.write(value); else f.parts.push(value);
+      f.got += value.length;
       this.onPush({ push: "file_progress", file: f });
     }
-    this.onPush({ push: "file_done", file: f, ok: true, blob: new Blob(f.parts, { type: f.mime }) });
+    const blob = f.sink ? await f.sink.done(f.mime) : new Blob(f.parts, { type: f.mime });
+    this.onPush({ push: "file_done", file: f, ok: true, blob });
     this.fire({ op: "got", id });
     return { ok: true };
   }
@@ -492,8 +532,17 @@ async function connect() {
   }
 }
 
+/** Android: tell the computer the battery level (it warns when low). */
+let batterySent = 0;
+async function sendBattery() {
+  if (!app.link || !navigator.getBattery || Date.now() - batterySent < 60000) return;
+  batterySent = Date.now();
+  try { const b = await navigator.getBattery(); app.link.fire({ op: "battery", level: b.level, charging: b.charging }); } catch (_) {}
+}
+
 async function refresh() {
   if (!app.link || document.hidden) return;
+  sendBattery();
   try {
     const s = await app.link.request({ op: "state" });
     if (!s.ok) return;
@@ -592,7 +641,7 @@ async function sendFiles(files, from) {
   const to = app.to, where = targetName();
   const total = files.reduce((a, f) => a + f.size, 0);
   let doneBytes = 0, ok = 0;
-  const label = files.length === 1 ? files[0].name : `${files.length} items`;
+  const label = files.length === 1 ? short(files[0].name) : `${files.length} items`;
   const act = notchActivity(`Sending ${label}`, `to ${where}`);
   for (const f of files) {
     const item = addItem({ name: f.name, size: f.size, type: f.type, file: f, out: true, sub: `to ${where}` });
@@ -617,7 +666,7 @@ function onPush(m) {
   if (m.push === "file_start") {
     const f = m.file;
     f.item = addItem({ name: f.name, size: f.size, type: f.mime, out: false, sub: `from ${app.pc.name}` });
-    liveIn = notchActivity(`Receiving ${f.name}`, `from ${app.pc.name}`);
+    liveIn = notchActivity(`Receiving ${short(f.name)}`, `from ${app.pc.name}`);
   } else if (m.push === "file_progress") {
     const f = m.file;
     if (f.item) f.item.ring.set(f.got / Math.max(1, f.size));
@@ -629,7 +678,7 @@ function onPush(m) {
     if (!m.ok || !m.blob) { if (f.item) f.item.finish(false); if (liveIn) liveIn.fail("Didn't arrive"); return; }
     const file = new File([m.blob], f.name, { type: m.blob.type || f.mime || "" });
     if (f.item) f.item.received(file);
-    if (liveIn) liveIn.done(`${f.name} is here`);
+    if (liveIn) liveIn.done(`${short(f.name)} is here`);
     saveReceived(file);
     if (store.get("autosave", !IOS)) download(file);
   }
@@ -666,6 +715,8 @@ function idb() {
   return db;
 }
 async function saveReceived(file) {
+  // Big ones aren't kept after the app closes (they'd fill the phone).
+  if (file.size > (64 << 20)) return;
   const d = await idb();
   if (!d) return;
   try {
@@ -790,8 +841,15 @@ function renderTargets() {
 function renderShelf() {
   const box = $("shelfList");
   box.innerHTML = "";
+  // Put something from this phone on the shelf.
+  const add = el("label", "wide");
+  const ai = el("span"); ai.dataset.icon = "plus";
+  const inp = el("input"); inp.type = "file"; inp.multiple = true; inp.hidden = true;
+  inp.addEventListener("change", () => { const f = Array.from(inp.files || []); inp.value = ""; const was = app.to; app.to = "shelf"; sendFiles(f, add).finally(() => { app.to = was; setTimeout(refresh, 800); }); });
+  add.append(ai, "Add from this phone", inp);
+  box.append(add);
   const items = (app.state && app.state.shelf) || [];
-  if (!items.length) { box.append(el("p", "empty", "Nothing on the shelf. Drop files on the island on any computer to keep them here.")); return; }
+  if (!items.length) { box.append(el("p", "empty", "Nothing on the shelf yet. Add something from this phone, or drop files on the island on any computer.")); fillIcons(box); return; }
   const by = new Map();
   for (const i of items) { if (!by.has(i.origin)) by.set(i.origin, []); by.get(i.origin).push(i); }
   for (const [origin, list] of by) {

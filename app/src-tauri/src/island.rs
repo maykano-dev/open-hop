@@ -249,6 +249,8 @@ pub struct IslandState {
     media: Vec<MediaOf>,
     /// What this computer's owner allows (switched-off ones aren't shown).
     features: Features,
+    /// Who is seeing and using this computer with its owner's OK.
+    helped_by: Vec<String>,
     /// Sitting at the very top edge (Windows, macOS) or under a top bar (Linux).
     attached: bool,
 }
@@ -455,8 +457,54 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     });
     if watch_pointer {
         watch(app.handle().clone());
+    } else {
+        #[cfg(target_os = "linux")]
+        backstop(app.handle().clone());
     }
     Ok(())
+}
+
+/// Linux: the page sees the pointer come and go itself, but some systems
+/// don't tell it when the pointer leaves (it stayed open). Where OpenHop can
+/// see the pointer reliably (X11, or GNOME's helper on Wayland), it says
+/// whether the pointer is on the island, as a second opinion.
+#[cfg(target_os = "linux")]
+fn backstop(handle: AppHandle) {
+    std::thread::spawn(move || {
+        let mut probe = openhop_core::platform::PointerProbe::new();
+        let mut last: Option<bool> = None;
+        let mut out_count = 0;
+        let mut reliable = (false, std::time::Instant::now() - std::time::Duration::from_secs(60));
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            if reliable.1.elapsed() > std::time::Duration::from_secs(3) {
+                let ok = !openhop_core::platform::linux_is_wayland() || openhop_core::wins::gnome::available();
+                reliable = (ok, std::time::Instant::now());
+            }
+            if !reliable.0 {
+                continue;
+            }
+            let g = *handle.state::<Island>().geo.lock();
+            if g.scale <= 0.0 {
+                continue;
+            }
+            let Some((px, py, _)) = probe.read() else { continue };
+            let vw = g.vis_w * g.scale;
+            let vh = g.vis_h * g.scale;
+            let left = g.x as f64 + (g.w as f64 - vw) / 2.0;
+            let m = 6.0 * g.scale;
+            let inside = (px as f64) >= left - m && (px as f64) <= left + vw + m && (py as f64) >= g.y as f64 - m - 40.0 && (py as f64) <= g.y as f64 + vh + m;
+            // Out twice in a row (a quick wobble at the edge isn't leaving).
+            out_count = if inside { 0 } else { out_count + 1 };
+            let now = if inside { Some(true) } else if out_count >= 2 { Some(false) } else { last };
+            if now != last {
+                last = now;
+                if let (Some(v), Some(w)) = (now, handle.get_webview_window("island")) {
+                    let _ = tauri::Emitter::emit_to(&w, "island", "pointer_in", v);
+                }
+            }
+        }
+    });
 }
 
 /// macOS: float over the menu bar (around the notch) on every Space, even
@@ -561,6 +609,7 @@ pub fn island_state(handle: AppHandle, app: State<App>, island: State<Island>) -
             fit,
             media: media.clone(),
             features,
+            helped_by: hub.helped_by(),
         },
         None => IslandState {
             running: false,
@@ -581,6 +630,7 @@ pub fn island_state(handle: AppHandle, app: State<App>, island: State<Island>) -
             fit,
             media: media.clone(),
             features,
+            helped_by: vec![],
         },
     }
 }

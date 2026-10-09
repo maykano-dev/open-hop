@@ -4,7 +4,7 @@
 use crate::layout::{Layout, Side};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -39,7 +39,7 @@ impl Os {
 }
 
 /// A desktop's bounding box in native coordinates (all monitors combined).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -94,6 +94,17 @@ pub enum OfferKind {
     /// Sent to this computer on purpose ("Send with OpenHop"): save it in
     /// Downloads and say so.
     Send,
+    /// A file of the shared folder: put it in place there, quietly.
+    Folder,
+}
+
+/// A file in a shared folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderEntry {
+    pub path: String,
+    pub size: u64,
+    pub mtime: u64,
+    pub offer: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -362,6 +373,8 @@ pub enum Ext {
         stream: u64,
         window: u64,
         os: Os,
+        /// Dragged over by its owner (not picked from a list).
+        moved: bool,
     },
     /// Ask a computer to open `origin`'s window here (a window dragged across).
     WinOffer {
@@ -431,6 +444,19 @@ pub enum Ext {
     Wake,
     /// Show where the pointer is, if it's on your screen.
     Locate,
+    /// What's in the sender's shared folder (files: path, size, when last
+    /// changed in ms, the offer that serves it) and what was deleted (path,
+    /// when).
+    Folder {
+        files: Vec<FolderEntry>,
+        gone: Vec<(String, u64)>,
+    },
+    /// A notification that popped up on the sender (for the computer in use).
+    Mirror {
+        app: String,
+        title: String,
+        body: String,
+    },
     /// Something to tell the user, on the screen they're using.
     Notice {
         title: String,
@@ -539,6 +565,9 @@ pub struct PcStatus {
     pub controllable: bool,
     /// Its keyboard and mouse may go onto other screens.
     pub shares: bool,
+    /// Its monitors, relative to the top-left of its whole desktop (for
+    /// crossing from any monitor's free edge).
+    pub monitors: Vec<Rect>,
 }
 
 impl Msg {

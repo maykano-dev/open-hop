@@ -108,6 +108,7 @@ pub fn pump(handle: &AppHandle) {
     let app = handle.state::<App>();
     let Some(hub) = hub(&app) else { return };
     crate::island::follow_fullscreen(handle, hub.fullscreen(""));
+    help_frame(handle, !hub.helped_by().is_empty());
     for ev in hub.take_ui() {
         match ev {
             UiEvent::OpenViewer { stream, origin, title, w, h, at } => open_viewer(handle, stream, &origin, &title, w, h, at),
@@ -127,6 +128,19 @@ pub fn pump(handle: &AppHandle) {
             }
             UiEvent::Incoming { x, y, label, from } => {
                 show_fx(handle, x, y, serde_json::json!({ "kind": "incoming", "label": label, "from": from }));
+            }
+            UiEvent::HelpAsk { id, from, screen } => {
+                let what = if screen { "for your screen" } else { "for a window" };
+                handle.state::<App>().toasts.lock().push_back(openhop_core::engine::Note {
+                    id: (1 << 51) | (id & 0xffff_ffff),
+                    title: format!("{from} asks to {what}"),
+                    body: "Only if you say so: you'll see a red frame while they're in, and Stop in the island ends it.".into(),
+                    actions: vec![
+                        openhop_core::engine::NoteAction { label: "Let them in".into(), kind: "help_accept".into(), target: id.to_string() },
+                        openhop_core::engine::NoteAction { label: "Not now".into(), kind: "help_decline".into(), target: id.to_string() },
+                    ],
+                });
+                crate::island::poke(handle);
             }
             UiEvent::Landed { x, y, label } => {
                 show_fx(handle, x, y, serde_json::json!({ "kind": "landed", "label": label }));
@@ -193,12 +207,62 @@ fn place_dock(handle: &AppHandle, w: &tauri::WebviewWindow) {
     let _ = w.set_position(LogicalPosition::new((mw - width) / 2.0, mh - 168.0 - 64.0));
 }
 
+// ------------------------------------------------------------------ remote help
+
+/// A red frame around the whole screen while someone is helping (so it's
+/// never a secret): four thin strips along the edges (no see-through window
+/// needed, which some desktops can't show), click-through.
+pub fn help_frame(handle: &AppHandle, on: bool) {
+    const SIDES: [&str; 4] = ["helpframe-t", "helpframe-b", "helpframe-l", "helpframe-r"];
+    let shown = handle.get_webview_window(SIDES[0]).is_some();
+    if on == shown {
+        return;
+    }
+    if !on {
+        for s in SIDES {
+            if let Some(w) = handle.get_webview_window(s) {
+                let _ = w.destroy();
+            }
+        }
+        return;
+    }
+    let (mw, mh) = monitor_logical(handle);
+    let t = 4.0;
+    for (label, (x, y, w, h)) in SIDES.iter().zip([(0.0, 0.0, mw, t), (0.0, mh - t, mw, t), (0.0, 0.0, t, mh), (mw - t, 0.0, t, mh)]) {
+        if let Ok(win) = WebviewWindowBuilder::new(handle, *label, WebviewUrl::App("frame.html".into()))
+            .title("OpenHop")
+            .inner_size(w, h)
+            .position(x, y)
+            .decorations(false)
+            .shadow(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            // Resizable, or GTK makes it as big as a web view likes to be.
+            .resizable(true)
+            .min_inner_size(1.0, 1.0)
+            .focused(false)
+            .visible_on_all_workspaces(true)
+            .build()
+        {
+            let _ = win.set_size(tauri::LogicalSize::new(w, h));
+            let _ = win.set_ignore_cursor_events(true);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn help_stop(app: State<App>) {
+    if let Some(h) = hub(&app) {
+        h.help_stop();
+    }
+}
+
 // ------------------------------------------------------------------ commands
 
 #[tauri::command]
 pub fn open_window(app: State<App>, origin: String, window: String) -> Result<(), String> {
     let hub = hub(&app).ok_or("Turn OpenHop on first.")?;
-    hub.open(&origin, parse(&window)?, None);
+    hub.open(&origin, parse(&window)?, None, false);
     Ok(())
 }
 

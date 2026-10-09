@@ -104,20 +104,47 @@ pub fn list() -> Vec<WinInfo> {
     v
 }
 
+/// "Window" number for the whole screen (fits in a JavaScript number, and is
+/// no real window's).
+pub const SCREEN: u64 = (1 << 52) - 2;
+
+/// The whole desktop's rectangle (every monitor).
+pub fn screen_rect() -> Option<Rect> {
+    let m = crate::platform::monitors();
+    if m.is_empty() {
+        return None;
+    }
+    let (x0, y0) = (m.iter().map(|r| r.x).min()?, m.iter().map(|r| r.y).min()?);
+    let (x1, y1) = (m.iter().map(|r| r.x + r.w).max()?, m.iter().map(|r| r.y + r.h).max()?);
+    Some(Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
+}
+
 /// A picture of the window's contents (even if other windows cover it, where
 /// the OS allows). None if it's gone or minimized.
 pub fn capture(id: u64) -> Option<Picture> {
+    if id == SCREEN {
+        #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+        return imp::capture_screen().filter(|p| p.w > 0 && p.h > 0 && p.bgra.len() == (p.w * p.h * 4) as usize);
+        #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+        return None;
+    }
     imp::capture(id).filter(|p| p.w > 0 && p.h > 0 && p.bgra.len() == (p.w * p.h * 4) as usize)
 }
 
 /// Where the window is on screen, title bar included (native coordinates).
 /// That's also what's captured.
 pub fn geometry(id: u64) -> Option<Rect> {
+    if id == SCREEN {
+        return screen_rect();
+    }
     imp::geometry(id)
 }
 
 /// Bring the window to the front and give it the keyboard.
 pub fn activate(id: u64) {
+    if id == SCREEN {
+        return;
+    }
     imp::activate(id)
 }
 
@@ -130,17 +157,23 @@ pub fn titlebar_window_at(x: i32, y: i32) -> Option<u64> {
 /// Hide the window on this screen (it's open live on another computer) or
 /// show it again. It stays where it is, so it can still be controlled.
 pub fn set_hidden(id: u64, hidden: bool) {
+    if id == SCREEN {
+        return;
+    }
     imp::set_hidden(id, hidden)
 }
 
 /// Put a hidden window behind the others, so it can't catch clicks here.
 pub fn lower(id: u64) {
+    if id == SCREEN {
+        return;
+    }
     imp::lower(id)
 }
 
 /// Resize the window's content area (from a live view being resized).
 pub fn resize(id: u64, w: i32, h: i32) {
-    if w >= 80 && h >= 60 {
+    if id != SCREEN && w >= 80 && h >= 60 {
         imp::resize(id, w, h)
     }
 }
@@ -153,11 +186,17 @@ pub fn restore_all() {
 /// Height of the window's title bar (pixels at the top of its picture),
 /// 0 if unknown.
 pub fn bar_height(id: u64) -> i32 {
+    if id == SCREEN {
+        return 0;
+    }
     imp::bar_height(id)
 }
 
 /// Put the window above the others (without moving the keyboard focus).
 pub fn raise(id: u64) {
+    if id == SCREEN {
+        return;
+    }
     #[cfg(target_os = "linux")]
     if via_gnome() {
         return gnome::raise(id);
@@ -172,11 +211,17 @@ pub fn move_to(id: u64, x: i32, y: i32) {
 
 /// Maximized (filling its screen)?
 pub fn is_maximized(id: u64) -> bool {
+    if id == SCREEN {
+        return false;
+    }
     imp::is_maximized(id)
 }
 
 /// Back to its size from before it was maximized.
 pub fn unmaximize(id: u64) {
+    if id == SCREEN {
+        return;
+    }
     imp::unmaximize(id)
 }
 

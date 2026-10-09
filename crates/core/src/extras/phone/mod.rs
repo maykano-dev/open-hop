@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 pub use http::qr_url;
 
 /// Where the phone app lives (HTTPS, so it can be installed).
-pub const APP_URL: &str = "https://maykano-dev.github.io/open-hop/";
+pub const APP_URL: &str = "https://maykano-dev.github.io/open-hop/phone/";
 
 /// Pieces of a file on the way (fits comfortably in a WebRTC message).
 pub const CHUNK: usize = 60 * 1024;
@@ -64,6 +64,8 @@ pub enum PhoneEvent {
     Sent { name: String, device: String },
     Connected { device: String, how: &'static str },
     Disconnected { device: String },
+    /// The phone's battery (percent, charging).
+    Battery { device: String, level: u8, charging: bool },
     /// Something is moving (the island shows it).
     Progress,
 }
@@ -94,6 +96,8 @@ pub struct PhoneState {
     /// Meeting points reachable (0: phones elsewhere can't find us).
     pub relays: usize,
     pub offered: Vec<String>,
+    /// The phone's battery, when it says (Android does; iPhones don't let it).
+    pub battery: Option<(u8, bool)>,
 }
 
 /// A connected phone.
@@ -145,6 +149,7 @@ pub struct Phone {
     pending: Mutex<HashMap<u64, Pending>>,
     offered: Mutex<Vec<Offered>>,
     transfers: Mutex<Vec<TransferInfo>>,
+    battery: Mutex<Option<(u8, bool)>>,
     next: AtomicU64,
     loopback: bool,
 }
@@ -173,6 +178,7 @@ impl Phone {
             pending: Mutex::new(HashMap::new()),
             offered: Mutex::new(vec![]),
             transfers: Mutex::new(vec![]),
+            battery: Mutex::new(None),
             next: AtomicU64::new(1),
             loopback,
         });
@@ -261,6 +267,7 @@ impl Phone {
             how: best.map(|c| if matches!(c.kind, ConnKind::Rtc { .. }) { "direct" } else { "local" }.to_string()).unwrap_or_default(),
             relays: self.signal.lock().as_ref().map(|s| s.relays_up()).unwrap_or(0),
             offered: self.offered().into_iter().map(|o| o.name).collect(),
+            battery: *self.battery.lock(),
         }
     }
 
@@ -279,6 +286,7 @@ impl Phone {
     }
 
     fn xfer_update(&self, id: u64, done: u64, finished: bool) {
+        crate::files::touch();
         let mut changed = false;
         for t in self.transfers.lock().iter_mut().filter(|t| t.offer == id) {
             // The island needs to hear about every percent or so, no more.
@@ -757,6 +765,13 @@ impl Phone {
                 } else {
                     json!({ "ok": false, "error": "This computer can't be controlled from the phone." })
                 }
+            }
+            "battery" => {
+                let level = (n("level") * 100.0).round().clamp(0.0, 100.0) as u8;
+                let charging = req.get("charging").and_then(|v| v.as_bool()).unwrap_or(false);
+                *self.battery.lock() = Some((level, charging));
+                self.host.event(PhoneEvent::Battery { device: c.device.lock().clone(), level, charging });
+                json!({ "ok": true })
             }
             "ping" => json!({ "ok": true }),
             _ => json!({ "ok": false, "error": "unknown request" }),

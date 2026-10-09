@@ -3781,7 +3781,7 @@ dependencies = [
 
 [[package]]
 name = "openhop-app"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -3803,7 +3803,7 @@ dependencies = [
 
 [[package]]
 name = "openhop-cli"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3816,7 +3816,7 @@ dependencies = [
 
 [[package]]
 name = "openhop-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "anyhow",

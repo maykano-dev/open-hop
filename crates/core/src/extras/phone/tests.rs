@@ -55,7 +55,7 @@ fn http(port: u16, req: &str, body: &[u8]) -> (String, Vec<u8>) {
 fn pair_url_carries_everything() {
     let (phone, _, base) = setup("url");
     let url = phone.pair_url();
-    assert!(url.starts_with(APP_URL));
+    assert!(url.starts_with(APP_URL) && APP_URL.ends_with("/phone/"));
     let frag = url.split("#p=").nth(1).unwrap();
     let parts: Vec<&str> = frag.split('.').collect();
     assert_eq!(parts.len(), 4);

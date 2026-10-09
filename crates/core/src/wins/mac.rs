@@ -114,6 +114,24 @@ pub fn capture(id: u64) -> Option<Picture> {
     Some(Picture { w: w as u32, h: h as u32, bgra })
 }
 
+/// The whole desktop (every display), as you see it.
+pub fn capture_screen() -> Option<Picture> {
+    let r = super::screen_rect()?;
+    let rect = CGRect::new(&CGPoint::new(r.x as f64, r.y as f64), &CGSize::new(r.w as f64, r.h as f64));
+    let img = create_image(rect, kCGWindowListOptionOnScreenOnly, kCGNullWindowID, kCGWindowImageNominalResolution)?;
+    let (w, h, stride) = (img.width(), img.height(), img.bytes_per_row());
+    if img.bits_per_pixel() != 32 || w == 0 || h == 0 {
+        return None;
+    }
+    let data = img.data();
+    let bytes = data.bytes();
+    let mut bgra = Vec::with_capacity(w * h * 4);
+    for row in 0..h {
+        bgra.extend_from_slice(bytes.get(row * stride..row * stride + w * 4)?);
+    }
+    Some(Picture { w: w as u32, h: h as u32, bgra })
+}
+
 pub fn activate(id: u64) {
     use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
     let Some(w) = windows(kCGWindowListOptionIncludingWindow, id as u32).into_iter().find(|w| w.id as u64 == id) else {
