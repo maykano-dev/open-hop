@@ -285,6 +285,23 @@ impl X {
     }
 }
 
+/// Processes with windows in the taskbar or dock (minimized ones too).
+pub fn taskbar_pids() -> Vec<u32> {
+    let Some(x) = x() else { return vec![] };
+    let x = x.lock();
+    let me = std::process::id();
+    x.prop32(x.root, "_NET_CLIENT_LIST", AtomEnum::WINDOW)
+        .into_iter()
+        .filter(|&w| {
+            let types = x.prop32(w, "_NET_WM_WINDOW_TYPE", AtomEnum::ATOM);
+            let normal = types.is_empty() || types.iter().any(|t| *t == x.a("_NET_WM_WINDOW_TYPE_NORMAL") || *t == x.a("_NET_WM_WINDOW_TYPE_DIALOG"));
+            normal && !x.prop32(w, "_NET_WM_STATE", AtomEnum::ATOM).contains(&x.a("_NET_WM_STATE_SKIP_TASKBAR"))
+        })
+        .filter_map(|w| x.prop32(w, "_NET_WM_PID", AtomEnum::CARDINAL).first().copied())
+        .filter(|&p| p != me)
+        .collect()
+}
+
 pub fn list() -> Vec<WinInfo> {
     let Some(x) = x() else { return vec![] };
     let x = x.lock();

@@ -121,3 +121,9 @@ pub fn task_raise(app: State<App>, on: String, window: u64) {
         }
     });
 }
+
+/// Icons of apps on a computer: the ones known now (more arrive shortly).
+#[tauri::command]
+pub fn app_icons(app: State<App>, on: String, ids: Vec<String>) -> std::collections::HashMap<String, String> {
+    with_engine(&app, |e| e.hub().app_icons(&on, &ids)).unwrap_or_default()
+}

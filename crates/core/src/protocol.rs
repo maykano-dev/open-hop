@@ -4,7 +4,7 @@
 use crate::layout::{Layout, Side};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -474,6 +474,14 @@ pub enum Ext {
     Raise {
         window: u64,
     },
+    /// Send the icons of these apps of yours.
+    IconReq {
+        ids: Vec<String>,
+    },
+    /// Icons of the sender's apps: (app id, data: URL; empty if it has none).
+    Icons {
+        list: Vec<(String, String)>,
+    },
 }
 
 /// An app that can be opened from the launcher.
@@ -483,6 +491,8 @@ pub struct AppEntry {
     pub name: String,
     /// The program it runs, lower case without extension ("code", "spotify").
     pub exe: String,
+    /// Its icon's name or file (Linux; elsewhere the app itself has it).
+    pub icon: String,
 }
 
 /// An app running on a computer (the Open tab's task list).
@@ -497,6 +507,8 @@ pub struct RunningApp {
     pub memory: u64,
     /// The launcher entry it belongs to.
     pub app_id: Option<String>,
+    /// In the taskbar or dock (false: running in the background).
+    pub open: bool,
 }
 
 /// Files kept on the shelf: reachable from every computer.
@@ -521,6 +533,8 @@ pub struct PcStatus {
     /// A full-screen app (a game, a video) is in front.
     pub fullscreen: bool,
     pub os: Option<Os>,
+    /// Its windows can be shown live on other computers (not on Wayland).
+    pub live: bool,
 }
 
 impl Msg {

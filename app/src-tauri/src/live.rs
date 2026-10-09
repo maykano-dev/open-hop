@@ -272,7 +272,7 @@ pub fn viewer_fit(window: tauri::WebviewWindow, w: f64, h: f64) {
 /// Troubleshooting notes from a live window's page.
 #[tauri::command]
 pub fn viewer_log(window: tauri::WebviewWindow, msg: String) {
-    log::debug!("{}: {msg}", window.label());
+    log::info!("{}: {msg}", window.label());
 }
 
 /// Show a viewer's title like the original window's.

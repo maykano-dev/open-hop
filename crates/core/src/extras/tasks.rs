@@ -44,7 +44,10 @@ impl Tasks {
     }
 
     /// What's running now, given this computer's windows and installed apps.
-    pub fn list(&mut self, windows: &[WinInfo], installed: &[AppEntry]) -> Vec<RunningApp> {
+    /// `dock`: processes with a button in the taskbar or dock (minimized
+    /// windows too). `guess_open`: the system can't say (Wayland), so apps
+    /// without a known window count as open.
+    pub fn list(&mut self, windows: &[WinInfo], dock: &[u32], installed: &[AppEntry], guess_open: bool) -> Vec<RunningApp> {
         self.refresh();
         let me = sysinfo::get_current_pid().ok().and_then(|p| self.sys.process(p)).and_then(|p| p.user_id().cloned());
         let procs = self.sys.processes();
@@ -55,7 +58,10 @@ impl Tasks {
                 kids.entry(parent).or_default().push(*pid);
             }
         }
-        let tree_memory = |root: Pid, seen: &mut HashSet<Pid>| -> u64 {
+        let dock: HashSet<Pid> = dock.iter().map(|p| Pid::from_u32(*p)).collect();
+        // Memory of a process and its helpers, and whether one of them has a
+        // taskbar or dock button.
+        let tree_memory = |root: Pid, seen: &mut HashSet<Pid>, docked: &mut bool| -> u64 {
             let mut total = 0;
             let mut stack = vec![root];
             while let Some(p) = stack.pop() {
@@ -63,6 +69,7 @@ impl Tasks {
                     continue;
                 }
                 total += procs.get(&p).map(|x| x.memory()).unwrap_or(0);
+                *docked |= dock.contains(&p);
                 if let Some(k) = kids.get(&p) {
                     stack.extend(k.iter().copied());
                 }
@@ -98,12 +105,50 @@ impl Tasks {
             if name.is_empty() || SKIP.contains(&name.to_lowercase().as_str()) {
                 continue;
             }
-            let memory = if pid != 0 { tree_memory(Pid::from_u32(pid), &mut seen) } else { 0 };
-            let e = out.entry(name.clone()).or_insert_with(|| RunningApp { name, pids: vec![], windows: vec![], memory: 0, app_id: app.map(|a| a.id.clone()) });
+            let mut docked = false;
+            let memory = if pid != 0 { tree_memory(Pid::from_u32(pid), &mut seen, &mut docked) } else { 0 };
+            let e = out.entry(name.clone()).or_insert_with(|| RunningApp {
+                name,
+                pids: vec![],
+                windows: vec![],
+                memory: 0,
+                app_id: app.map(|a| a.id.clone()),
+                open: true,
+            });
             if pid != 0 && !e.pids.contains(&pid) {
                 e.pids.push(pid);
             }
             e.windows.extend(ws.iter().map(|w| w.id));
+            e.memory += memory;
+        }
+
+        // In the taskbar or dock without a window we could list (minimized,
+        // on another desktop): open too, even when it isn't a known app.
+        for pid in &dock {
+            if seen.contains(pid) {
+                continue;
+            }
+            let Some(p) = procs.get(pid) else { continue };
+            let app = app_for(p);
+            let name = app.map(|a| a.name.clone()).unwrap_or_else(|| {
+                let n = key_of(p);
+                let mut c = n.chars();
+                c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            });
+            if name.is_empty() || SKIP.contains(&name.to_lowercase().as_str()) {
+                continue;
+            }
+            let mut docked = false;
+            let memory = tree_memory(*pid, &mut seen, &mut docked);
+            let e = out.entry(name.clone()).or_insert_with(|| RunningApp {
+                name,
+                pids: vec![],
+                windows: vec![],
+                memory: 0,
+                app_id: app.map(|a| a.id.clone()),
+                open: true,
+            });
+            e.pids.push(pid.as_u32());
             e.memory += memory;
         }
 
@@ -128,20 +173,23 @@ impl Tasks {
             if seen.contains(&pid) {
                 continue;
             }
-            let memory = tree_memory(pid, &mut seen);
+            let mut docked = false;
+            let memory = tree_memory(pid, &mut seen, &mut docked);
             let e = out.entry(app.name.clone()).or_insert_with(|| RunningApp {
                 name: app.name.clone(),
                 pids: vec![],
                 windows: vec![],
                 memory: 0,
                 app_id: Some(app.id.clone()),
+                open: false,
             });
             e.pids.push(pid.as_u32());
             e.memory += memory;
+            e.open |= docked || guess_open;
         }
         let mut v: Vec<RunningApp> = out.into_values().collect();
         // Open apps first, then by memory.
-        v.sort_by(|a, b| b.windows.is_empty().cmp(&a.windows.is_empty()).reverse().then(b.memory.cmp(&a.memory)));
+        v.sort_by(|a, b| b.open.cmp(&a.open).then(b.memory.cmp(&a.memory)));
         v
     }
 
@@ -208,14 +256,18 @@ mod tests {
         } else {
             std::process::Command::new("sleep").arg("30").spawn().unwrap()
         };
-        let installed = vec![AppEntry { id: "x".into(), name: "Sleeper".into(), exe: if cfg!(windows) { "ping".into() } else { "sleep".into() } }];
+        let installed =
+            vec![AppEntry { id: "x".into(), name: "Sleeper".into(), exe: if cfg!(windows) { "ping".into() } else { "sleep".into() }, icon: String::new() }];
         let mut t = Tasks::new();
-        let list = t.list(&[], &installed);
+        let list = t.list(&[], &[], &installed, false);
         let me = list.iter().find(|a| a.name == "Sleeper").expect("listed");
-        assert!(me.windows.is_empty() && me.pids.contains(&child.id()));
+        assert!(me.windows.is_empty() && !me.open && me.pids.contains(&child.id()));
+        // In the dock (minimized): open, without windows.
+        let list = t.list(&[], &[child.id()], &installed, false);
+        assert!(list.iter().find(|a| a.name == "Sleeper").expect("listed").open);
         // With a window it's an open app.
         let w = WinInfo { id: 7, title: "Zzz".into(), app: "sleep".into(), w: 1, h: 1, pid: child.id() };
-        let list = t.list(&[w], &installed);
+        let list = t.list(&[w], &[], &installed, false);
         let me = list.iter().find(|a| a.name == "Sleeper").expect("listed");
         assert_eq!(me.windows, vec![7]);
         let _ = child.kill();

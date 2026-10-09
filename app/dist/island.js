@@ -6,6 +6,18 @@
 const T = window.__TAURI__;
 const invoke = T ? T.core.invoke : demo();
 const $ = (id) => document.getElementById(id);
+// The app's security rules don't allow style="" in markup: sizes and
+// colours are set from data- attributes instead.
+function fixStyles(root) {
+  for (const el of root.querySelectorAll("[data-w],[data-bg],[data-art]")) {
+    if (el.dataset.w) el.style.width = el.dataset.w;
+    if (el.dataset.bg) el.style.background = el.dataset.bg;
+    if (el.dataset.art) el.style.backgroundImage = `url("${el.dataset.art.replace(/"/g, "%22")}")`;
+  }
+}
+// Problems the page runs into end up in OpenHop's log.
+document.addEventListener("securitypolicyviolation", (e) => { if (T) T.core.invoke("viewer_log", { msg: `island: blocked ${e.violatedDirective} ${String(e.blockedURI).slice(0, 40)}` }).catch(() => {}); });
+window.addEventListener("error", (e) => { if (T) T.core.invoke("viewer_log", { msg: `island: ${e.message} @${e.lineno}` }).catch(() => {}); });
 const island = $("island");
 
 const ICON = {
@@ -58,6 +70,7 @@ let snap = null;
 let fit = { notch: null, bar: null, watch: false };
 const notchW = () => (fit.notch ? Math.ceil(fit.notch[0]) : 0);
 const notchH = () => (fit.notch ? Math.ceil(fit.notch[1]) : 0);
+const laneH = () => Math.round(fit.lane) - 6;
 let shown = { w: 0, h: 0, r: 0 };
 
 function restShape() {
@@ -66,11 +79,13 @@ function restShape() {
   if (fit.notch) return earsWanted() ? { w: notchW() + 2 * 44, h: notchH(), r: 13 } : { w: notchW(), h: notchH(), r: 10 };
   // Mac without a notch: a pill inside the menu bar.
   if (fit.bar) return { w: 196, h: Math.max(22, Math.round(fit.bar) - 2), r: Math.round(fit.bar / 2) };
-  // Windows, Linux: a thin lip that lets clicks through to tabs underneath.
+  // Windows, Linux with its own lane: a pill that's always there.
+  if (fit.lane) return { w: 200, h: laneH(), r: laneH() / 2 };
+  // Otherwise a thin lip that lets clicks through to tabs underneath.
   return { w: 150, h: 5, r: 3 };
 }
 function shapeFor(m) {
-  if (m === "live") return fit.notch ? { w: notchW() + 2 * 112, h: notchH(), r: 14 } : { w: 320, h: 36, r: 18 };
+  if (m === "live") return fit.notch ? { w: notchW() + 2 * 112, h: notchH(), r: 14 } : fit.lane ? { w: 340, h: laneH(), r: laneH() / 2 } : { w: 320, h: 36, r: 18 };
   if (m === "activity") return { w: 430, h: 76 + notchH(), r: 32 };
   if (m === "open") return { w: 520, h: Math.ceil($("panel").offsetHeight), r: 30 };
   return restShape();
@@ -81,7 +96,8 @@ function applyFit(f) {
   const changed = JSON.stringify(f) !== JSON.stringify(fit);
   fit = f;
   document.body.classList.toggle("notch", !!fit.notch);
-  document.body.classList.toggle("lip", !fit.notch && !fit.bar);
+  document.body.classList.toggle("lip", !fit.notch && !fit.bar && !fit.lane);
+  document.body.classList.toggle("lane", !!fit.lane);
   document.documentElement.style.setProperty("--notch-h", notchH() + "px");
   if (changed) setMode(mode, true);
 }
@@ -125,6 +141,7 @@ function open(byShortcut, which) {
 }
 function close() {
   pinned = false;
+  entered = false;
   dropping = null;
   settle();
   setTimeout(() => { if (mode !== "open" && tab === "drop") setTab(lastTab); }, 500);
@@ -172,16 +189,34 @@ for (const id of ["clipQuery", "appQuery"]) $(id).addEventListener("focus", () =
 
 // Hover: the app watches the pointer (it also makes clicks pass through
 // everywhere else); on Wayland the page's own mouse events do.
+// Typing a search keeps it open; so does a Sleep All waiting for its second click.
+function busy() {
+  const a = document.activeElement;
+  return (a && a.tagName === "INPUT" && a.value.trim() !== "") || !!sleepArmed;
+}
+let entered = false;      // the pointer has been on the open island
+let lastInside = 0;       // last pointer activity on it
 function onHover(on) {
   hovering = on;
   clearTimeout(hoverTimer);
   clearTimeout(leaveTimer);
   if (on) {
-    if (mode !== "open") hoverTimer = setTimeout(() => { if (hovering) open(false); }, mode === "activity" ? 350 : 90);
-  } else if (mode === "open" && !pinned && !dropping) {
-    leaveTimer = setTimeout(close, 300);
+    lastInside = Date.now();
+    if (mode === "open") entered = true;
+    else hoverTimer = setTimeout(() => { if (hovering) { open(false); entered = true; } }, mode === "activity" ? 300 : 90);
+  } else if (mode === "open" && !dropping && (entered || !pinned) && !busy()) {
+    // Pointer away: it closes by itself.
+    leaveTimer = setTimeout(() => { if (!hovering && !dropping && !busy()) close(); }, 260);
   }
 }
+document.addEventListener("pointermove", () => { lastInside = Date.now(); if (mode === "open") entered = true; });
+// A missed "pointer left" (some systems don't say while a drag or click is
+// going on): close once nothing has happened on it for a while.
+setInterval(() => {
+  if (mode !== "open" || dropping || busy()) return;
+  const idle = Date.now() - lastInside;
+  if ((!hovering && entered && idle > 1200) || idle > 12000) close();
+}, 500);
 if (T) T.event.listen("hover", (e) => { if (fit.watch) onHover(!!e.payload); });
 island.addEventListener("mouseenter", () => { if (!fit.watch) onHover(true); });
 island.addEventListener("mouseleave", () => { if (!fit.watch) onHover(false); });
@@ -197,7 +232,7 @@ window.addEventListener("keydown", (e) => {
   const t = { h: "home", c: "clips", v: "clips", s: "shelf", o: "open" }[e.key.toLowerCase()];
   if (t) { e.preventDefault(); pinned = true; setTab(t); if (t !== "home") refreshTools(); focusSearch(); }
 });
-window.addEventListener("blur", () => { if (mode === "open" && pinned) close(); });
+window.addEventListener("blur", () => { if (mode === "open" && !hovering && !dropping && !busy()) close(); });
 // Opened with a shortcut: type straight into the search once the window has focus.
 window.addEventListener("focus", () => { if (mode === "open" && pinned && document.activeElement === document.body) focusSearch(); });
 if (T) T.event.listen("toggle", () => (mode === "open" ? close() : open(true, "home")));
@@ -317,7 +352,7 @@ function drawLive(l) {
     right = l.item.error ? `<span class="c-tag low">Failed</span>` : TICK;
   } else if (l.kind === "media") {
     const m = l.m.now;
-    left = `<span class="c-art" style='${artStyle(m.art)}'></span>`;
+    left = `<span class="c-art" data-art="${esc(m.art || "")}"></span>`;
     mid = `${esc(m.title)}<small>${esc(m.artist || m.app)}</small>`;
     right = waveHtml(m.playing);
   } else if (l.kind === "focus") {
@@ -328,8 +363,12 @@ function drawLive(l) {
     left = `<span class="c-ico copied">${ICON.text}</span>`;
     mid = `Copied<small>${esc(l.label)}</small>`;
     right = TICK;
+  } else if (l.kind === "shelved") {
+    left = `<span class="c-ico files">${ICON.tray}</span>`;
+    mid = `${esc(l.label)}<small>on the shelf</small>`;
+    right = TICK;
   } else if (l.kind === "opening") {
-    left = `<span class="c-app" style="background:${colorFor(l.label)}">${esc(l.label.trim().charAt(0).toUpperCase())}</span>`;
+    left = `<span class="c-app" data-bg="${colorFor(l.label)}">${esc(l.label.trim().charAt(0).toUpperCase())}</span>`;
     mid = `${esc(l.label)}<small>Opening${tools && l.on !== tools.me ? " on " + esc(l.on) : ""}</small>`;
     right = ringSvg(null);
   } else if (l.kind === "sending") {
@@ -342,6 +381,7 @@ function drawLive(l) {
   if (key !== liveKey) {
     liveKey = key;
     $("cLeft").innerHTML = left;
+    fixStyles($("cLeft"));
     $("cMid").innerHTML = mid;
     $("cRight").innerHTML = right;
   } else if (l.kind === "transfer") {
@@ -413,7 +453,8 @@ function batteryEl(b) {
   const [pct, charging] = b;
   const wrap = document.createElement("span");
   wrap.className = "batt" + (charging ? " charging" : pct <= 10 ? " crit" : pct <= 20 ? " low" : "");
-  wrap.innerHTML = `<span class="cell"><span class="fill" style="width:${Math.max(6, pct)}%"></span></span>`;
+  wrap.innerHTML = `<span class="cell"><span class="fill" data-w="${Math.max(6, pct)}%"></span></span>`;
+  fixStyles(wrap);
   const t = document.createElement("span");
   t.textContent = `${pct}%`;
   wrap.append(t);
@@ -441,8 +482,8 @@ function render() {
   const s = snap;
   if (!s) return;
   document.documentElement.style.setProperty("--accent", ACCENTS[s.accent] || ACCENTS.blue);
-  document.body.classList.toggle("attached", !!s.attached);
-  document.body.classList.toggle("floating", !s.attached);
+  document.body.classList.toggle("attached", !!s.attached && !fit.lane);
+  document.body.classList.toggle("floating", !s.attached || !!fit.lane);
 
   // At rest: where the pointer is, and small live hints.
   const where = s.active || s.me;
@@ -500,7 +541,8 @@ function render() {
         const [free, total] = st.disk;
         const d = document.createElement("div");
         d.className = "disk";
-        d.innerHTML = `<div class="bar"><i style="width:${Math.round((1 - free / Math.max(1, total)) * 100)}%"></i></div>`;
+        d.innerHTML = `<div class="bar"><i data-w="${Math.round((1 - free / Math.max(1, total)) * 100)}%"></i></div>`;
+        fixStyles(d);
         const sm = document.createElement("small");
         sm.textContent = `${fmtGB(free)} free`;
         sm.title = `${fmtGB(free)} free of ${fmtGB(total)}`;
@@ -534,8 +576,15 @@ function render() {
         o.className = "o";
         o.textContent = g.name;
         b.append(app, n, o);
+        // Wayland can't show windows live elsewhere: switch to it there instead.
+        const pc = (s.computers || []).find((c) => c.name === g.name);
+        const live = !pc || pc.status.live !== false;
+        b.title = live ? `${w.title} on ${g.name}: open it here` : `${w.title} on ${g.name}: go to it`;
         b.addEventListener("click", async () => {
-          try { await invoke("open_window", { origin: g.name, window: String(w.id) }); } catch (_) {}
+          try {
+            if (live) await invoke("open_window", { origin: g.name, window: String(w.id) });
+            else await invoke("task_raise", { on: g.name, window: w.id });
+          } catch (_) {}
           close();
         });
         wins.append(b);
@@ -788,7 +837,8 @@ function openItems() {
       running.add(`${on}|${t.app_id || t.name}`);
       const sc = score(t.name);
       if (!sc) continue;
-      (t.windows.length ? open : bg).push({ kind: t.windows.length ? "open" : "bg", on, task: t, name: t.name, score: sc });
+      const isOpen = t.open || t.windows.length > 0;
+      (isOpen ? open : bg).push({ kind: isOpen ? "open" : "bg", on, task: t, name: t.name, score: sc });
     }
   }
   for (const g of (tools && tools.apps) || []) {
@@ -842,6 +892,46 @@ function quitButton(m) {
   return b;
 }
 
+// Real app icons, fetched from each computer as rows appear.
+const iconCache = new Map();   // "computer|app id" → data: URL ("" = none)
+let iconTimer = null;
+function iconKey(on, id) { return `${on}|${id}`; }
+function paintIcon(lead, on, id) {
+  const url = id ? iconCache.get(iconKey(on, id)) : null;
+  if (url && !lead.querySelector("img")) {
+    const img = document.createElement("img");
+    img.alt = "";
+    img.onload = () => {
+      lead.classList.add("has-icon");
+      lead.style.background = "";
+      lead.textContent = "";
+      lead.append(img);
+    };
+    img.src = url;
+  }
+}
+async function fetchIcons() {
+  clearTimeout(iconTimer);
+  const want = new Map();
+  for (const el of $("appList").querySelectorAll(".lead[data-id]")) {
+    const k = iconKey(el.dataset.on, el.dataset.id);
+    if (iconCache.has(k)) continue;
+    if (!want.has(el.dataset.on)) want.set(el.dataset.on, new Set());
+    if (want.get(el.dataset.on).size < 60) want.get(el.dataset.on).add(el.dataset.id);
+  }
+  if (!want.size) return;
+  let got = false;
+  for (const [on, ids] of want) {
+    try {
+      const r = await invoke("app_icons", { on, ids: [...ids] });
+      for (const [id, url] of Object.entries(r || {})) { iconCache.set(iconKey(on, id), url); got = true; }
+    } catch (_) {}
+  }
+  if (got) for (const el of $("appList").querySelectorAll(".lead[data-id]")) paintIcon(el, el.dataset.on, el.dataset.id);
+  // Some come from other computers: look again shortly.
+  if (mode === "open" && tab === "open") iconTimer = setTimeout(fetchIcons, 700);
+}
+
 function appRow(m, i) {
   const row = document.createElement("div");
   row.className = "row" + (i === sel ? " sel" : "");
@@ -851,6 +941,12 @@ function appRow(m, i) {
   lead.style.background = colorFor(m.name);
   lead.textContent = m.name.trim().charAt(0).toUpperCase();
   if (m.kind === "open") lead.classList.add("running");
+  const appId = m.kind === "app" ? m.app.id : m.task.app_id;
+  if (appId) {
+    lead.dataset.on = m.on;
+    lead.dataset.id = appId;
+    paintIcon(lead, m.on, appId);
+  }
   const body = document.createElement("span");
   body.className = "body";
   const main = document.createElement("div");
@@ -863,7 +959,7 @@ function appRow(m, i) {
     const w = m.task.windows.length;
     const parts = [];
     if (w) parts.push(w === 1 ? "1 window" : `${w} windows`);
-    else parts.push("No windows");
+    else parts.push(m.kind === "open" ? "Minimized or on another desktop" : "No windows");
     if (m.task.memory) parts.push(fmtMem(m.task.memory));
     if (quitting.has(`${m.on}|${m.name}`)) parts.push("Quitting…");
     meta.textContent = parts.join(", ");
@@ -886,12 +982,12 @@ function appRow(m, i) {
   row.addEventListener("click", (e) => {
     e.stopPropagation();
     if (m.kind === "app") return launch(m);
-    if (m.kind === "open") {
+    if (m.kind === "open" && m.task.windows.length) {
       invoke("task_raise", { on: m.on, window: m.task.windows[0] }).catch(() => {});
       close();
       return;
     }
-    // In the background: open its window, the way its own icon would.
+    // Minimized or in the background: open its window, the way its own icon would.
     if (m.task.app_id) launch({ on: m.on, app: { id: m.task.app_id, name: m.name } });
   });
   return row;
@@ -941,8 +1037,10 @@ function renderApps() {
   i = section(list, "In the background", bg, i);
   section(list, $("appQuery").value.trim() ? "Apps" : "All apps", apps, i);
   list.scrollTop = scroll;
+  fetchIcons();
 }
 $("appQuery").addEventListener("input", () => { sel = 0; renderApps(); setMode("open"); });
+$("appList").addEventListener("scroll", () => { clearTimeout(iconTimer); iconTimer = setTimeout(fetchIcons, 150); });
 $("appQuery").addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); moveSel($("appList"), e.key === "ArrowDown" ? 1 : -1); }
   else if (e.key === "Enter") { const r = $("appList").querySelectorAll(".row")[sel]; if (r) r.click(); }
@@ -951,6 +1049,15 @@ $("appQuery").addEventListener("keydown", (e) => {
 // ------------------------------------------------------------------ drop files on the island
 
 let dropping = null;      // { paths, hot }
+let dragLeaveTimer = null;
+// The drop lands: the chosen tile pops, the others fall away, then the
+// island folds into the "sending" pill.
+function landDrop(to) {
+  const tiles = [...$("dropTargets").children];
+  for (const t of tiles) t.classList.add(t.dataset.to === to ? "landed" : "away");
+  return new Promise((r) => setTimeout(r, reduceMotion() ? 0 : 420));
+}
+function reduceMotion() { return matchMedia("(prefers-reduced-motion: reduce)").matches; }
 function dropTargets() {
   const names = ((tools && tools.computers) || []);
   const v = names.map((n) => ({ to: n, label: n, icon: ICON.laptop }));
@@ -991,6 +1098,8 @@ function itemsLabel(paths) {
 async function onDrag(e) {
   const p = e.payload || {};
   if (p.type === "enter") {
+    clearTimeout(dragLeaveTimer);
+    if (dropping) return;
     dropping = { paths: p.paths || [], hot: null };
     $("dropTitle").textContent = dropping.paths.length ? `Send ${itemsLabel(dropping.paths)}` : "Send";
     await refreshTools();
@@ -998,19 +1107,20 @@ async function onDrag(e) {
     clearTimeout(actTimer);
     setTab("drop");
     renderDrop();
-    pinned = true;
     setMode("open");
   } else if (p.type === "over") {
     if (dropping) dropping.hot = hitTarget(p.position);
   } else if (p.type === "drop") {
+    clearTimeout(dragLeaveTimer);
     const paths = p.paths && p.paths.length ? p.paths : dropping ? dropping.paths : [];
     // Dropped elsewhere on the island: the shelf.
     const to = hitTarget(p.position) ?? (dropping && dropping.hot) ?? "";
+    await landDrop(to);
     dropping = null;
     if (paths.length) {
       if (to === "") {
         invoke("shelf_put", { paths }).catch(() => {});
-        queue.push({ title: "On the shelf", body: `${itemsLabel(paths)} can now be picked up from any computer.`, icon: "files" });
+        liveFlash = { kind: "shelved", label: itemsLabel(paths), until: Date.now() + 2200 };
       } else {
         invoke("send_paths", { to, paths }).catch(() => {});
         liveFlash = { kind: "sending", label: itemsLabel(paths), to: to === "*" ? "to all your computers" : `to ${to}`, until: Date.now() + 4000 };
@@ -1018,8 +1128,9 @@ async function onDrag(e) {
     }
     close();
   } else if (p.type === "leave") {
-    dropping = null;
-    if (!hovering) close();
+    // Carried away again: fold up (unless it comes straight back).
+    clearTimeout(dragLeaveTimer);
+    dragLeaveTimer = setTimeout(() => { dropping = null; hovering = false; close(); }, 220);
   }
 }
 if (T && T.webview) T.webview.getCurrentWebview().onDragDropEvent(onDrag);
@@ -1030,6 +1141,13 @@ if (T && T.webview) T.webview.getCurrentWebview().onDragDropEvent(onDrag);
 
 let mediaPick = 0;        // which computer's music, when several play
 let shownMedia = null;
+// "Mozilla Firefox" → "Firefox"; "firefox.instance_2_31" → "Firefox".
+function appLabel(a) {
+  let s = (a || "").replace(/[._-]instance.*$/i, "").replace(/_/g, " ").trim();
+  const words = s.split(/\s+/);
+  if (words.length > 1 && /^(mozilla|google|microsoft|brave|the)$/i.test(words[0])) s = words.slice(1).join(" ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 function fmtTime(t) {
   if (t == null || !isFinite(t)) return "–:––";
   t = Math.max(0, Math.round(t));
@@ -1105,8 +1223,10 @@ function renderPlayer(force) {
   const wasHidden = p.hidden;
   p.hidden = false;
   const n = shownMedia.now;
+  const app = appLabel(n.app);
   $("pTitle").textContent = n.title;
-  $("pArtist").textContent = n.artist || n.album || n.app;
+  const artist = (n.artist || "").trim();
+  $("pArtist").textContent = artist && !artist.toLowerCase().includes(app.toLowerCase()) ? artist : n.album || app;
   if (n.art !== lastArt) {
     lastArt = n.art;
     $("pArt").style.backgroundImage = n.art ? `url("${n.art.replace(/"/g, "%22")}")` : "";
@@ -1114,7 +1234,7 @@ function renderPlayer(force) {
     tintFrom(n.art);
   }
   const me = snap.me;
-  $("pWhere").textContent = (m.name === me ? n.app : `${n.app} on ${m.name}`) + (list.length > 1 ? "  ›" : "");
+  $("pWhere").textContent = (m.name === me ? app : `${app} on ${m.name}`) + (list.length > 1 ? "  ›" : "");
   $("pWhere").title = list.length > 1 ? "Show what's playing on another computer" : "";
   $("pShuffle").hidden = n.shuffle == null;
   drawPlayer();
@@ -1174,7 +1294,7 @@ function demo() {
       { name: "ubuntu-box", windows: [{ id: 4, title: "Terminal", app: "gnome-terminal" }, { id: 5, title: "Files", app: "Nautilus" }] },
     ],
     transfers: location.hash.includes("transfer") ? [{ offer: 1, label: "holiday.mp4", peer: "macbook", incoming: false, done: 40, total: 100 }] : [],
-    fit: { notch: location.hash.includes("notch") ? [200, 32] : null, bar: location.hash.includes("notch") ? 32 : null, watch: false },
+    fit: { notch: location.hash.includes("notch") ? [200, 32] : null, bar: location.hash.includes("notch") ? 32 : null, watch: false, lane: location.hash.includes("lane") ? 34 : null },
     media: [{ name: "macbook", now: { app: "Spotify", title: "In the Flat Field", artist: "Bauhaus", album: "In the Flat Field", art: null, playing: true, position: 231, duration: 300, at: Date.now(), shuffle: false } }],
     notes: [], activities: [],
   };

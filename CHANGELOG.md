@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.9.1
+
+**Update every computer** (protocol 12).
+
+### Added
+- **The island has a lane of its own** on Windows and Linux: a thin strip across the top of the screen that maximized windows leave free, so the island is always visible and never covers a browser tab or a title bar. Where the system can't keep the strip free, it rests as a thin line as before.
+- **Real app icons** in the Open tab, from every computer.
+- **GNOME on Wayland**: OpenHop installs a small GNOME Shell helper (active after logging out and back in once) so it can see that computer's windows and the pointer: the island opens on hover there, the lane works, the Open tab shows what's open, and the computer's windows appear in the Control Center (clicking one switches to it; Wayland can't show it live elsewhere).
+
+### Fixed
+- **The island now closes by itself** when the pointer leaves it, after a click (e.g. on play) and after dragging files to it; dropping files lands with an animation and folds into the "sending" pill.
+- **Open apps were missing**: minimized apps and apps on other desktops count as open (taskbar on Windows, Dock on macOS, the window list on Linux).
+- **A computer that locks itself after a while unused no longer locks the others.** Only a lock done by hand, on the computer being used, locks them all.
+- Media: cleaner app names ("Firefox", not "Mozilla firefox_…") and no repeated names.
+
+
 ## v0.9.0
 
 **Update every computer** (protocol 11).

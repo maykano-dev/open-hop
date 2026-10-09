@@ -49,8 +49,13 @@ fn app_name(h: HWND) -> String {
 }
 
 fn listed(h: HWND) -> bool {
+    shown_in_taskbar(h) && unsafe { !IsIconic(h).as_bool() }
+}
+
+/// A window with a taskbar button (minimized ones too).
+fn shown_in_taskbar(h: HWND) -> bool {
     unsafe {
-        if !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() {
+        if !IsWindowVisible(h).as_bool() {
             return false;
         }
         if GetWindow(h, GW_OWNER).map(|o| !o.is_invalid()).unwrap_or(false) {
@@ -77,6 +82,25 @@ unsafe extern "system" fn collect(h: HWND, l: LPARAM) -> BOOL {
         v.push(h);
     }
     BOOL(1)
+}
+
+unsafe extern "system" fn collect_taskbar(h: HWND, l: LPARAM) -> BOOL {
+    let v = &mut *(l.0 as *mut Vec<u32>);
+    if shown_in_taskbar(h) {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(h, Some(&mut pid));
+        v.push(pid);
+    }
+    BOOL(1)
+}
+
+/// Processes with a button in the taskbar.
+pub fn taskbar_pids() -> Vec<u32> {
+    let mut v: Vec<u32> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(collect_taskbar), LPARAM(&mut v as *mut Vec<u32> as isize));
+    }
+    v
 }
 
 pub fn list() -> Vec<WinInfo> {

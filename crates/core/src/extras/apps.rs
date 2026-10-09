@@ -131,7 +131,7 @@ mod imp {
     pub(super) fn entry(path: &Path) -> Option<AppEntry> {
         let text = std::fs::read_to_string(path).ok()?;
         let mut in_main = false;
-        let (mut name, mut hidden, mut app, mut exe) = (None, false, false, String::new());
+        let (mut name, mut hidden, mut app, mut exe, mut icon) = (None, false, false, String::new(), String::new());
         for line in text.lines() {
             let line = line.trim();
             if line.starts_with('[') {
@@ -143,6 +143,8 @@ mod imp {
             }
             if let Some(n) = line.strip_prefix("Name=") {
                 name.get_or_insert_with(|| n.to_string());
+            } else if let Some(i) = line.strip_prefix("Icon=") {
+                icon = i.trim().to_string();
             } else if let Some(e) = line.strip_prefix("Exec=") {
                 exe = exec_program(e);
             } else if line == "NoDisplay=true" || line == "Hidden=true" {
@@ -152,7 +154,7 @@ mod imp {
             }
         }
         let name = name?;
-        (app && !hidden).then(|| AppEntry { id: path.to_string_lossy().into_owned(), name, exe })
+        (app && !hidden).then(|| AppEntry { id: path.to_string_lossy().into_owned(), name, exe, icon })
     }
 
     pub fn list() -> Vec<AppEntry> {
@@ -277,7 +279,7 @@ mod imp {
                     return None;
                 }
                 let exe = std::fs::read(&p).ok().and_then(|d| lnk::target(&d)).map(|t| exe_key(&t)).unwrap_or(low);
-                Some(AppEntry { id: p.to_string_lossy().into_owned(), name, exe })
+                Some(AppEntry { id: p.to_string_lossy().into_owned(), name, exe, icon: String::new() })
             })
             .collect()
     }
@@ -305,7 +307,7 @@ mod imp {
             .into_iter()
             .filter_map(|p| {
                 let name = p.file_stem()?.to_string_lossy().into_owned();
-                Some(AppEntry { exe: name.to_lowercase(), name, id: p.to_string_lossy().into_owned() })
+                Some(AppEntry { exe: name.to_lowercase(), name, id: p.to_string_lossy().into_owned(), icon: String::new() })
             })
             .collect()
     }

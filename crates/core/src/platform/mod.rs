@@ -132,6 +132,11 @@ impl PointerProbe {
     /// (x, y, main button down). macOS: in points, not pixels.
     pub fn read(&mut self) -> Option<(i32, i32, bool)> {
         #[cfg(target_os = "linux")]
+        if linux_is_wayland() {
+            // Only GNOME (with OpenHop's helper) says where the pointer is.
+            return crate::wins::gnome::pointer();
+        }
+        #[cfg(target_os = "linux")]
         {
             use x11rb::connection::Connection;
             use x11rb::protocol::xproto::{ConnectionExt as _, KeyButMask};

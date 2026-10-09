@@ -37,6 +37,9 @@
     /* Resting as a thin lip (Windows, Linux): out of the way of tabs and title bars. */
     body.lip .island:not(.open):not(.activity):not(.live) { background: rgba(0, 0, 0, .78); }
     body.lip .rest { display: none; }
+    /* In its own lane: a slim, always-visible pill with a soft shadow. */
+    body.lane .rest { height: var(--h); font-size: 12px; }
+    body.lane .island:not(.open):not(.activity) { box-shadow: 0 1px 0 rgba(255,255,255,.06) inset; }
     /* Around a MacBook notch: the middle is the camera, content goes either side. */
     body.notch .rest .where span, body.notch .rest #restName { display: none; }
     body.notch .rest { justify-content: space-between; padding: 0 10px; }
@@ -209,6 +212,8 @@
     .row .lead svg { width: 17px; height: 17px; }
     .row .lead img { width: 100%; height: 100%; object-fit: cover; }
     .row .lead.app { color: #fff; font-weight: 700; font-size: 15px; }
+    .row .lead.app.has-icon { background: transparent; border-radius: 0; overflow: visible; }
+    .row .lead.app.has-icon img { width: 100%; height: 100%; object-fit: contain; }
     .row .body { flex: 1; min-width: 0; }
     .row .main { font-size: 13px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
     .apps .row .main { -webkit-line-clamp: 1; font-weight: 600; }
@@ -249,6 +254,10 @@
     .target svg { width: 30px; height: 30px; color: var(--soft); transition: color .2s; }
     .target.hot { background: color-mix(in srgb, var(--accent) 32%, transparent); transform: scale(1.06); box-shadow: inset 0 0 0 1.5px var(--accent); }
     .target.hot svg { color: #fff; }
+    .target.landed { animation: landed .42s var(--spring) forwards; background: color-mix(in srgb, var(--accent) 45%, transparent); }
+    .target.landed svg { color: #fff; }
+    .target.away { opacity: 0; transform: scale(.85) translateY(-6px); transition: opacity .25s var(--ease), transform .3s var(--ease); }
+    @keyframes landed { 0% { transform: scale(1.06); } 35% { transform: scale(1.14); } 100% { transform: scale(.6) translateY(-30px); opacity: 0; } }
     .pc { text-align: left; color: inherit; }
     .pc.go { cursor: default; }
     .pc.go:hover { background: var(--glass-hi); }

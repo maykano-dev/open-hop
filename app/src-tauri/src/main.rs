@@ -643,7 +643,8 @@ fn main() {
             tools::send_paths,
             tools::learn_layout,
             tools::task_quit,
-            tools::task_raise
+            tools::task_raise,
+            tools::app_icons
         ])
         .setup(move |app| {
             // Keep sharing in the background: closing the window hides it to the tray.
@@ -691,6 +692,7 @@ fn main() {
                         }
                     }
                     "quit" => {
+                        island::release_lane(app);
                         if let Some(e) = app.state::<App>().engine.lock().take() {
                             e.stop();
                         }
@@ -735,6 +737,30 @@ fn main() {
             let cwd = std::env::current_dir().unwrap_or_default();
             let sending = send::queue(app.handle(), &args, &cwd);
             send::start(app.handle().clone());
+            // GNOME on Wayland: OpenHop's small Shell helper shows it windows
+            // and the pointer. Say once when a new login is needed.
+            #[cfg(target_os = "linux")]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    use openhop_core::extras::gnome_ext::{ensure, Outcome};
+                    if ensure() == Outcome::AfterLogin {
+                        let mark = Config::default_path().with_file_name("gnome-helper-told");
+                        if std::fs::read_to_string(&mark).ok().as_deref() != Some(env!("CARGO_PKG_VERSION")) {
+                            let _ = std::fs::write(&mark, env!("CARGO_PKG_VERSION"));
+                            std::thread::sleep(std::time::Duration::from_secs(4));
+                            island::push(
+                                &handle,
+                                island::Activity {
+                                    title: "Log out and back in once".into(),
+                                    body: "So OpenHop can see this computer's windows and pointer (GNOME on Wayland).".into(),
+                                    icon: "info".into(),
+                                },
+                            );
+                        }
+                    }
+                });
+            }
             // Started at login: stay in the tray.
             if sending || std::env::args().any(|a| a == "--hidden") {
                 if let Some(w) = app.get_webview_window("main") {

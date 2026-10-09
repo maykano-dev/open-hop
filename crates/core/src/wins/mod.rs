@@ -4,6 +4,8 @@
 use crate::protocol::{Rect, WinInfo};
 
 #[cfg(target_os = "linux")]
+pub mod gnome;
+#[cfg(target_os = "linux")]
 mod x11;
 #[cfg(target_os = "linux")]
 use x11 as imp;
@@ -20,6 +22,9 @@ use mac as imp;
 mod imp {
     use super::*;
     pub fn list() -> Vec<WinInfo> {
+        vec![]
+    }
+    pub fn taskbar_pids() -> Vec<u32> {
         vec![]
     }
     pub fn capture(_: u64) -> Option<Picture> {
@@ -55,8 +60,45 @@ pub struct Picture {
     pub bgra: Vec<u8>,
 }
 
+/// GNOME on Wayland with OpenHop's helper running: windows come from it
+/// (Wayland doesn't let apps see other apps' windows).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn via_gnome() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::platform::linux_is_wayland() && gnome::available();
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+/// Windows here can be shown live elsewhere (not on Wayland).
+pub fn can_stream() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        return !crate::platform::linux_is_wayland();
+    }
+    #[allow(unreachable_code)]
+    true
+}
+
+/// Processes that have a button in the taskbar or dock (minimized windows
+/// count).
+pub fn taskbar_pids() -> Vec<u32> {
+    #[cfg(target_os = "linux")]
+    if via_gnome() {
+        let mut v = gnome::taskbar_pids();
+        v.extend(imp::taskbar_pids());
+        return v;
+    }
+    imp::taskbar_pids()
+}
+
 /// Normal application windows, front-most first where the OS says.
 pub fn list() -> Vec<WinInfo> {
+    #[cfg(target_os = "linux")]
+    let mut v = if via_gnome() { gnome::list() } else { imp::list() };
+    #[cfg(not(target_os = "linux"))]
     let mut v = imp::list();
     v.retain(|w| w.w >= 40 && w.h >= 40);
     v
@@ -116,6 +158,10 @@ pub fn bar_height(id: u64) -> i32 {
 
 /// Put the window above the others (without moving the keyboard focus).
 pub fn raise(id: u64) {
+    #[cfg(target_os = "linux")]
+    if via_gnome() {
+        return gnome::raise(id);
+    }
     imp::raise(id)
 }
 

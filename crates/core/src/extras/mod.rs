@@ -6,6 +6,9 @@
 //! [`Ext`] messages addressed by computer name (the server forwards them).
 
 pub mod apps;
+pub mod gnome_ext;
+pub mod icons;
+pub mod lane;
 pub mod media;
 pub mod menus;
 pub mod system;
@@ -283,6 +286,11 @@ pub struct Hub {
     quit_tx: crossbeam_channel::Sender<(Vec<u32>, bool)>,
     /// This hub, for work done on other threads.
     this: std::sync::Weak<Hub>,
+    /// App icons from every computer: (computer, app id) → data: URL ("" = none).
+    icons: Mutex<HashMap<(String, String), String>>,
+    icons_asked: Mutex<BTreeSet<(String, String)>>,
+    /// Icons to make here: (app ids, computer that asked).
+    icon_tx: crossbeam_channel::Sender<(Vec<String>, Option<String>)>,
     stop: Arc<AtomicBool>,
 }
 
@@ -299,8 +307,12 @@ impl Hub {
     pub fn new(me: String, settings: Settings) -> Arc<Hub> {
         let (media_tx, media_rx) = crossbeam_channel::unbounded();
         let (quit_tx, quit_rx) = crossbeam_channel::unbounded();
+        let (icon_tx, icon_rx) = crossbeam_channel::unbounded();
         let hub = Arc::new_cyclic(|this| Hub {
             this: this.clone(),
+            icons: Mutex::new(HashMap::new()),
+            icons_asked: Mutex::new(BTreeSet::new()),
+            icon_tx,
             tasks: Mutex::new(BTreeMap::new()),
             quit_tx,
             me,
@@ -338,6 +350,8 @@ impl Hub {
         let _ = std::thread::Builder::new().name("media".into()).spawn(move || h.media_loop(media_rx));
         let h = hub.clone();
         let _ = std::thread::Builder::new().name("tasks".into()).spawn(move || h.tasks_loop(quit_rx));
+        let h = hub.clone();
+        let _ = std::thread::Builder::new().name("icons".into()).spawn(move || h.icons_loop(icon_rx));
         let h = hub.clone();
         let _ = std::thread::Builder::new().name("extras".into()).spawn(move || {
             // Windows a crashed run left hidden come back.
@@ -640,6 +654,65 @@ impl Hub {
         });
     }
 
+    /// Icons of apps on computer `on`: the ones known now (others are
+    /// fetched, ask again in a moment).
+    pub fn app_icons(&self, on: &str, ids: &[String]) -> HashMap<String, String> {
+        let mut known = HashMap::new();
+        let mut missing = vec![];
+        {
+            let c = self.icons.lock();
+            let mut asked = self.icons_asked.lock();
+            for id in ids {
+                let key = (on.to_string(), id.clone());
+                match c.get(&key) {
+                    Some(u) => {
+                        known.insert(id.clone(), u.clone());
+                    }
+                    None if asked.insert(key) => missing.push(id.clone()),
+                    None => {}
+                }
+            }
+        }
+        if !missing.is_empty() {
+            if on == self.me {
+                let _ = self.icon_tx.send((missing, None));
+            } else {
+                self.send(on, Ext::IconReq { ids: missing });
+            }
+        }
+        known
+    }
+
+    /// Make icons of this computer's apps (for here, or for who asked).
+    fn icons_loop(self: Arc<Self>, rx: crossbeam_channel::Receiver<(Vec<String>, Option<String>)>) {
+        while let Ok((ids, to)) = rx.recv() {
+            let apps = self.apps.lock().get(&self.me).cloned().unwrap_or_default();
+            let mut batch = vec![];
+            for id in ids.into_iter().take(400) {
+                let key = (self.me.clone(), id.clone());
+                let cached = self.icons.lock().get(&key).cloned();
+                let url = match cached {
+                    Some(u) => u,
+                    None => {
+                        let u = apps.iter().find(|a| a.id == id).and_then(icons::icon).unwrap_or_default();
+                        self.icons.lock().insert(key, u.clone());
+                        u
+                    }
+                };
+                batch.push((id, url));
+                if batch.len() >= 24 {
+                    if let Some(t) = &to {
+                        self.send(t, Ext::Icons { list: std::mem::take(&mut batch) });
+                    }
+                    batch.clear();
+                }
+            }
+            if let (Some(t), false) = (&to, batch.is_empty()) {
+                self.send(t, Ext::Icons { list: batch });
+            }
+        }
+    }
+
     /// The apps running on every computer (this one first).
     pub fn tasks(&self) -> Vec<(String, Vec<crate::protocol::RunningApp>)> {
         let mut v: Vec<_> = self.tasks.lock().iter().map(|(n, l)| (n.clone(), l.clone())).collect();
@@ -689,10 +762,16 @@ impl Hub {
             if installed.is_empty() && windows.is_empty() {
                 continue;
             }
-            let now = t.list(&windows, &installed);
+            let dock = wins::taskbar_pids();
+            // Wayland keeps native apps' windows to itself.
+            #[cfg(target_os = "linux")]
+            let guess = crate::platform::linux_is_wayland();
+            #[cfg(not(target_os = "linux"))]
+            let guess = false;
+            let now = t.list(&windows, &dock, &installed, guess);
             let connected = self.out.read().is_some();
             // Changed: apps or windows came or went, memory moved a lot, or now and then.
-            let shape = |v: &[crate::protocol::RunningApp]| v.iter().map(|a| (a.name.clone(), a.windows.clone(), a.pids.clone())).collect::<Vec<_>>();
+            let shape = |v: &[crate::protocol::RunningApp]| v.iter().map(|a| (a.name.clone(), a.windows.clone(), a.pids.clone(), a.open)).collect::<Vec<_>>();
             let mem_moved = now.iter().zip(last.iter()).any(|(a, b)| a.memory.abs_diff(b.memory) > b.memory / 10 + (16 << 20));
             let changed = quick || shape(&now) != shape(&last) || mem_moved || sent_at.elapsed() > Duration::from_secs(30);
             self.tasks.lock().insert(self.me.clone(), now.clone());
@@ -925,6 +1004,8 @@ impl Hub {
         self.apps.lock().remove(name);
         self.media.lock().remove(name);
         self.tasks.lock().remove(name);
+        self.icons.lock().retain(|(c, _), _| c != name);
+        self.icons_asked.lock().retain(|(c, _)| c != name);
         self.shelves.lock().remove(name);
         self.quiet_from.lock().remove(name);
         self.update_dnd();
@@ -1145,6 +1226,15 @@ impl Hub {
             }
             Ext::Raise { window } => {
                 std::thread::spawn(move || wins::raise(window));
+            }
+            Ext::IconReq { ids } => {
+                let _ = self.icon_tx.send((ids, Some(from.to_string())));
+            }
+            Ext::Icons { list } => {
+                let mut c = self.icons.lock();
+                for (id, url) in list {
+                    c.insert((from.to_string(), id), url);
+                }
             }
             Ext::ShelfRemove { id } => self.shelf_remove(&self.me.clone(), id),
             Ext::Notice { title, body, icon } => self.notice_here(&title, &body, &icon),
@@ -1680,6 +1770,7 @@ impl Hub {
                 locked: locked == Some(true),
                 fullscreen: self.fullscreen.load(Ordering::SeqCst),
                 os: Some(Os::current()),
+                live: wins::can_stream(),
             };
             self.stats.lock().insert(self.me.clone(), st.clone());
             let resend = last_status.as_ref() != Some(&st) || status_sent.elapsed() > Duration::from_secs(30);
@@ -1706,8 +1797,13 @@ impl Hub {
             // Locked here: lock the others too. Unlocked: wake their displays.
             if locked.is_some() && locked != last_locked {
                 let ours = self.lock_expect.lock().map(|t| t.elapsed() < Duration::from_secs(10)).unwrap_or(false);
+                // Only a lock by hand: one that came from the screen
+                // timing out (nobody was using this computer) stays here.
+                let by_hand = self.pointer_here() && system::idle_secs().map(|i| i < 30).unwrap_or(true);
                 if !ours && connected {
-                    if locked == Some(true) {
+                    if locked == Some(true) && !by_hand {
+                        log::info!("this computer locked itself after a while unused; the others carry on");
+                    } else if locked == Some(true) {
                         log::info!("this computer was locked; locking the others");
                         self.send("*", Ext::Lock);
                     } else {

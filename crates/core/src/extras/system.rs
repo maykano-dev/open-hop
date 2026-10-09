@@ -302,6 +302,43 @@ pub fn lock_now() {
 }
 
 /// Put the computer to sleep now.
+/// Seconds since someone last touched this computer's keyboard or mouse,
+/// if the system says.
+pub fn idle_secs() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        // GNOME (Wayland and X11).
+        let conn = zbus::blocking::Connection::session().ok()?;
+        let r = conn
+            .call_method(Some("org.gnome.Mutter.IdleMonitor"), "/org/gnome/Mutter/IdleMonitor/Core", Some("org.gnome.Mutter.IdleMonitor"), "GetIdletime", &())
+            .ok()?;
+        let ms: u64 = r.body().deserialize().ok()?;
+        return Some(ms / 1000);
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::SystemInformation::GetTickCount;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+        let mut li = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+        if !GetLastInputInfo(&mut li).as_bool() {
+            return None;
+        }
+        return Some(GetTickCount().wrapping_sub(li.dwTime) as u64 / 1000);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+        }
+        // Combined session state, any input event.
+        let s = unsafe { CGEventSourceSecondsSinceLastEventType(0, u32::MAX) };
+        return (s >= 0.0).then_some(s as u64);
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
 pub fn sleep_now() {
     log::info!("putting this computer to sleep");
     #[cfg(target_os = "linux")]

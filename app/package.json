@@ -1,6 +1,6 @@
 {
   "name": "openhop-app",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "OpenHop desktop app",
   "scripts": {
     "tauri": "tauri"

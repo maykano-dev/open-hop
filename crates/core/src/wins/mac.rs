@@ -67,6 +67,20 @@ fn on_screen() -> Vec<Info> {
         .collect()
 }
 
+/// Apps in the Dock (regular apps that are running).
+pub fn taskbar_pids() -> Vec<u32> {
+    use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
+    let ws = NSWorkspace::sharedWorkspace();
+    let me = std::process::id() as i32;
+    ws.runningApplications()
+        .iter()
+        .filter(|a| a.activationPolicy() == NSApplicationActivationPolicy::Regular)
+        .map(|a| a.processIdentifier())
+        .filter(|&p| p > 0 && p != me)
+        .map(|p| p as u32)
+        .collect()
+}
+
 pub fn list() -> Vec<WinInfo> {
     on_screen()
         .into_iter()

@@ -3105,10 +3105,11 @@ dependencies = [
 
 [[package]]
 name = "openhop-app"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "env_logger",
+ "gtk",
  "log",
  "objc2",
  "openhop-core",
@@ -3126,7 +3127,7 @@ dependencies = [
 
 [[package]]
 name = "openhop-cli"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3139,7 +3140,7 @@ dependencies = [
 
 [[package]]
 name = "openhop-core"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3165,6 +3166,7 @@ dependencies = [
  "parking_lot",
  "png 0.18.1",
  "serde",
+ "serde_json",
  "snow",
  "socket2",
  "sysinfo",

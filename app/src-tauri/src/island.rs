@@ -10,6 +10,127 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl, WebviewWindowBuilder};
 
+/// The lane's height and the gap above the island in it (logical pixels).
+pub const LANE: f64 = 34.0;
+const LANE_GAP: f64 = 3.0;
+const LANE_TITLE: &str = "OpenHop lane";
+
+/// Give the island a lane of its own across the top of the screen, which
+/// maximized windows leave free. Checks the system really kept it free;
+/// otherwise it goes back to resting as a thin line.
+fn make_lane(app: &tauri::App) {
+    if cfg!(target_os = "macos") {
+        return; // The menu bar is its lane.
+    }
+    let Some(m) = app.primary_monitor().ok().flatten() else { return };
+    let scale = m.scale_factor();
+    // GNOME on Wayland: OpenHop's Shell helper makes the lane.
+    #[cfg(target_os = "linux")]
+    if openhop_core::platform::linux_is_wayland() {
+        let handle = app.handle().clone();
+        std::thread::spawn(move || {
+            let Some(top) = openhop_core::wins::gnome::lane(LANE as u32) else {
+                log::info!("island lane: needs OpenHop's GNOME Shell helper (after the next login)");
+                return;
+            };
+            log::info!("island lane under GNOME's top bar at {top}");
+            let h = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                let island = h.state::<Island>();
+                *island.lane_top.lock() = Some((top as f64 * scale).round() as i32);
+                island.fit.lock().lane = Some(LANE);
+                let g = *island.geo.lock();
+                if g.scale > 0.0 {
+                    place(&h, g.w as f64 / g.scale, g.h as f64 / g.scale);
+                }
+            });
+        });
+        return;
+    }
+    let area = m.work_area();
+    let top = if attached() { m.position().y } else { area.position.y };
+    let (x, width, height) = (m.position().x, m.size().width as i32, (LANE * scale).round() as i32);
+    let Ok(lane) = WebviewWindowBuilder::new(app, "lane", WebviewUrl::App("lane.html".into()))
+        .title(LANE_TITLE)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .skip_taskbar(true)
+        // Resizable, or GTK makes it as tall as a web view likes to be.
+        .resizable(true)
+        .focused(false)
+        .visible_on_all_workspaces(true)
+        .inner_size(width as f64 / scale, LANE)
+        .min_inner_size(20.0, 4.0)
+        .position(x as f64 / scale, top as f64 / scale)
+        .visible(false)
+        .build()
+    else {
+        return;
+    };
+    // Linux: a dock window (window managers keep space free for docks).
+    #[cfg(target_os = "linux")]
+    if let Ok(g) = lane.gtk_window() {
+        use gtk::prelude::GtkWindowExt;
+        g.set_type_hint(gtk::gdk::WindowTypeHint::Dock);
+    }
+    let _ = lane.show();
+    let _ = lane.set_ignore_cursor_events(true);
+    #[cfg(windows)]
+    let raw = lane.hwnd().map(|h| h.0 as isize).unwrap_or(0);
+    #[cfg(not(windows))]
+    let raw = 0isize;
+    let handle = app.handle().clone();
+    std::thread::spawn(move || {
+        // The window has to be on screen first.
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let reserved = openhop_core::extras::lane::reserve(raw, LANE_TITLE, x, top, width, height);
+        // Did maximized windows really move down? (Give the system a moment.)
+        let mut kept = false;
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if reserved && openhop_core::extras::lane::kept(top, height) {
+                kept = true;
+                break;
+            }
+        }
+        log::info!("island lane: {}", if kept { "in use" } else { "not kept free by this system; resting as a thin line" });
+        let h = handle.clone();
+        let _ = handle.run_on_main_thread(move || {
+            let island = h.state::<Island>();
+            if kept {
+                *island.lane_top.lock() = Some(top);
+                island.fit.lock().lane = Some(LANE);
+            } else {
+                openhop_core::extras::lane::release(raw, LANE_TITLE);
+                if let Some(w) = h.get_webview_window("lane") {
+                    let _ = w.destroy();
+                }
+            }
+            let g = *island.geo.lock();
+            if g.scale > 0.0 {
+                place(&h, g.w as f64 / g.scale, g.h as f64 / g.scale);
+            }
+        });
+    });
+}
+
+/// Give the lane back (quitting).
+pub fn release_lane(handle: &AppHandle) {
+    #[cfg(target_os = "linux")]
+    if openhop_core::platform::linux_is_wayland() {
+        openhop_core::wins::gnome::lane_off();
+    }
+    if let Some(w) = handle.get_webview_window("lane") {
+        #[cfg(windows)]
+        let raw = w.hwnd().map(|h| h.0 as isize).unwrap_or(0);
+        #[cfg(not(windows))]
+        let raw = 0isize;
+        openhop_core::extras::lane::release(raw, LANE_TITLE);
+        let _ = w.destroy();
+    }
+}
+
 /// Collapsed size (logical pixels).
 pub const PILL: (f64, f64) = (210.0, 34.0);
 
@@ -31,12 +152,17 @@ pub struct Fit {
     /// OpenHop follows the pointer itself (hover, click-through). Not on
     /// Wayland, which doesn't tell apps where the pointer is.
     watch: bool,
+    /// The island's own lane at the top of the screen (its height), on
+    /// Windows and Linux.
+    lane: Option<f64>,
 }
 
 #[derive(Default)]
 pub struct Island {
     pub activities: parking_lot::Mutex<VecDeque<Activity>>,
     fit: parking_lot::Mutex<Fit>,
+    /// Top of the lane (physical pixels), while it's reserved.
+    lane_top: parking_lot::Mutex<Option<i32>>,
     /// The window (physical pixels) and the part of it the island fills
     /// (logical pixels, centred at the top).
     geo: parking_lot::Mutex<Geo>,
@@ -88,7 +214,13 @@ fn place(handle: &AppHandle, w: f64, h: f64) {
     let area = m.work_area();
     // Right at the top edge (macOS, Windows), or just under a top bar
     // (Linux desktops keep their clock and menus there).
-    let top = if attached() { m.position().y } else { area.position.y };
+    let lane_top = *handle.state::<Island>().lane_top.lock();
+    let top = match lane_top {
+        // In its lane: a little gap above it.
+        Some(t) => t + (LANE_GAP * scale).round() as i32,
+        None if attached() => m.position().y,
+        None => area.position.y,
+    };
     let x = m.position().x + (m.size().width as i32 - pw as i32) / 2;
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_position(PhysicalPosition::new(x, top));
@@ -145,14 +277,14 @@ fn watch(handle: AppHandle) {
             let want = if !inside {
                 dwell = None;
                 false
-            } else if hover || !lip || button {
+            } else if hover || button {
                 // Dragging files to it opens it straight away.
                 true
             } else {
                 // Resting: only after the pointer stays a moment, so a quick
                 // click on a browser tab underneath doesn't open it.
                 let since = *dwell.get_or_insert_with(std::time::Instant::now);
-                since.elapsed() > std::time::Duration::from_millis(220)
+                since.elapsed() > std::time::Duration::from_millis(if lip { 220 } else { 90 })
             };
             if want != hover {
                 hover = want;
@@ -193,8 +325,9 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     above_menu_bar(&win);
     let _ = win;
     // Wayland doesn't tell apps where the pointer is.
+    // On GNOME, OpenHop's Shell helper tells it.
     #[cfg(target_os = "linux")]
-    let watch_pointer = !openhop_core::platform::linux_is_wayland();
+    let watch_pointer = !openhop_core::platform::linux_is_wayland() || openhop_core::wins::gnome::available();
     #[cfg(not(target_os = "linux"))]
     let watch_pointer = true;
     {
@@ -209,6 +342,7 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         }
     }
     place(app.handle(), PILL.0, PILL.1);
+    make_lane(app);
     if watch_pointer {
         watch(app.handle().clone());
     }
