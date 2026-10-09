@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.0
+
+### New
+- **Your phone, from the island.** Tap the phone button in the island (or press P) and scan the QR code with an iPhone or Android phone's camera. A page opens on the phone: send photos, videos, files and text to the computer, and pick up files you drop on **Phone** in the island. No app to install. Files from the phone land in Downloads › OpenHop, with Open and Show in Folder in the island; text goes straight to the clipboard. Both need the same Wi‑Fi, and the page's address carries a long random key so nobody else on the network can use it. (Windows may ask once whether OpenHop can use the network: allow it on private networks.)
+- **Choose what this computer shares** (Settings › Sharing), for schools, offices and shared computers: whether other computers can control it, whether its keyboard and mouse go to the others, and whether Focus, Lock All and Sleep All reach it. Everything is on by default. What's switched off disappears from the island, and small labels there say what's off.
+
+### Changed
+- Update every computer to v0.10: older versions can't connect to it.
+- **A smaller island.** Focus, Lock All and Sleep All are now small round buttons next to the status line, with a phone button beside them.
+
+### Fixed
+- **The island snapped shut instead of folding up** (and notifications snapped away) on Linux. Changing which part of the window takes the pointer cut the running animation short; that now happens once the island has finished shrinking.
+- **Opening and closing on hover is steadier on Linux**: the island reacts to the pointer itself, so it can't miss the pointer leaving.
+- On some window managers the island's lane sat on top of the island and swallowed the pointer, so hovering did nothing. The island now stays above its lane, and the lane keeps being retried for a few minutes after login.
+- The island stays open while the pointer rests on it (for reading, or scanning the phone code) instead of closing after 12 seconds.
+
 ## v0.9.5
 
 ### Fixed

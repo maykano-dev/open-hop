@@ -10,6 +10,7 @@ pub mod gnome_ext;
 pub mod icons;
 pub mod lane;
 pub mod media;
+pub mod phone;
 pub mod menus;
 pub mod system;
 pub mod tasks;
@@ -148,6 +149,11 @@ pub struct Settings {
     pub quality: String,
     pub swap_cmd_ctrl: bool,
     pub window_drag: bool,
+    pub allow_control: bool,
+    pub share_input: bool,
+    pub allow_focus: bool,
+    pub allow_lock: bool,
+    pub allow_sleep: bool,
 }
 
 impl Settings {
@@ -158,6 +164,11 @@ impl Settings {
             quality: c.stream_quality.clone(),
             swap_cmd_ctrl: c.swap_cmd_ctrl,
             window_drag: c.window_drag,
+            allow_control: c.allow_control,
+            share_input: c.share_input,
+            allow_focus: c.allow_focus,
+            allow_lock: c.allow_lock,
+            allow_sleep: c.allow_sleep,
         }
     }
 }
@@ -417,12 +428,20 @@ impl Hub {
         v
     }
 
+    /// The last status heard from computer `name`.
+    pub fn status_of(&self, name: &str) -> Option<PcStatus> {
+        self.stats.lock().get(name).cloned()
+    }
+
     pub fn focus(&self) -> bool {
         self.focus.load(Ordering::SeqCst)
     }
 
     /// Focus (Do Not Disturb) on or off on every computer.
     pub fn set_focus(&self, on: bool) {
+        if !self.settings.read().allow_focus {
+            return;
+        }
         self.apply_focus(on);
         self.send("*", Ext::Focus { on });
     }
@@ -441,6 +460,9 @@ impl Hub {
 
     /// Lock every computer.
     pub fn lock_all(&self) {
+        if !self.settings.read().allow_lock {
+            return;
+        }
         self.send("*", Ext::Lock);
         *self.lock_expect.lock() = Some(Instant::now());
         std::thread::spawn(system::lock_now);
@@ -448,6 +470,9 @@ impl Hub {
 
     /// Put every computer to sleep (this one last, so the message gets out).
     pub fn sleep_all(&self) {
+        if !self.settings.read().allow_sleep {
+            return;
+        }
         self.send("*", Ext::Sleep);
         std::thread::spawn(|| {
             std::thread::sleep(Duration::from_millis(800));
@@ -491,6 +516,18 @@ impl Hub {
     }
 
     // ------------------------------------------------------ clipboard history
+
+    /// Put something on this computer's clipboard (false when OpenHop isn't
+    /// running).
+    pub fn set_clipboard(&self, d: ClipData) -> bool {
+        match self.clip_setter.lock().as_ref() {
+            Some(set) => {
+                set(d);
+                true
+            }
+            None => false,
+        }
+    }
 
     /// How the engine puts something on this computer's clipboard.
     pub fn set_clip_setter(&self, f: Box<dyn Fn(ClipData) + Send>) {
@@ -1181,6 +1218,12 @@ impl Hub {
             Ext::Status(st) => {
                 self.stats.lock().insert(from.into(), st);
             }
+            // What this computer's owner switched off isn't done to it.
+            Ext::Focus { .. } if !self.settings.read().allow_focus => {}
+            Ext::Lock | Ext::Wake if !self.settings.read().allow_lock => {}
+            Ext::Sleep if !self.settings.read().allow_sleep => {
+                log::info!("{from} asked this computer to sleep: switched off here");
+            }
             Ext::Focus { on } => self.apply_focus(on),
             Ext::Lock => {
                 if system::locked() != Some(true) {
@@ -1771,6 +1814,8 @@ impl Hub {
                 fullscreen: self.fullscreen.load(Ordering::SeqCst),
                 os: Some(Os::current()),
                 live: wins::can_stream(),
+                controllable: self.settings.read().allow_control,
+                shares: self.settings.read().share_input,
             };
             self.stats.lock().insert(self.me.clone(), st.clone());
             let resend = last_status.as_ref() != Some(&st) || status_sent.elapsed() > Duration::from_secs(30);
@@ -1799,7 +1844,7 @@ impl Hub {
                 let ours = self.lock_expect.lock().map(|t| t.elapsed() < Duration::from_secs(10)).unwrap_or(false);
                 // Only a lock by hand: one that came from the screen
                 // timing out (nobody was using this computer) stays here.
-                let by_hand = self.pointer_here() && system::idle_secs().map(|i| i < 30).unwrap_or(true);
+                let by_hand = self.pointer_here() && system::idle_secs().map(|i| i < 30).unwrap_or(true) && self.settings.read().allow_lock;
                 if !ours && connected {
                     if locked == Some(true) && !by_hand {
                         log::info!("this computer locked itself after a while unused; the others carry on");
@@ -1816,7 +1861,7 @@ impl Hub {
             let dnd_now = system::dnd();
             if dnd_now.is_some() && dnd_now != last_dnd {
                 let ours = self.dnd_expect.lock().map(|(v, t)| Some(v) == dnd_now && t.elapsed() < Duration::from_secs(10)).unwrap_or(false);
-                if !ours && dnd_now != Some(self.focus()) {
+                if !ours && dnd_now != Some(self.focus()) && self.settings.read().allow_focus {
                     self.set_focus(dnd_now == Some(true));
                 }
                 last_dnd = dnd_now;

@@ -1439,7 +1439,7 @@ impl Server {
                     return;
                 };
                 let frac = edge_fraction(&screen, side, x, y);
-                let neighbor = self.ctx.cfg.layout.neighbor(SERVER, side).map(str::to_string);
+                let neighbor = self.ctx.cfg.layout.neighbor(SERVER, side).map(str::to_string).filter(|n| self.can_enter(None, n));
                 if neighbor.is_none() && self.learning.is_empty() {
                     return;
                 }
@@ -1502,7 +1502,7 @@ impl Server {
                         if !blocked {
                             self.push = 0;
                         }
-                        let neighbor = if blocked { None } else { self.ctx.cfg.layout.neighbor(&pname, side).map(str::to_string) };
+                        let neighbor = if blocked { None } else { self.ctx.cfg.layout.neighbor(&pname, side).map(str::to_string).filter(|n| self.can_enter(None, n)) };
                         match neighbor.as_deref() {
                             Some(SERVER) => {
                                 self.start_remote_drag_if_any(id, &pname, SERVER);
@@ -1674,14 +1674,14 @@ impl Server {
         }
         match self.active {
             None => {
-                let Some(target) = self.ctx.cfg.layout.neighbor(SERVER, side).map(str::to_string) else { return };
+                let Some(target) = self.ctx.cfg.layout.neighbor(SERVER, side).map(str::to_string).filter(|n| self.can_enter(None, n)) else { return };
                 if let Some(id) = self.peer_by_name(&target) {
                     self.enter(id, side, 0.5);
                 }
             }
             Some((id, _, _)) => {
                 let Some(pname) = self.peers.get(&id).map(|p| p.name.clone()) else { return };
-                match self.ctx.cfg.layout.neighbor(&pname, side).map(str::to_string) {
+                match self.ctx.cfg.layout.neighbor(&pname, side).map(str::to_string).filter(|n| self.can_enter(None, n)) {
                     Some(n) if n == SERVER => self.go_local(side, 0.5),
                     Some(n) => {
                         if let Some(next) = self.peer_by_name(&n) {
@@ -1746,6 +1746,11 @@ impl Server {
 
     /// Move the pointer to computer `name`'s screen (from the launcher).
     fn go_to(&mut self, name: &str) {
+        let target = if name == self.me() { SERVER.to_string() } else { name.to_string() };
+        if !self.can_enter(self.driver, &target) {
+            self.ctx.hub.notice_everywhere(&format!("{name} isn't shared"), "Its owner switched off using it from other computers.", "info");
+            return;
+        }
         if let Some(c) = self.driver {
             let target = if name == self.me() { SERVER.to_string() } else { name.to_string() };
             self.drive_to(c, &target, Side::Left, 0.5);
@@ -1856,8 +1861,28 @@ impl Server {
             self.learn_place(&cname, side);
             return;
         }
-        let Some(target) = self.ctx.cfg.layout.neighbor(&cname, side).map(str::to_string) else { return };
+        let Some(target) = self.ctx.cfg.layout.neighbor(&cname, side).map(str::to_string).filter(|n| self.can_enter(Some(c), n)) else { return };
         self.drive_to(c, &target, side, frac);
+    }
+
+    /// May the keyboard and mouse of `source` (None: this computer's own)
+    /// go onto screen `target` (SERVER: this one)? Going home always may;
+    /// otherwise its owner must share it, and the target's owner allow it.
+    fn can_enter(&self, source: Option<u64>, target: &str) -> bool {
+        let source_name = match source {
+            None => SERVER.to_string(),
+            Some(c) => self.peers.get(&c).map(|p| p.name.clone()).unwrap_or_default(),
+        };
+        if target == source_name {
+            return true;
+        }
+        let me = self.ctx.hub.settings();
+        let shares = match source {
+            None => me.share_input,
+            Some(_) => self.ctx.hub.status_of(&source_name).map(|s| s.shares).unwrap_or(true),
+        };
+        let open = if target == SERVER { me.allow_control } else { self.ctx.hub.status_of(target).map(|s| s.controllable).unwrap_or(true) };
+        shares && open
     }
 
     /// Client `c`'s keyboard and mouse drive onto screen `target` (SERVER: this one).
@@ -1942,7 +1967,7 @@ impl Server {
 
     /// The driving client's pointer crossed the edge `side` of screen `from`.
     fn drive_cross(&mut self, c: u64, from: &str, side: Side, frac: f64) -> bool {
-        let Some(n) = self.ctx.cfg.layout.neighbor(from, side).map(str::to_string) else { return false };
+        let Some(n) = self.ctx.cfg.layout.neighbor(from, side).map(str::to_string).filter(|n| self.can_enter(Some(c), n)) else { return false };
         let cname = self.peers.get(&c).map(|p| p.name.clone()).unwrap_or_default();
         if n == cname {
             // Home: its keyboard and mouse work there directly again.

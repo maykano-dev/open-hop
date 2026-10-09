@@ -114,6 +114,16 @@ fn make_lane(app: &AppHandle, attempt: u32) {
         log::info!("island lane: {}", if kept { "in use" } else { "not kept free by this system (yet)" });
         let h = handle.clone();
         let _ = handle.run_on_main_thread(move || {
+            // The lane was shown after the island: some window managers put
+            // it (and its frame, which takes the pointer) on top. The island
+            // goes back above it.
+            #[cfg(target_os = "linux")]
+            if let Some(i) = h.get_webview_window("island") {
+                use gtk::prelude::WidgetExt;
+                if let Some(gw) = i.gtk_window().ok().and_then(|g| g.window()) {
+                    gw.raise();
+                }
+            }
             let island = h.state::<Island>();
             if kept {
                 *island.lane_top.lock() = Some(top);
@@ -125,10 +135,12 @@ fn make_lane(app: &AppHandle, attempt: u32) {
                 }
                 // Try again in a moment (an older copy of OpenHop may still
                 // have been holding its lane while quitting).
-                if attempt < 3 {
+                // Keep trying for a few minutes (the window manager may
+                // still be starting, right after login).
+                if attempt < 12 {
                     let h2 = h.clone();
                     std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_secs(4));
+                        std::thread::sleep(std::time::Duration::from_secs(if attempt < 3 { 4 } else { 15 }));
                         let h3 = h2.clone();
                         let _ = h2.run_on_main_thread(move || make_lane(&h3, attempt + 1));
                     });
@@ -233,6 +245,8 @@ pub struct IslandState {
     dark: Option<bool>,
     fit: Fit,
     media: Vec<MediaOf>,
+    /// What this computer's owner allows (switched-off ones aren't shown).
+    features: Features,
     /// Sitting at the very top edge (Windows, macOS) or under a top bar (Linux).
     attached: bool,
 }
@@ -241,7 +255,8 @@ pub struct IslandState {
 /// Linux desktops the top bar is there, so just below it.
 fn place(handle: &AppHandle, w: f64, h: f64) {
     let Some(win) = handle.get_webview_window("island") else { return };
-    let fixed = handle.state::<Island>().fit.lock().watch;
+    // Linux: always (the input shape lets clicks through around the island).
+    let fixed = cfg!(target_os = "linux") || handle.state::<Island>().fit.lock().watch;
     let (w, h) = if fixed { STAGE } else { (w, h) };
     let Some(m) = win.primary_monitor().ok().flatten().or_else(|| win.current_monitor().ok().flatten()) else { return };
     let scale = m.scale_factor();
@@ -413,12 +428,10 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     above_menu_bar(&win);
     let _ = win;
-    // Wayland doesn't tell apps where the pointer is.
-    // On GNOME, OpenHop's Shell helper tells it.
-    #[cfg(target_os = "linux")]
-    let watch_pointer = !openhop_core::platform::linux_is_wayland() || openhop_core::wins::gnome::available();
-    #[cfg(not(target_os = "linux"))]
-    let watch_pointer = true;
+    // Linux: the window's input shape is the island itself, so the page's own
+    // pointer events are exact (and work on Wayland too). Elsewhere OpenHop
+    // follows the pointer and lets clicks through around the island.
+    let watch_pointer = !cfg!(target_os = "linux");
     {
         let island = app.state::<Island>();
         let mut fit = island.fit.lock();
@@ -438,9 +451,9 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
         let h = handle.clone();
         let _ = handle.run_on_main_thread(move || make_lane(&h, 0));
     });
-    // Always: on Wayland it starts following the pointer once OpenHop's
-    // GNOME helper is there.
-    watch(app.handle().clone());
+    if watch_pointer {
+        watch(app.handle().clone());
+    }
     Ok(())
 }
 
@@ -511,6 +524,7 @@ pub fn island_state(app: State<App>, island: State<Island>) -> IslandState {
     let fit = *island.fit.lock();
     let media: Vec<MediaOf> = status.as_ref().map(|(_, hub)| hub.media().into_iter().map(|(name, now)| MediaOf { name, now }).collect()).unwrap_or_default();
     let cfg = app.config.lock().clone();
+    let features = Features { control: cfg.allow_control, share: cfg.share_input, focus: cfg.allow_focus, lock: cfg.allow_lock, sleep: cfg.allow_sleep };
     let notes: Vec<Note> = app.toasts.lock().drain(..).collect();
     let activities: Vec<Activity> = island.activities.lock().drain(..).collect();
     let dark = crate::system_dark();
@@ -533,6 +547,7 @@ pub fn island_state(app: State<App>, island: State<Island>) -> IslandState {
             attached: attached(),
             fit,
             media: media.clone(),
+            features,
         },
         None => IslandState {
             running: false,
@@ -552,8 +567,18 @@ pub fn island_state(app: State<App>, island: State<Island>) -> IslandState {
             attached: attached(),
             fit,
             media: media.clone(),
+            features,
         },
     }
+}
+
+#[derive(Serialize, Clone, Copy)]
+pub struct Features {
+    control: bool,
+    share: bool,
+    focus: bool,
+    lock: bool,
+    sleep: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -596,6 +621,32 @@ pub fn island_size(handle: AppHandle, island: State<Island>, w: f64, h: f64, vw:
     if w > 0.0 && h > 0.0 {
         place(&handle, w.clamp(20.0, 900.0), h.clamp(4.0, 900.0));
     }
+    // Linux: not while the island is shrinking. Changing a window's input
+    // shape makes WebKitGTK drop the running animation (the island snapped
+    // shut instead of folding up); the page asks again once it's done.
+    #[cfg(target_os = "linux")]
+    if w > 0.0 && h > 0.0 {
+        let (vw, vh) = (vw.unwrap_or(w), vh.unwrap_or(h));
+        let h2 = handle.clone();
+        let _ = handle.run_on_main_thread(move || input_shape(&h2, vw, vh));
+    }
+}
+
+/// Linux: only the island itself takes the pointer; everywhere else in its
+/// (fixed-size, see-through) window, clicks and hovering reach the windows
+/// underneath. The window never has to move or resize, so nothing jumps.
+#[cfg(target_os = "linux")]
+fn input_shape(handle: &AppHandle, vw: f64, vh: f64) {
+    use gtk::prelude::{GtkWindowExt, WidgetExt};
+    let Some(win) = handle.get_webview_window("island") else { return };
+    let Ok(gw) = win.gtk_window() else { return };
+    let Some(gdk) = gw.window() else { return };
+    let (ww, _) = gw.size();
+    let w = vw.round().max(1.0) as i32;
+    let h = vh.round().max(1.0) as i32;
+    let x = ((ww - w) / 2).max(0);
+    let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(x, 0, w, h));
+    gdk.input_shape_combine_region(&region, 0, 0);
 }
 
 /// Play/pause, skip… on a computer ("" = this one).

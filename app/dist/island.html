@@ -31,12 +31,13 @@
       width: var(--w, 210px); height: var(--h, 34px);
       background: #000; overflow: hidden;
       border-radius: 0 0 var(--r, 17px) var(--r, 17px);
-      transition: width .46s var(--spring), height .46s var(--spring), border-radius .46s var(--ease);
+      transition: width .42s var(--morph, var(--spring)), height .42s var(--morph, var(--spring)), border-radius .42s var(--ease);
+      will-change: width, height;
     }
     body.floating .island { border-radius: var(--r, 17px); }
     /* Hanging from the top edge like a notch: concave shoulders blend it in. */
     .shoulder { position: absolute; top: 0; width: 12px; height: 12px; display: none; pointer-events: none;
-      transition: left .46s var(--spring), right .46s var(--spring); }
+      transition: left .42s var(--morph, var(--spring)), right .42s var(--morph, var(--spring)); }
     body.attached:not(.notch) .shoulder { display: block; }
     body.lip .shoulder { display: none; }
     .shoulder.l { right: calc(50% + var(--w, 210px) / 2); background: radial-gradient(circle at 0 100%, transparent 11.5px, #000 12px); }
@@ -133,7 +134,8 @@
 
     /* ---- media player (Home tab) ---- */
     .player { margin: 2px 0 16px; padding: 14px; border-radius: 22px; background: var(--glass); position: relative; overflow: hidden; }
-    .player::before { content: ""; position: absolute; inset: -40%; background: var(--tint, transparent); filter: blur(40px); opacity: .45; pointer-events: none; transition: background .6s; }
+    /* A soft wash of the cover's colour (a gradient: blurring is slow to draw). */
+    .player::before { content: ""; position: absolute; inset: 0; background: var(--tint, transparent); opacity: .5; pointer-events: none; transition: background .6s; }
     .player > * { position: relative; }
     .p-top { display: flex; align-items: center; gap: 13px; }
     .art { width: 58px; height: 58px; border-radius: 13px; background: #2c2c2e center / cover; flex: none; box-shadow: 0 6px 18px rgba(0, 0, 0, .45); display: grid; place-items: center; color: var(--soft); }
@@ -275,6 +277,41 @@
     .iconbtn:hover { background: var(--glass-hi); color: var(--ink); }
     .iconbtn svg { width: 16px; height: 16px; }
 
+    /* Quick actions: small, next to the status, only those switched on. */
+    .statusrow { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; min-height: 30px; }
+    .statusrow .status { flex: 1; min-width: 0; margin: 0 2px; }
+    .quick { display: flex; gap: 6px; flex: none; }
+    .qk { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--glass); color: var(--soft); position: relative;
+      transition: background .2s var(--ease), color .2s, transform .25s var(--spring), width .25s var(--ease); }
+    .qk .disc { display: grid; place-items: center; }
+    .qk svg { width: 15px; height: 15px; display: block; }
+    .qk .lbl { display: none; }
+    .qk:hover { background: var(--glass-hi); color: var(--ink); }
+    .qk:active { transform: scale(.9); }
+    .qk.on { background: var(--focus); color: #fff; }
+    .qk.armed { background: var(--bad); color: #fff; }
+    .qk[hidden] { display: none; }
+    .offs { display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 12px; }
+    .offs:empty { display: none; }
+    .off { font-size: 10.5px; color: var(--soft); background: var(--glass); border-radius: 999px; padding: 3px 8px 3px 7px; display: inline-flex; align-items: center; gap: 5px; }
+    .off::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #8e8e93; }
+
+    /* Phone: a QR code to scan, then files both ways. */
+    .seg-thumb.none { opacity: 0; }
+    .phone { display: flex; gap: 16px; align-items: center; padding: 4px 2px 2px; }
+    .qr { width: 148px; height: 148px; flex: none; border-radius: 18px; background: #fff; padding: 8px; display: grid; place-items: center;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.08); transition: transform .35s var(--spring), opacity .25s var(--ease); }
+    .qr img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+    .qr.wait { opacity: .35; transform: scale(.96); }
+    .ph-txt { min-width: 0; flex: 1; }
+    .ph-txt .drop-title { margin-top: 0; }
+    .ph-state { display: flex; align-items: center; gap: 7px; margin: 4px 0 8px; font-size: 13px; color: var(--soft); }
+    .ph-state i { width: 7px; height: 7px; border-radius: 50%; background: #8e8e93; flex: none; transition: background .3s; }
+    .ph-state.on { color: var(--ink); }
+    .ph-state.on i { background: var(--good); box-shadow: 0 0 0 3px rgba(48,209,88,.22); }
+    .ph-tip { font-size: 11.5px; color: var(--faint); line-height: 1.45; margin: 0; }
+    .ph-url { font-size: 11px; color: var(--faint); margin: 8px 0 0; user-select: text; word-break: break-all; }
+    .qk.phone.on { background: var(--good); color: #fff; }
     .controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
     .ctl { display: flex; flex-direction: column; align-items: center; gap: 7px; font-size: 11.5px; color: var(--soft); }
     .ctl .disc {
@@ -375,12 +412,16 @@
             <button class="where" id="pWhere"></button>
           </div>
         </div>
-        <p class="status" id="headSub"></p>
-        <div class="controls">
-          <button class="ctl" id="cFocus"><span class="disc"></span><span class="lbl">Focus</span></button>
-          <button class="ctl" id="cLock"><span class="disc"></span><span class="lbl">Lock all</span></button>
-          <button class="ctl" id="cSleep"><span class="disc"></span><span class="lbl">Sleep all</span></button>
+        <div class="statusrow">
+          <p class="status" id="headSub"></p>
+          <div class="quick">
+            <button class="qk phone" id="cPhone" aria-label="Phone"><span class="disc"></span><span class="lbl">Phone</span></button>
+            <button class="qk" id="cFocus" aria-label="Focus"><span class="disc"></span><span class="lbl">Focus</span></button>
+            <button class="qk" id="cLock" aria-label="Lock all"><span class="disc"></span><span class="lbl">Lock all</span></button>
+            <button class="qk" id="cSleep" aria-label="Sleep all"><span class="disc"></span><span class="lbl">Sleep all</span></button>
+          </div>
         </div>
+        <div class="offs" id="offs"></div>
         <div class="pcs" id="pcs"></div>
         <div class="section" id="winsTitle">Windows on your other computers</div>
         <div class="wins" id="wins"></div>
@@ -402,6 +443,19 @@
         <div class="chips" id="appWhere"></div>
         <div class="list apps" id="appList"></div>
         <p class="foot">Every computer's open apps, what runs in the background, and all its apps. Click one to switch to it or open it (the pointer follows); ✕ quits it.</p>
+      </section>
+
+      <section class="view" data-view="phone">
+        <div class="phone">
+          <div class="qr wait" id="qrBox"><img id="qrImg" alt="QR code for your phone"></div>
+          <div class="ph-txt">
+            <h2 class="drop-title">Your phone</h2>
+            <div class="ph-state" id="phState"><i></i><span id="phStateText">Starting…</span></div>
+            <p class="ph-tip" id="phTip">Point the camera of your iPhone or Android phone at the code. It needs to be on the same Wi‑Fi.</p>
+            <p class="ph-url" id="phUrl"></p>
+          </div>
+        </div>
+        <p class="foot">What you send from the phone lands in Downloads › OpenHop. Drop files on Phone in the island to pick them up on the phone.</p>
       </section>
 
       <section class="view" data-view="drop">

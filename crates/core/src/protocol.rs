@@ -4,7 +4,7 @@
 use crate::layout::{Layout, Side};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -535,6 +535,10 @@ pub struct PcStatus {
     pub os: Option<Os>,
     /// Its windows can be shown live on other computers (not on Wayland).
     pub live: bool,
+    /// Other computers' keyboards and mice may come onto its screen.
+    pub controllable: bool,
+    /// Its keyboard and mouse may go onto other screens.
+    pub shares: bool,
 }
 
 impl Msg {

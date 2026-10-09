@@ -70,6 +70,25 @@ pub struct Config {
     /// OpenHop is switched on. Connect once: it stays on (across restarts,
     /// with the window closed) until it's switched off in the app.
     pub enabled: bool,
+    /// Other computers' keyboards and mice may come onto this screen.
+    #[serde(default = "yes")]
+    pub allow_control: bool,
+    /// This computer's keyboard and mouse may go onto other screens.
+    #[serde(default = "yes")]
+    pub share_input: bool,
+    /// Focus (Do Not Disturb) is shared with the other computers.
+    #[serde(default = "yes")]
+    pub allow_focus: bool,
+    /// Lock All locks this computer too, and locking it locks the others.
+    #[serde(default = "yes")]
+    pub allow_lock: bool,
+    /// Sleep All puts this computer to sleep too.
+    #[serde(default = "yes")]
+    pub allow_sleep: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +145,11 @@ impl Default for Config {
             ui_accent: "blue".into(),
             open_at_login: true,
             enabled: true,
+            allow_control: true,
+            share_input: true,
+            allow_focus: true,
+            allow_lock: true,
+            allow_sleep: true,
         }
     }
 }

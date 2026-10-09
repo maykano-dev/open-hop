@@ -2,6 +2,7 @@
 
 mod island;
 mod live;
+mod phone;
 mod send;
 mod tools;
 mod updater;
@@ -202,7 +203,7 @@ fn update_prefs(handle: AppHandle, app: State<App>, prefs: serde_json::Value) ->
         let mut cfg = app.config.lock();
         let mut v = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
         if let (Some(obj), Some(p)) = (v.as_object_mut(), prefs.as_object()) {
-            for k in ["ui_accent"] {
+            for k in ["ui_accent", "allow_control", "share_input", "allow_focus", "allow_lock", "allow_sleep"] {
                 if let Some(x) = p.get(k) {
                     obj.insert(k.into(), x.clone());
                 }
@@ -594,6 +595,7 @@ fn main() {
         .manage(state)
         .manage(island::Island::default())
         .manage(send::Outgoing::default())
+        .manage(phone::Phone::default())
         .invoke_handler(tauri::generate_handler![
             snapshot,
             save_config,
@@ -623,6 +625,8 @@ fn main() {
             island::island_size,
             island::island_focus,
             island::island_take_focus,
+            phone::phone_state,
+            phone::phone_send,
             island::island_lock_all,
             island::island_sleep_all,
             island::island_find_pointer,

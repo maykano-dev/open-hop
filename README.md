@@ -87,12 +87,14 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 📁 **Copy & paste files** | Copy files, folders or videos in Explorer, Finder or Files, hop over, and paste: the real files arrive, not a path. A copied picture file pastes as a picture too, into chats, documents and image editors. |
 | 🫳 **Drag & drop files across screens** | Drag files off one computer's screen and drop them into a folder or app on another's, just like a local drag. |
 | 🏝 **The island** | Lives at the top of the screen and stays out of your way: on a MacBook it wraps around the notch, on other Macs it sits in the menu bar, and on Windows and Linux it gets a lane of its own across the top of the screen (maximized windows leave it free, so it never covers a tab), or, where the system can't keep a strip free, rests as a thin line that clicks pass through. Rest the pointer on it and it opens into the Control Center: music, Focus, Lock All, Sleep All, every computer's battery and storage, and their windows. Live pills show files flying with a progress ring, a song starting, a copy; notices pop out of it on the screen you're using. |
+| 📱 **Phones, no app needed** | Scan the QR code in the island with an iPhone or Android phone and a page opens on it: send photos, videos, files and text to the computer, and pick up files you drop on **Phone** in the island. Same Wi‑Fi; the address has a random key only your phone gets. |
+| 🏫 **Choose what's shared** | For schools, offices and shared computers: switch off being controlled, sharing this keyboard and mouse, or Focus, Lock All and Sleep All for this computer. Switched-off actions leave the island, and it shows what's off. |
 | 🎵 **Media controls** | What's playing on any computer (Spotify, a video in the browser, a music app), with cover art, a progress bar, play/pause, skip and shuffle, from any computer. |
 | 📤 **Send with OpenHop** | Right-click files in Explorer, Finder, Files, Dolphin, Nemo, Thunar or Caja and choose **Send with OpenHop** › a computer (or all of them, or the shelf). OpenHop doesn't need to be open. On Windows it's also in **Send to**; on a Mac it's a Quick Action. |
 | 🗂 **Clipboard history** | Everything copied on any computer, searchable, in the island's **Clipboard** tab. Pick one to copy it again; pin the ones you want to keep. |
 | 🧺 **Shelf** | Drop files on the island to keep them within reach of every computer, then take them from any of them. Or drop them on a computer's name to send them there. |
 | 🚀 **Apps on every computer** | The island's **Open** tab works like a task manager for all your computers: the apps that are open (in the dock or taskbar), the ones running in the background with their memory use, and every installed app. Switch to one, quit one, or open one where it lives; the pointer goes there. |
-| ⌨️ **Shortcuts** | Ctrl+Alt+Space opens the Control Center (then H, C, S, O switch tabs). Ctrl+Alt+Shift+arrows jump to the next screen; Ctrl+Alt+Shift+Space keeps the pointer where it is. No letter shortcuts, so nothing clashes with AltGr characters or other apps. |
+| ⌨️ **Shortcuts** | Ctrl+Alt+Space opens the Control Center (then H, C, S, O switch tabs, P shows the phone code). Ctrl+Alt+Shift+arrows jump to the next screen; Ctrl+Alt+Shift+Space keeps the pointer where it is. No letter shortcuts, so nothing clashes with AltGr characters or other apps. |
 | 🎮 **Game guard** | A full-screen game or video keeps the pointer on its screen. Corners never hop, and the pointer rests a moment at an edge first, so you don't hop by accident. |
 | 🪟 **Windows from any computer** | The Control Center (**Ctrl+Alt+Space**, or hover the island) shows the open windows of every computer. Click one and it opens live on the computer you're using, with its own title bar: you see it update and can click, scroll and type in it. Or just drag a window by its title bar off the screen edge, and drag it back the same way. |
 | 🌙 **Dark mode sync** | Switch dark mode on one computer and the others follow. |
@@ -388,6 +390,11 @@ transfer_limit_mbps = 0      # cap file/image transfers (0 = no limit)
 wake_on_lan = true
 notifications = true
 # download_dir = "/home/me/Downloads/OpenHop"
+allow_control = true        # other computers may use this one's screen
+share_input = true          # this keyboard and mouse may go to the others
+allow_focus = true          # Focus, Lock All and Sleep All reach this computer
+allow_lock = true
+allow_sleep = true
 # device_id, [trusted.*] and server_device are written by pairing; don't edit by hand
 # server_addr = "192.168.1.20"  # client: skip discovery
 # server_name = "desk-pc"       # client: only join this server
@@ -408,6 +415,7 @@ y = 0
 - **No guessing.** The code (or passphrase) is mixed in *after* a fresh key exchange, so someone recording your network can't brute-force it offline. Online guesses are limited too: after five wrong codes, pairing pauses for a minute and the code changes.
 - **Forget a computer** under **Paired Computers** at any time. Its key stops working immediately.
 - **Local only.** OpenHop never sends your input, clipboard or files over the internet. There's no account, telemetry or cloud relay. The one exception is **Check for Updates**, which reads the public GitHub releases page.
+- **Phone page.** Only runs once you open the phone view in the island. It listens on port 24852 on your local network, and every address includes a random 128-bit key (in the QR code, kept in `phone-key` beside the config file); without it the page answers "not found". It's plain HTTP on your own network, so use it on Wi‑Fi you trust.
 - **Discovery beacons** broadcast only a computer name, a random device ID, the OS and a port. They contain nothing secret.
 
 ## Troubleshooting
@@ -549,6 +557,8 @@ open-hop/
 
 ## Roadmap
 
+**Done in v0.10:** phone sharing through a QR code in the island, choosing what each computer shares (for schools and offices), a smaller island, smoother opening and closing on Linux.
+
 **Done in v0.9.1:** the island's own lane, real app icons, GNOME on Wayland support for the island and app list, closing by itself, locks by hand only.
 
 **Done in v0.9:** the island stays out of the way (click-through lip, wraps a MacBook notch), media controls for every computer, a task manager for every computer, live pills with progress rings, starting reliably after the computer starts.
@@ -572,7 +582,9 @@ open-hop/
 - [ ] **Wayland as server** via the XDG InputCapture portal (GNOME 45+, KDE 6+), plus drag-out from Wayland apps
 - [ ] **Built-in wireless link** without any network: Wi-Fi Direct (Windows and Linux have APIs, macOS doesn't) or a Bluetooth RFCOMM/L2CAP transport (needs a separate implementation for each OS's Bluetooth stack)
 - [ ] **Keep awake / smart sleep**: keep controlled computers awake while connected, and let an idle one sleep while the others stay up
-- [ ] **Shared folder**, **notifications in one place**, **audio follows you**, a **whole-screen view** of another computer, and a **phone companion** (a web page opened from a QR code) are planned for v0.9
+- [ ] **Shared folder**, **notifications in one place**, **audio follows you**, a **whole-screen view** of another computer are planned
+- [ ] **Remote help**: take over a computer whose owner switched off control, only after they accept, while seeing its screen
+- [ ] **Quick Share** with Android phones directly (no page), answering phone calls on the computer, and AirDrop on Linux with a compatible Wi‑Fi adapter
 - [ ] Per-monitor edges (cross from any monitor, not just the desktop's outer edge)
 - [ ] Code-signed and notarised builds (needs paid Apple and Windows signing certificates)
 

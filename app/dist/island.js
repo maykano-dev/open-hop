@@ -47,11 +47,13 @@ const ICON = {
   next: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.5 6.2v11.6a.8.8 0 0 0 1.25.66L12 12.66v5.14a.8.8 0 0 0 1.25.66l8.6-5.8a.8.8 0 0 0 0-1.32l-8.6-5.8A.8.8 0 0 0 12 6.2v5.14L3.75 5.54a.8.8 0 0 0-1.25.66z"/></svg>',
   prev: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.5 6.2v11.6a.8.8 0 0 1-1.25.66L12 12.66v5.14a.8.8 0 0 1-1.25.66l-8.6-5.8a.8.8 0 0 1 0-1.32l8.6-5.8A.8.8 0 0 1 12 6.2v5.14l8.25-5.8a.8.8 0 0 1 1.25.66z"/></svg>',
   shuffle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h3.5c4.5 0 6.5 10 11 10H21M3 17h3.5c1.7 0 3-1.3 4.1-3M13.4 10c1.1-1.7 2.4-3 4.1-3H21"/><path d="m18 4 3 3-3 3M18 14l3 3-3 3"/></svg>',
+  phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="2.5" width="11" height="19" rx="2.8"/><path d="M10.5 18.5h3"/></svg>',
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg>',
 };
 const ACCENTS = { blue: "#0a84ff", purple: "#bf5af2", pink: "#ff375f", orange: "#ff9f0a", green: "#30d158", graphite: "#98989d" };
 
 $("openApp").innerHTML = ICON.gear;
+$("cPhone").querySelector(".disc").innerHTML = ICON.phone;
 $("cFocus").querySelector(".disc").innerHTML = ICON.moon;
 $("cLock").querySelector(".disc").innerHTML = ICON.lock;
 $("cSleep").querySelector(".disc").innerHTML = ICON.power;
@@ -113,11 +115,15 @@ async function setMode(next, force) {
   mode = next;
   clearTimeout(shrinkTimer);
   const grow = to.w >= shown.w && to.h >= shown.h;
+  // Growing springs out a little; shrinking settles without overshoot
+  // (overshooting below its resting size reads as a glitch).
+  document.documentElement.style.setProperty("--morph", grow ? "cubic-bezier(.3, 1.12, .4, 1)" : "cubic-bezier(.32, .72, .25, 1)");
   if (grow) {
     // Make room first (the window is transparent), then morph.
     try { await invoke("island_size", { w: winW(to.w), h: to.h, vw: to.w, vh: to.h }); } catch (_) {}
   } else {
-    // Clicks outside the new shape go through straight away.
+    // Clicks outside the new shape go through straight away (Windows,
+    // macOS; Linux waits for the morph to finish, see island_size).
     invoke("island_size", { w: 0, h: 0, vw: to.w, vh: to.h }).catch(() => {});
   }
   if (mode !== next) return;
@@ -172,10 +178,12 @@ function setTab(t) {
   document.body.classList.toggle("dropping", t === "drop");
   for (const b of $("tabs").querySelectorAll("button")) b.setAttribute("aria-selected", String(b.dataset.tab === t));
   if (i >= 0) $("segThumb").style.transform = `translateX(${i * 100}%)`;
+  $("segThumb").classList.toggle("none", i < 0);
   sel = 0;
   if (t === "clips") renderClips();
   if (t === "shelf") renderShelf();
   if (t === "open") renderApps();
+  if (t === "phone") refreshPhone();
   if (mode === "open") setMode("open");
 }
 for (const b of $("tabs").querySelectorAll("button")) {
@@ -227,7 +235,9 @@ setInterval(() => {
   const idle = Date.now() - lastInside;
   // A search left half-typed doesn't keep it open forever.
   if (busy()) { if (!hovering && idle > 20000) close(); return; }
-  if ((!hovering && entered && idle > 1200) || idle > 12000) close();
+  // Resting on it (reading, scanning the phone code) keeps it open a good while.
+  const limit = !hovering ? 12000 : tab === "phone" ? 180000 : 45000;
+  if ((!hovering && entered && idle > 1200) || idle > limit) close();
 }, 500);
 if (T) T.event.listen("hover", (e) => { if (fit.watch) onHover(!!e.payload); });
 island.addEventListener("mouseenter", () => { if (!fit.watch) onHover(true); });
@@ -241,7 +251,7 @@ window.addEventListener("keydown", (e) => {
   if (mode !== "open") return;
   if (e.key === "Escape") { close(); return; }
   if (e.target.tagName === "INPUT" || e.ctrlKey || e.metaKey || e.altKey) return;
-  const t = { h: "home", c: "clips", v: "clips", s: "shelf", o: "open" }[e.key.toLowerCase()];
+  const t = { h: "home", c: "clips", v: "clips", s: "shelf", o: "open", p: "phone" }[e.key.toLowerCase()];
   if (t) { e.preventDefault(); pinned = true; setTab(t); if (t !== "home") refreshTools(); focusSearch(); }
 });
 window.addEventListener("blur", () => { if (mode === "open" && !hovering && !dropping && !busy()) close(); });
@@ -258,7 +268,7 @@ let actTimer = null;
 let shownNotes = new Set();
 
 const BADGE = {
-  battery: ICON.battery, focus: ICON.moon, files: ICON.files, info: ICON.info, pin: ICON.pin, copied: ICON.check, media: ICON.note,
+  battery: ICON.battery, focus: ICON.moon, files: ICON.files, info: ICON.info, pin: ICON.pin, copied: ICON.check, media: ICON.note, phone: ICON.phone,
 };
 function nextActivity() {
   if (mode === "open" || !queue.length) return;
@@ -518,10 +528,35 @@ function render() {
   // Open: the Control Center.
   $("headSub").textContent = s.running ? s.message : "OpenHop is off. Open OpenHop to turn it on.";
   $("cFocus").classList.toggle("on", !!s.focus);
-  $("cFocus").querySelector(".lbl").textContent = s.focus ? "Focus on" : "Focus";
-  $("cFocus").title = s.focus ? "Notifications are silenced on every computer" : "Silence notifications on every computer";
+  $("cFocus").title = s.focus ? "Focus is on: notifications are silenced on every computer" : "Focus: silence notifications on every computer";
+  if (!sleepArmed) $("cSleep").title = "Sleep all computers";
+  $("cLock").title = "Lock all computers";
+  // What this computer's owner switched off: no button, and a quiet note.
+  const f = s.features || {};
+  $("cFocus").hidden = f.focus === false;
+  $("cLock").hidden = f.lock === false;
+  $("cSleep").hidden = f.sleep === false;
+  const offs = [];
+  if (f.control === false) offs.push("Others can't use this computer");
+  if (f.share === false) offs.push("This keyboard and mouse stay here");
+  if (f.focus === false) offs.push("Focus not shared");
+  if (f.lock === false) offs.push("Not locked with others");
+  if (f.sleep === false) offs.push("Doesn't sleep with others");
+  const offKey = offs.join("|");
+  if ($("offs").dataset.key !== offKey) {
+    $("offs").dataset.key = offKey;
+    $("offs").replaceChildren(...offs.map((t) => { const e = document.createElement("span"); e.className = "off"; e.textContent = t; return e; }));
+    if (mode === "open") setMode("open");
+  }
 
-  const key = JSON.stringify([s.computers, s.windows, s.active, s.me]);
+  // Only what's shown (rounded): the panel isn't rebuilt for every byte of
+  // free space or window resize, which made it flicker while open.
+  const key = JSON.stringify([
+    (s.computers || []).map((c) => [c.name, c.this, c.status.battery, c.status.locked, c.status.fullscreen, c.status.live,
+      c.status.disk ? [Math.round(c.status.disk[0] / 1e9), Math.round(c.status.disk[1] / 1e9)] : null]),
+    (s.windows || []).map((g) => [g.name, g.windows.slice(0, 12).map((w) => [w.id, w.title, w.app])]),
+    s.active, s.me,
+  ]);
   if (key !== lastPanelKey) {
     lastPanelKey = key;
     const pcs = $("pcs");
@@ -640,8 +675,8 @@ $("cSleep").addEventListener("click", (e) => {
     return;
   }
   c.classList.add("armed");
-  c.querySelector(".lbl").textContent = "Click to confirm";
-  sleepArmed = setTimeout(() => { sleepArmed = null; c.classList.remove("armed"); c.querySelector(".lbl").textContent = "Sleep all"; }, 2500);
+  c.title = "Click again to put every computer to sleep";
+  sleepArmed = setTimeout(() => { sleepArmed = null; c.classList.remove("armed"); c.title = "Sleep all computers"; }, 2500);
 });
 
 // ------------------------------------------------------------------ clipboard, shelf, open
@@ -655,7 +690,9 @@ async function refreshTools() {
   try {
     tools = await invoke("tools_state");
   } catch (_) { return; }
-  const key = JSON.stringify([tools.clips, tools.shelf, tools.apps.map((a) => [a.name, a.apps.length]), tools.tasks]);
+  // Memory use moves all the time: only redraw for real changes.
+  const tasksKey = (tools.tasks || []).map(([n, l]) => [n, l.map((t) => [t.name, t.open, t.windows.length, t.pids.length, Math.round(t.memory / 1e8)])]);
+  const key = JSON.stringify([tools.clips, tools.shelf, tools.apps.map((a) => [a.name, a.apps.length]), tasksKey]);
   if (key === lastToolsKey) return;
   lastToolsKey = key;
   if (tab === "clips") renderClips();
@@ -910,19 +947,26 @@ function quitButton(m) {
 const iconCache = new Map();   // "computer|app id" → data: URL ("" = none)
 let iconTimer = null;
 function iconKey(on, id) { return `${on}|${id}`; }
+// Decoded icons, reused when the list is redrawn (a new <img> would decode
+// again and flash).
+const iconEls = new Map();
 function paintIcon(lead, on, id) {
-  const url = id ? iconCache.get(iconKey(on, id)) : null;
-  if (url && !lead.querySelector("img")) {
-    const img = document.createElement("img");
-    img.alt = "";
-    img.onload = () => {
-      lead.classList.add("has-icon");
-      lead.style.background = "";
-      lead.textContent = "";
-      lead.append(img);
-    };
-    img.src = url;
-  }
+  const key = iconKey(on, id);
+  const url = id ? iconCache.get(key) : null;
+  if (!url || lead.querySelector("img")) return;
+  const show = (img) => {
+    lead.classList.add("has-icon");
+    lead.style.background = "";
+    lead.textContent = "";
+    lead.append(img);
+  };
+  const ready = iconEls.get(key);
+  if (ready) return show(ready.parentNode ? ready.cloneNode() : ready);
+  const img = document.createElement("img");
+  img.alt = "";
+  img.decoding = "sync";
+  img.onload = () => { iconEls.set(key, img); show(img); };
+  img.src = url;
 }
 async function fetchIcons() {
   clearTimeout(iconTimer);
@@ -1076,6 +1120,7 @@ function dropTargets() {
   const names = ((tools && tools.computers) || []);
   const v = names.map((n) => ({ to: n, label: n, icon: ICON.laptop }));
   if (names.length > 1) v.push({ to: "*", label: "All computers", icon: ICON.all });
+  v.push({ to: "phone:", label: "Phone", icon: ICON.phone });
   v.push({ to: "", label: "Shelf", icon: ICON.tray });
   return v;
 }
@@ -1132,7 +1177,16 @@ async function onDrag(e) {
     await landDrop(to);
     dropping = null;
     if (paths.length) {
-      if (to === "") {
+      if (to === "phone:") {
+        let n = 0;
+        try { n = await invoke("phone_send", { paths }); } catch (_) {}
+        if (!phoneSnap || !phoneSnap.connected) {
+          // No phone yet: show the code to scan; the files wait on the page.
+          open(true, "phone");
+          return;
+        }
+        liveFlash = { kind: "sending", label: n ? itemsLabel(paths) : "Folders", to: n ? "ready on your phone" : "can't go to a phone; send files", until: Date.now() + 3200 };
+      } else if (to === "") {
         invoke("shelf_put", { paths }).catch(() => {});
         liveFlash = { kind: "shelved", label: itemsLabel(paths), until: Date.now() + 2200 };
       } else {
@@ -1150,6 +1204,39 @@ async function onDrag(e) {
 if (T && T.webview) T.webview.getCurrentWebview().onDragDropEvent(onDrag);
 
 // ------------------------------------------------------------------ data
+
+// ------------------------------------------------------------------ phone
+
+let phoneSnap = null;
+let phoneAsked = false;
+async function refreshPhone() {
+  if (phoneAsked) return;
+  phoneAsked = true;
+  try { phoneSnap = await invoke("phone_state"); } catch (e) { phoneSnap = { error: String(e) }; }
+  phoneAsked = false;
+  renderPhone();
+}
+function renderPhone() {
+  const p = phoneSnap || {};
+  $("cPhone").classList.toggle("on", !!p.connected);
+  $("cPhone").title = p.connected ? `${p.device} is connected` : "Connect your phone";
+  if (tab !== "phone") return;
+  const img = $("qrImg");
+  if (p.qr && img.getAttribute("src") !== p.qr) img.src = p.qr;
+  $("qrBox").classList.toggle("wait", !p.qr);
+  $("phState").classList.toggle("on", !!p.connected);
+  const waiting = (p.offered || []).length;
+  $("phStateText").textContent = p.error ? p.error
+    : !p.url ? "Not on a network"
+    : p.connected ? `${p.device} is connected` + (waiting ? ` · ${waiting} file${waiting > 1 ? "s" : ""} on its page` : "")
+    : waiting ? `${waiting} file${waiting > 1 ? "s" : ""} waiting · scan to get ${waiting > 1 ? "them" : "it"}`
+    : "Waiting for your phone";
+  $("phTip").textContent = !p.url && !p.error ? "Connect this computer to Wi‑Fi or Ethernet, then come back here."
+    : p.connected ? "Send photos and files from the page on the phone. Keep it open while they go."
+    : "Point the camera of your iPhone or Android phone at the code. It needs to be on the same Wi‑Fi.";
+  $("phUrl").textContent = p.url || "";
+}
+$("cPhone").addEventListener("click", (e) => { e.stopPropagation(); pinned = true; setTab("phone"); });
 
 // ------------------------------------------------------------------ media player
 
@@ -1284,7 +1371,8 @@ async function poll() {
     if ((mode === "rest" || mode === "live") && queue.length) nextActivity();
     else updateLive(snap);
   } catch (_) {}
-  if (mode === "open" && tab !== "home" && tab !== "drop") refreshTools();
+  if (mode === "open" && tab === "phone") refreshPhone();
+  else if (mode === "open" && tab !== "home" && tab !== "drop") refreshTools();
   setTimeout(poll, mode === "open" ? 450 : 900);
 }
 setTab("home");
@@ -1307,6 +1395,7 @@ function demo() {
       { name: "macbook", windows: [{ id: 1, title: "Design review.key", app: "Keynote" }, { id: 2, title: "Spotify", app: "Spotify" }, { id: 3, title: "Safari", app: "Safari" }] },
       { name: "ubuntu-box", windows: [{ id: 4, title: "Terminal", app: "gnome-terminal" }, { id: 5, title: "Files", app: "Nautilus" }] },
     ],
+    features: { control: !location.hash.includes("locked"), share: true, focus: true, lock: !location.hash.includes("locked"), sleep: !location.hash.includes("locked") },
     transfers: location.hash.includes("transfer") ? [{ offer: 1, label: "holiday.mp4", peer: "macbook", incoming: false, done: 40, total: 100 }] : [],
     fit: { notch: location.hash.includes("notch") ? [200, 32] : null, bar: location.hash.includes("notch") ? 32 : null, watch: false, lane: location.hash.includes("lane") ? 34 : null },
     media: [{ name: "macbook", now: { app: "Spotify", title: "In the Flat Field", artist: "Bauhaus", album: "In the Flat Field", art: null, playing: true, position: 231, duration: 300, at: Date.now(), shuffle: false } }],
@@ -1320,6 +1409,17 @@ function demo() {
       return s;
     }
     if (cmd === "island_focus") state.focus = args.on;
+    if (cmd === "phone_state") {
+      let svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29"><rect width="29" height="29" fill="#fff"/>';
+      for (let y = 0; y < 29; y++) for (let x = 0; x < 29; x++) {
+        const finder = (a, b) => x >= a && x < a + 7 && y >= b && y < b + 7 && (x === a || x === a + 6 || y === b || y === b + 6 || (x > a + 1 && x < a + 5 && y > b + 1 && y < b + 5));
+        const inF = (a, b) => x >= a - 1 && x < a + 8 && y >= b - 1 && y < b + 8;
+        const on = finder(2, 2) || finder(20, 2) || finder(2, 20) || (!inF(2, 2) && !inF(20, 2) && !inF(2, 20) && x > 1 && y > 1 && x < 27 && y < 27 && ((x * 7 + y * 13 + x * y) % 5 < 2));
+        if (on) svg += `<rect x="${x}" y="${y}" width="1" height="1"/>`;
+      }
+      svg += "</svg>";
+      return { url: "http://192.168.1.24:24852/4f1c…/", qr: "data:image/svg+xml;base64," + btoa(svg), connected: location.hash.includes("phoneon"), device: "iPhone", offered: [] };
+    }
     if (cmd === "tools_state") {
       const now = Date.now() / 1000;
       return {

@@ -3105,7 +3105,7 @@ dependencies = [
 
 [[package]]
 name = "openhop-app"
-version = "0.9.5"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -3127,7 +3127,7 @@ dependencies = [
 
 [[package]]
 name = "openhop-cli"
-version = "0.9.5"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3140,7 +3140,7 @@ dependencies = [
 
 [[package]]
 name = "openhop-core"
-version = "0.9.5"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3165,6 +3165,7 @@ dependencies = [
  "opener",
  "parking_lot",
  "png 0.18.1",
+ "qrcode",
  "serde",
  "serde_json",
  "snow",
@@ -3518,6 +3519,12 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-error"

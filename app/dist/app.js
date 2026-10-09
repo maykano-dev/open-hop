@@ -51,6 +51,11 @@ const PREF_ACCENTS = ["blue", "purple", "pink", "orange", "green", "graphite"];
 
 function fillPrefs(cfg) {
   renderLook(cfg.ui_accent);
+  for (const box of document.querySelectorAll("#perms input[data-pref]")) box.checked = cfg[box.dataset.pref] !== false;
+}
+// Sharing switches apply at once.
+for (const box of document.querySelectorAll("#perms input[data-pref]")) {
+  box.addEventListener("change", () => setPref({ [box.dataset.pref]: box.checked }));
 }
 
 function renderLook(accent) {
