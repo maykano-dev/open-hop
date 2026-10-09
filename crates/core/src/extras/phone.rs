@@ -108,8 +108,18 @@ impl PhoneServer {
                 let _ = std::thread::Builder::new().name("phone-conn".into()).spawn(move || {
                     let _ = conn.set_read_timeout(Some(Duration::from_secs(60)));
                     let _ = conn.set_write_timeout(Some(Duration::from_secs(60)));
+                    let keep = conn.try_clone().ok();
                     if let Err(e) = serve(&me, conn) {
                         log::debug!("phone: {e}");
+                    }
+                    // Close gently: anything the phone still sends is read
+                    // first, or some systems reset the connection and the
+                    // phone loses the answer.
+                    if let Some(mut c) = keep {
+                        let _ = c.shutdown(std::net::Shutdown::Write);
+                        let _ = c.set_read_timeout(Some(Duration::from_millis(500)));
+                        let mut sink = [0u8; 4096];
+                        while matches!(c.read(&mut sink), Ok(n) if n > 0) {}
                     }
                 });
             }
