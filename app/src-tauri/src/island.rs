@@ -192,7 +192,11 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     above_menu_bar(&win);
     let _ = win;
-    let watch_pointer = !(cfg!(target_os = "linux") && openhop_core::platform::linux_is_wayland());
+    // Wayland doesn't tell apps where the pointer is.
+    #[cfg(target_os = "linux")]
+    let watch_pointer = !openhop_core::platform::linux_is_wayland();
+    #[cfg(not(target_os = "linux"))]
+    let watch_pointer = true;
     {
         let island = app.state::<Island>();
         let mut fit = island.fit.lock();
