@@ -203,7 +203,11 @@ mod tests {
     #[test]
     fn finds_a_background_app() {
         // `sleep` running as an "installed app" with no window.
-        let mut child = std::process::Command::new(if cfg!(windows) { "ping" } else { "sleep" }).arg(if cfg!(windows) { "-n" } else { "30" }).spawn().unwrap();
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("ping").args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).spawn().unwrap()
+        } else {
+            std::process::Command::new("sleep").arg("30").spawn().unwrap()
+        };
         let installed = vec![AppEntry { id: "x".into(), name: "Sleeper".into(), exe: if cfg!(windows) { "ping".into() } else { "sleep".into() } }];
         let mut t = Tasks::new();
         let list = t.list(&[], &installed);
