@@ -194,7 +194,8 @@ fn direct_connection_end_to_end() {
                 match rtc.poll_output().unwrap() {
                     Output::Timeout(_) => break,
                     Output::Transmit(t) => {
-                        sock.send_to(&t.contents, t.destination).unwrap();
+                        // (Only the loopback pair works from this socket.)
+                        let _ = sock.send_to(&t.contents, t.destination);
                     }
                     Output::Event(Event::ChannelOpen(..)) => *open = true,
                     Output::Event(Event::ChannelData(d)) => inbox.push(d.data),
