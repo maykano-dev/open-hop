@@ -6,8 +6,10 @@
 //! [`Ext`] messages addressed by computer name (the server forwards them).
 
 pub mod apps;
+pub mod media;
 pub mod menus;
 pub mod system;
+pub mod tasks;
 
 use crate::platform::InjectOp;
 use crate::protocol::{AppEntry, ClipData, Ext, MouseButton, Os, Patch, PcStatus, ShelfItem, WinEvent, WinInfo};
@@ -271,6 +273,16 @@ pub struct Hub {
     shelves: Mutex<BTreeMap<String, Vec<ShelfItem>>>,
     /// Installed apps on every computer.
     apps: Mutex<BTreeMap<String, Vec<AppEntry>>>,
+    /// What's playing on every computer.
+    media: Mutex<BTreeMap<String, media::NowPlaying>>,
+    /// Media commands for this computer.
+    media_tx: crossbeam_channel::Sender<media::MediaCmd>,
+    /// The apps running on every computer.
+    tasks: Mutex<BTreeMap<String, Vec<crate::protocol::RunningApp>>>,
+    /// Quit requests for this computer's apps: (pids, force).
+    quit_tx: crossbeam_channel::Sender<(Vec<u32>, bool)>,
+    /// This hub, for work done on other threads.
+    this: std::sync::Weak<Hub>,
     stop: Arc<AtomicBool>,
 }
 
@@ -285,7 +297,12 @@ fn quality(q: &str) -> (u32, u8, u32, bool) {
 
 impl Hub {
     pub fn new(me: String, settings: Settings) -> Arc<Hub> {
-        let hub = Arc::new(Hub {
+        let (media_tx, media_rx) = crossbeam_channel::unbounded();
+        let (quit_tx, quit_rx) = crossbeam_channel::unbounded();
+        let hub = Arc::new_cyclic(|this| Hub {
+            this: this.clone(),
+            tasks: Mutex::new(BTreeMap::new()),
+            quit_tx,
             me,
             settings: RwLock::new(settings),
             out: RwLock::new(None),
@@ -313,8 +330,14 @@ impl Hub {
             clip_setter: Mutex::new(None),
             shelves: Mutex::new(BTreeMap::new()),
             apps: Mutex::new(BTreeMap::new()),
+            media: Mutex::new(BTreeMap::new()),
+            media_tx,
             stop: Arc::new(AtomicBool::new(false)),
         });
+        let h = hub.clone();
+        let _ = std::thread::Builder::new().name("media".into()).spawn(move || h.media_loop(media_rx));
+        let h = hub.clone();
+        let _ = std::thread::Builder::new().name("tasks".into()).spawn(move || h.tasks_loop(quit_rx));
         let h = hub.clone();
         let _ = std::thread::Builder::new().name("extras".into()).spawn(move || {
             // Windows a crashed run left hidden come back.
@@ -603,11 +626,159 @@ impl Hub {
         v
     }
 
+    /// Open an app here; if it doesn't start, say so on the screen in use.
+    fn launch_here(&self, id: &str) {
+        let id = id.to_string();
+        let name = self.apps.lock().get(&self.me).and_then(|l| l.iter().find(|a| a.id == id).map(|a| a.name.clone())).unwrap_or_else(|| id.clone());
+        let this = self.this.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = apps::launch(&id) {
+                if let Some(h) = this.upgrade() {
+                    h.notice_everywhere(&format!("{name} didn't open"), &format!("On {}: {e}", h.me), "info");
+                }
+            }
+        });
+    }
+
+    /// The apps running on every computer (this one first).
+    pub fn tasks(&self) -> Vec<(String, Vec<crate::protocol::RunningApp>)> {
+        let mut v: Vec<_> = self.tasks.lock().iter().map(|(n, l)| (n.clone(), l.clone())).collect();
+        v.sort_by_key(|(n, _)| (*n != self.me, n.clone()));
+        v
+    }
+
+    /// Quit an app on computer `on`.
+    pub fn quit(&self, on: &str, pids: Vec<u32>, force: bool) {
+        if on == self.me {
+            let _ = self.quit_tx.send((pids, force));
+        } else {
+            self.send(on, Ext::Quit { pids, force });
+        }
+    }
+
+    /// Bring a window to the front on computer `on`.
+    pub fn raise(&self, on: &str, window: u64) {
+        if on == self.me {
+            std::thread::spawn(move || wins::raise(window));
+        } else {
+            self.send(on, Ext::Raise { window });
+        }
+    }
+
+    /// Keep the list of running apps, tell the others, and quit apps.
+    fn tasks_loop(self: Arc<Self>, rx: crossbeam_channel::Receiver<(Vec<u32>, bool)>) {
+        let mut t = tasks::Tasks::new();
+        let mut last: Vec<crate::protocol::RunningApp> = vec![];
+        let mut sent_at = Instant::now() - Duration::from_secs(60);
+        let mut was_connected = false;
+        while !self.stop.load(Ordering::SeqCst) {
+            let quick = match rx.recv_timeout(Duration::from_secs(3)) {
+                Ok((pids, force)) => {
+                    // Only processes we listed ourselves.
+                    let ours: BTreeSet<u32> = last.iter().flat_map(|a| a.pids.iter().copied()).collect();
+                    let pids: Vec<u32> = pids.into_iter().filter(|p| ours.contains(p)).collect();
+                    t.quit(&pids, force);
+                    std::thread::sleep(Duration::from_millis(700));
+                    true
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                Err(_) => false,
+            };
+            let windows = self.lists.lock().get(&self.me).cloned().unwrap_or_default();
+            let installed = self.apps.lock().get(&self.me).cloned().unwrap_or_default();
+            if installed.is_empty() && windows.is_empty() {
+                continue;
+            }
+            let now = t.list(&windows, &installed);
+            let connected = self.out.read().is_some();
+            // Changed: apps or windows came or went, memory moved a lot, or now and then.
+            let shape = |v: &[crate::protocol::RunningApp]| v.iter().map(|a| (a.name.clone(), a.windows.clone(), a.pids.clone())).collect::<Vec<_>>();
+            let mem_moved = now.iter().zip(last.iter()).any(|(a, b)| a.memory.abs_diff(b.memory) > b.memory / 10 + (16 << 20));
+            let changed = quick || shape(&now) != shape(&last) || mem_moved || sent_at.elapsed() > Duration::from_secs(30);
+            self.tasks.lock().insert(self.me.clone(), now.clone());
+            if connected && (changed || !was_connected) {
+                self.send("*", Ext::Tasks { list: now.clone() });
+                sent_at = Instant::now();
+            }
+            if changed {
+                last = now;
+            }
+            was_connected = connected;
+        }
+    }
+
+    /// What's playing on every computer (this one first).
+    pub fn media(&self) -> Vec<(String, media::NowPlaying)> {
+        let mut v: Vec<(String, media::NowPlaying)> = self.media.lock().iter().map(|(n, m)| (n.clone(), m.clone())).collect();
+        // Playing first, then this computer.
+        v.sort_by_key(|(n, m)| (!m.playing, *n != self.me, n.clone()));
+        v
+    }
+
+    /// Play/pause, skip… on computer `on`.
+    pub fn media_cmd(&self, on: &str, cmd: media::MediaCmd) {
+        if on == self.me {
+            let _ = self.media_tx.send(cmd);
+        } else {
+            self.send(on, Ext::MediaCmd { cmd });
+        }
+    }
+
+    /// Watch what's playing here, tell the others, and carry out commands.
+    fn media_loop(self: Arc<Self>, rx: crossbeam_channel::Receiver<media::MediaCmd>) {
+        let mut m = media::Media::new();
+        let mut last: Option<media::NowPlaying> = None;
+        let mut sent_at = Instant::now();
+        let mut was_connected = false;
+        let every = Duration::from_millis(if cfg!(target_os = "macos") { 2000 } else { 1000 });
+        while !self.stop.load(Ordering::SeqCst) {
+            match rx.recv_timeout(every) {
+                Ok(cmd) => {
+                    m.command(cmd);
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                Err(_) => {}
+            }
+            let now = m.now();
+            let connected = self.out.read().is_some();
+            // Changed: a different track or state, a jump in position, or now and then.
+            let changed = match (&last, &now) {
+                (None, None) => false,
+                (Some(a), Some(b)) => {
+                    let drift = match (a.position, b.position) {
+                        (Some(pa), Some(pb)) => {
+                            let expect = pa + if a.playing { (b.at.saturating_sub(a.at)) as f64 / 1000.0 } else { 0.0 };
+                            (pb - expect).abs() > 2.5
+                        }
+                        _ => false,
+                    };
+                    !a.same_track_state(b) || drift || sent_at.elapsed() > Duration::from_secs(20)
+                }
+                _ => true,
+            };
+            if changed || (connected && !was_connected) {
+                {
+                    let mut map = self.media.lock();
+                    match &now {
+                        Some(n) => map.insert(self.me.clone(), n.clone()),
+                        None => map.remove(&self.me),
+                    };
+                }
+                if connected {
+                    self.send("*", Ext::Media { now: now.clone() });
+                }
+                sent_at = Instant::now();
+                last = now;
+            }
+            was_connected = connected;
+        }
+    }
+
     /// Open app `id` on computer `on`.
     pub fn launch(&self, on: &str, id: &str) {
         if on == self.me {
-            let id = id.to_string();
-            std::thread::spawn(move || apps::launch(&id));
+            self.launch_here(id);
         } else {
             self.send(on, Ext::Launch { id: id.into() });
         }
@@ -721,6 +892,18 @@ impl Hub {
                 send_as(&origin, Ext::Apps { list });
             }
         }
+        let tasks = self.tasks.lock().clone();
+        for (origin, list) in tasks {
+            if origin != name {
+                send_as(&origin, Ext::Tasks { list });
+            }
+        }
+        let media = self.media.lock().clone();
+        for (origin, now) in media {
+            if origin != name {
+                send_as(&origin, Ext::Media { now: Some(now) });
+            }
+        }
         let shelves = self.shelves.lock().clone();
         for (origin, items) in shelves {
             if origin != name && !items.is_empty() {
@@ -740,6 +923,8 @@ impl Hub {
         self.lists.lock().remove(name);
         self.stats.lock().remove(name);
         self.apps.lock().remove(name);
+        self.media.lock().remove(name);
+        self.tasks.lock().remove(name);
         self.shelves.lock().remove(name);
         self.quiet_from.lock().remove(name);
         self.update_dnd();
@@ -936,11 +1121,30 @@ impl Hub {
             Ext::Launch { id } => {
                 // Only apps from our own list.
                 if self.apps.lock().get(&self.me).map(|l| l.iter().any(|a| a.id == id)).unwrap_or(false) {
-                    std::thread::spawn(move || apps::launch(&id));
+                    self.launch_here(&id);
                 }
             }
             Ext::Shelf { items } => {
                 self.shelves.lock().insert(from.into(), items);
+            }
+            Ext::Media { now } => {
+                let mut m = self.media.lock();
+                match now {
+                    Some(n) => m.insert(from.into(), n),
+                    None => m.remove(from),
+                };
+            }
+            Ext::MediaCmd { cmd } => {
+                let _ = self.media_tx.send(cmd);
+            }
+            Ext::Tasks { list } => {
+                self.tasks.lock().insert(from.into(), list);
+            }
+            Ext::Quit { pids, force } => {
+                let _ = self.quit_tx.send((pids, force));
+            }
+            Ext::Raise { window } => {
+                std::thread::spawn(move || wins::raise(window));
             }
             Ext::ShelfRemove { id } => self.shelf_remove(&self.me.clone(), id),
             Ext::Notice { title, body, icon } => self.notice_here(&title, &body, &icon),
@@ -1438,12 +1642,13 @@ impl Hub {
                 let list = wins::list();
                 self.lists.lock().insert(self.me.clone(), list.clone());
                 let resend = self.resend.swap(false, Ordering::SeqCst);
-                if resend || apps_at.elapsed() > Duration::from_secs(600) {
+                if resend || apps_at.elapsed() > Duration::from_secs(60) {
                     // Installed apps (for the launcher), now and then.
                     apps_at = Instant::now();
                     let mine = apps::list();
-                    self.apps.lock().insert(self.me.clone(), mine.clone());
-                    if connected {
+                    // Apps installed or removed since: tell the others.
+                    let changed = self.apps.lock().insert(self.me.clone(), mine.clone()).as_ref() != Some(&mine);
+                    if connected && (resend || changed) {
                         self.send("*", Ext::Apps { list: mine });
                         let shelf = self.shelves.lock().get(&self.me).cloned().unwrap_or_default();
                         self.send("*", Ext::Shelf { items: shelf });

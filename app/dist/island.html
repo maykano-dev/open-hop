@@ -34,6 +34,12 @@
       transition: width .46s var(--spring), height .46s var(--spring), border-radius .46s var(--ease);
     }
     body.floating .island { border-radius: var(--r, 17px); }
+    /* Resting as a thin lip (Windows, Linux): out of the way of tabs and title bars. */
+    body.lip .island:not(.open):not(.activity):not(.live) { background: rgba(0, 0, 0, .78); }
+    body.lip .rest { display: none; }
+    /* Around a MacBook notch: the middle is the camera, content goes either side. */
+    body.notch .rest .where span, body.notch .rest #restName { display: none; }
+    body.notch .rest { justify-content: space-between; padding: 0 10px; }
 
     /* ---- at rest: a slim pill with live hints ---- */
     .rest {
@@ -52,7 +58,94 @@
     .hint-batt { color: var(--warn); }
     .ring-progress { width: 15px; height: 15px; transform: rotate(-90deg); }
     .ring-progress circle { fill: none; stroke-width: 2.5; }
-    .open .rest, .activity .rest { opacity: 0; transform: scale(.92); pointer-events: none; }
+    .open .rest, .activity .rest, .live .rest { opacity: 0; transform: scale(.92); pointer-events: none; }
+
+    /* ---- compact live pill: a transfer, the song, Focus ---- */
+    .compact { position: absolute; inset: 0; display: flex; align-items: center; gap: 10px; padding: 0 9px 0 9px; font-size: 12.5px; font-weight: 600;
+      opacity: 0; transform: scale(.9); transition: opacity .2s var(--ease), transform .45s var(--spring); pointer-events: none; }
+    .island.live .compact { opacity: 1; transform: none; transition-delay: .08s; pointer-events: auto; }
+    .c-left, .c-right { display: flex; align-items: center; gap: 8px; min-width: 0; flex: none; }
+    .c-mid { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+    .c-mid small { color: var(--soft); font-weight: 500; margin-left: 4px; }
+    body.notch .c-mid { visibility: hidden; }
+    body.notch .c-left, body.notch .c-right { width: 100px; }
+    body.notch .c-right { justify-content: flex-end; }
+    .c-art { width: 22px; height: 22px; border-radius: 6px; background: #333 center / cover; flex: none; }
+    .c-ico { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+    .c-ico svg { width: 14px; height: 14px; }
+    .c-ico.files { background: color-mix(in srgb, var(--accent) 28%, transparent); color: #8cc8ff; }
+    .c-ico.focus { background: color-mix(in srgb, var(--focus) 35%, transparent); color: #b3b1ff; }
+    .c-ico.battery { background: color-mix(in srgb, var(--bad) 25%, transparent); color: var(--bad); }
+    .c-ico.copied { background: color-mix(in srgb, var(--good) 28%, transparent); color: var(--good); }
+    .c-app { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; flex: none; color: #fff; font-weight: 700; font-size: 12px; }
+    /* The Open tab's task list */
+    .sect { font-size: 11.5px; font-weight: 600; color: var(--faint); margin: 12px 9px 4px; }
+    .sect:first-child { margin-top: 2px; }
+    .lead.app.running { position: relative; overflow: visible; }
+    .lead.app.running::after { content: ""; position: absolute; bottom: -5px; left: 50%; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--soft); }
+    .qbtn { min-width: 26px; height: 26px; padding: 0 6px; border-radius: 13px; display: grid; place-items: center; color: var(--soft); font-size: 12px; font-weight: 600; white-space: nowrap;
+      transition: background .2s, color .2s, padding .25s var(--spring); }
+    .row .tail .qbtn { width: auto; border-radius: 13px; }
+    .qbtn:hover { background: var(--glass-hi); color: var(--ink); }
+    .qbtn svg { width: 12px; height: 12px; }
+    .qbtn.armed, .qbtn.force { background: var(--bad); color: #fff; padding: 0 11px; }
+    .row.leaving { opacity: .4; transition: opacity .4s; }
+    #appList { max-height: 340px; }
+    .c-tag { font-size: 12.5px; font-weight: 600; }
+    .c-tag.on { color: #a5a3ff; }
+    .c-tag.low { color: var(--bad); }
+    .ring { width: 22px; height: 22px; transform: rotate(-90deg); flex: none; }
+    .ring circle { fill: none; stroke-width: 2.6; }
+    .ring .track { stroke: rgba(255, 255, 255, .16); }
+    .ring .val { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset .5s var(--ease); }
+    .ring.spin { animation: spin 1s linear infinite; }
+    .ring.spin .val { stroke-dashoffset: 40; }
+    @keyframes spin { to { transform: rotate(270deg); } }
+    .tick { width: 22px; height: 22px; border-radius: 50%; background: var(--good); display: grid; place-items: center; animation: pop .45s var(--spring); }
+    .tick svg { width: 13px; height: 13px; }
+    .tick path { stroke-dasharray: 20; stroke-dashoffset: 20; animation: draw .35s .12s var(--ease) forwards; }
+    @keyframes pop { from { transform: scale(.3); opacity: 0; } }
+    @keyframes draw { to { stroke-dashoffset: 0; } }
+
+    /* Sound bars: dance while playing, rest flat when paused. */
+    .wave { display: flex; align-items: center; gap: 2.5px; height: 16px; flex: none; }
+    .wave i { display: block; width: 3px; height: 100%; border-radius: 2px; background: var(--wave, #fff); transform: scaleY(.25); transform-origin: 50% 50%; transition: transform .3s; }
+    .wave.on i { animation: bar 1.05s ease-in-out infinite; }
+    .wave.on i:nth-child(2) { animation-duration: .8s; animation-delay: -.3s; }
+    .wave.on i:nth-child(3) { animation-duration: 1.2s; animation-delay: -.5s; }
+    .wave.on i:nth-child(4) { animation-duration: .9s; animation-delay: -.2s; }
+    .wave.on i:nth-child(5) { animation-duration: 1.1s; animation-delay: -.7s; }
+    .wave.on i:nth-child(6) { animation-duration: .75s; animation-delay: -.4s; }
+    @keyframes bar { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
+    .c-right .wave { height: 14px; gap: 2px; }
+    .c-right .wave i { width: 2.5px; }
+
+    /* ---- media player (Home tab) ---- */
+    .player { margin: 2px 0 16px; padding: 14px; border-radius: 22px; background: var(--glass); position: relative; overflow: hidden; }
+    .player::before { content: ""; position: absolute; inset: -40%; background: var(--tint, transparent); filter: blur(40px); opacity: .45; pointer-events: none; transition: background .6s; }
+    .player > * { position: relative; }
+    .p-top { display: flex; align-items: center; gap: 13px; }
+    .art { width: 58px; height: 58px; border-radius: 13px; background: #2c2c2e center / cover; flex: none; box-shadow: 0 6px 18px rgba(0, 0, 0, .45); display: grid; place-items: center; color: var(--soft); }
+    .art svg { width: 26px; height: 26px; }
+    .p-meta { flex: 1; min-width: 0; }
+    .p-title { font-size: 15px; font-weight: 700; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .p-artist { font-size: 13px; color: var(--soft); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .p-time { display: flex; align-items: center; gap: 10px; margin-top: 13px; font-size: 11px; color: var(--soft); font-variant-numeric: tabular-nums; }
+    .p-time span { width: 34px; }
+    .p-time span:last-child { text-align: right; }
+    .bar { flex: 1; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, .18); position: relative; cursor: default; transition: height .2s var(--ease); }
+    .bar:hover { height: 8px; }
+    .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: inherit; background: var(--ink); width: 0; }
+    .p-ctl { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; padding: 0 4px; }
+    .p-ctl button { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; color: var(--ink); transition: transform .25s var(--spring), background .15s; }
+    .p-ctl button:hover { background: var(--glass); }
+    .p-ctl button:active { transform: scale(.86); }
+    .p-ctl button svg { width: 22px; height: 22px; }
+    .p-ctl .big svg { width: 30px; height: 30px; }
+    #pShuffle { color: var(--soft); }
+    #pShuffle.on { color: var(--accent); }
+    #pShuffle svg { width: 18px; height: 18px; }
+    .p-ctl .where { width: auto; max-width: 120px; height: 26px; padding: 0 10px; border-radius: 999px; background: rgba(255, 255, 255, .1); font-size: 11px; font-weight: 600; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; line-height: 26px; }
 
     /* ---- a live activity: one line or two, for a few seconds ---- */
     .act {
@@ -81,6 +174,9 @@
       transition: opacity .18s var(--ease), transform .4s var(--spring); pointer-events: none;
     }
     .open .panel { opacity: 1; transform: none; pointer-events: auto; transition-delay: .06s; }
+    /* Below a MacBook notch. */
+    body.notch .panel { padding-top: calc(var(--notch-h, 0px) + 8px); }
+    body.notch .act { top: var(--notch-h, 0px); }
     body.attached .panel { padding-top: 12px; }
 
     .head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
@@ -160,7 +256,7 @@
     .iconbtn:hover { background: var(--glass-hi); color: var(--ink); }
     .iconbtn svg { width: 16px; height: 16px; }
 
-    .controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+    .controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
     .ctl { display: flex; flex-direction: column; align-items: center; gap: 7px; font-size: 11.5px; color: var(--soft); }
     .ctl .disc {
       width: 54px; height: 54px; border-radius: 50%; display: grid; place-items: center; background: var(--glass);
@@ -208,7 +304,9 @@
     .empty { font-size: 12px; color: var(--faint); padding: 4px 2px 0; }
 
     @media (prefers-reduced-motion: reduce) {
-      .island, .rest, .act, .panel, .ctl .disc, .seg-thumb, .target, .tile .x { transition-duration: .01s !important; transition-delay: 0s !important; }
+      .island, .rest, .act, .panel, .ctl .disc, .seg-thumb, .target, .tile .x, .compact, .bar, .ring .val { transition-duration: .01s !important; transition-delay: 0s !important; }
+      .wave.on i, .ring.spin, .tick, .tick path { animation: none !important; }
+      .tick path { stroke-dashoffset: 0; }
       .view.on, .row.done, .tile.busy { animation: none; }
     }
   </style>
@@ -224,6 +322,11 @@
       <div class="txt"><div class="t" id="actTitle"></div><div class="b" id="actBody"></div></div>
       <div class="acts" id="actButtons"></div>
     </div>
+    <div class="compact" id="compact" aria-live="polite">
+      <div class="c-left" id="cLeft"></div>
+      <div class="c-mid" id="cMid"></div>
+      <div class="c-right" id="cRight"></div>
+    </div>
     <div class="panel" id="panel">
       <div class="head">
         <div class="seg" id="tabs" role="tablist">
@@ -237,10 +340,24 @@
       </div>
 
       <section class="view" data-view="home">
+        <div class="player" id="player" hidden>
+          <div class="p-top">
+            <div class="art" id="pArt"></div>
+            <div class="p-meta"><div class="p-title" id="pTitle"></div><div class="p-artist" id="pArtist"></div></div>
+            <div class="wave" id="pWave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          </div>
+          <div class="p-time"><span id="pPos">0:00</span><div class="bar" id="pBar" role="slider" aria-label="Position"><i id="pFill"></i></div><span id="pDur">0:00</span></div>
+          <div class="p-ctl">
+            <button id="pShuffle" title="Shuffle" aria-label="Shuffle"></button>
+            <button id="pPrev" title="Previous" aria-label="Previous"></button>
+            <button class="big" id="pPlay" title="Play or pause" aria-label="Play or pause"></button>
+            <button id="pNext" title="Next" aria-label="Next"></button>
+            <button class="where" id="pWhere"></button>
+          </div>
+        </div>
         <p class="status" id="headSub"></p>
         <div class="controls">
           <button class="ctl" id="cFocus"><span class="disc"></span><span class="lbl">Focus</span></button>
-          <button class="ctl" id="cFind"><span class="disc"></span><span class="lbl">Find pointer</span></button>
           <button class="ctl" id="cLock"><span class="disc"></span><span class="lbl">Lock all</span></button>
           <button class="ctl" id="cSleep"><span class="disc"></span><span class="lbl">Sleep all</span></button>
         </div>
@@ -252,7 +369,7 @@
       <section class="view" data-view="clips">
         <label class="search"><span id="clipGlass"></span><input id="clipQuery" placeholder="Search everything you copied" spellcheck="false" autocomplete="off"></label>
         <div class="list" id="clipList"></div>
-        <p class="foot">Pick one to copy it again, on any computer. Ctrl+Alt+V opens this list.</p>
+        <p class="foot">Pick one to copy it again, on any computer. Press C in the island to come here.</p>
       </section>
 
       <section class="view" data-view="shelf">
@@ -264,7 +381,7 @@
         <label class="search"><span id="openGlass"></span><input id="appQuery" placeholder="Open an app on any computer" spellcheck="false" autocomplete="off"></label>
         <div class="chips" id="appWhere"></div>
         <div class="list apps" id="appList"></div>
-        <p class="foot">Opening an app on another computer moves the pointer there. Ctrl+Alt+O opens this search.</p>
+        <p class="foot">Every computer's open apps, what runs in the background, and all its apps. Click one to switch to it or open it (the pointer follows); ✕ quits it.</p>
       </section>
 
       <section class="view" data-view="drop">

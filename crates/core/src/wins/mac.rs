@@ -73,7 +73,7 @@ pub fn list() -> Vec<WinInfo> {
         .map(|w| {
             // Without Screen Recording permission titles are empty: use the app.
             let title = if w.title.is_empty() { w.app.clone() } else { w.title.clone() };
-            WinInfo { id: w.id as u64, title, app: w.app, w: w.bounds.w, h: w.bounds.h }
+            WinInfo { id: w.id as u64, title, app: w.app, w: w.bounds.w, h: w.bounds.h, pid: w.pid.max(0) as u32 }
         })
         .collect()
 }

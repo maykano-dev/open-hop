@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.9.0
+
+**Update every computer** (protocol 11).
+
+### Added
+- **Media controls** in the island: what's playing on any computer (Spotify, a video in the browser, music and video apps), with cover art, a progress bar, play/pause, previous, next and shuffle, controllable from any computer. On a Mac: Spotify and Music.
+- **A task manager for every computer** in the island's **Open** tab: open apps (dock or taskbar), apps running in the background with their memory use, and all apps. Switch to, quit (or force quit) and open apps on any computer.
+- **Live pills**: files on their way with a progress ring that turns into a tick, a song starting, a copy from the clipboard history, an app opening.
+- **When an app doesn't open**, the island says so and why.
+- Tray: **Clipboard History** and **Apps on Every Computer**.
+- A log file (`openhop.log`, next to the settings) to send with bug reports.
+
+### Fixed
+- **The island no longer gets in the way.** On Windows and Linux it rests as a thin line that clicks pass through (browser tabs under it work) and opens only after the pointer rests on it, or when files are dragged to it. Notices go away on their own. Hovering no longer makes it flicker.
+- **MacBooks with a notch:** the island wraps around the notch instead of hiding things behind it; on other Macs it sits inside the menu bar.
+- **The island in the middle of the screen** on Linux with Wayland: it's now placed at the top.
+- **Apps opened from the island didn't start** on some Linux systems (OpenHop's own libraries leaked into them, e.g. from the AppImage).
+- **OpenHop not working after the computers were switched off and on**: if it can't start right away (the desktop or network isn't ready yet), it keeps trying, and the start-at-login entry is refreshed every time, so it points at the current copy of the app.
+
+### Changed
+- **Shortcuts without letters**: Ctrl+Alt+Space (island) and Ctrl+Alt+Shift+Space (keep the pointer here) instead of Ctrl+Alt+V, O and L, which clashed with AltGr characters (ó, ł…) and with Paste Special. With the island open, H, C, S and O switch tabs.
+- **Find My Pointer is removed** (the button, the tray item and shaking the mouse).
+
+
 ## v0.8.0
 
 **Update every computer** (protocol 10). v0.7.0 was never published; its changes are part of this release.

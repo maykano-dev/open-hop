@@ -20,6 +20,7 @@ opener = { version = "0.9.0", features = ["reveal"] }
 parking_lot = "0.12.5"
 png = "0.18.1"
 serde = { version = "1.0.229", features = ["derive"] }
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 snow = { version = "0.10.0", default-features = false, features = ["default-resolver", "use-chacha20poly1305", "use-blake2", "use-curve25519", "use-getrandom"] }
 socket2 = { version = "0.6.5", features = ["all"] }
 thiserror = "2.0.21"
@@ -32,17 +33,18 @@ libc = "0.2"
 evdev = "0.13.2"
 memmap2 = "0.9"
 x11rb = { version = "0.14.0", features = ["xtest", "xfixes", "xkb", "composite", "xinput", "shm"] }
+zbus = "5"
 
 [target."cfg(windows)".dependencies]
 windows-core = "0.62"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_Graphics_Gdi", "Win32_System_DataExchange", "Win32_System_Ole", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_SystemServices", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_Storage_Xps", "Win32_Graphics_Dwm", "Win32_System_Registry", "Win32_System_Power", "Win32_Storage_FileSystem", "Win32_System_StationsAndDesktops", "Win32_System_Shutdown"]  }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_Graphics_Gdi", "Win32_System_DataExchange", "Win32_System_Ole", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_SystemServices", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_Storage_Xps", "Win32_Graphics_Dwm", "Win32_System_Registry", "Win32_System_Power", "Win32_Storage_FileSystem", "Win32_System_StationsAndDesktops", "Win32_System_Shutdown", "Media_Control", "Foundation", "Storage_Streams"]  }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10.1"
 core-graphics = { version = "0.25.0", features = ["highsierra"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "libc"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSScreen", "NSGraphics", "libc", "objc2-core-foundation"] }
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSData", "NSURL"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSData", "NSURL", "NSGeometry"] }
 
 [dev-dependencies]
 env_logger = "0.11.11"

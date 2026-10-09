@@ -50,46 +50,6 @@ impl Placed {
     }
 }
 
-/// Shaking the mouse (quick left-right swings) finds the pointer.
-#[derive(Default)]
-struct Shake {
-    dir: i32,
-    travel: i32,
-    flips: std::collections::VecDeque<Instant>,
-    fired: Option<Instant>,
-}
-
-impl Shake {
-    fn feed(&mut self, dx: i32) -> bool {
-        if dx == 0 {
-            return false;
-        }
-        let d = dx.signum();
-        if d == self.dir {
-            self.travel += dx.abs();
-            return false;
-        }
-        let strong = self.travel >= 40;
-        self.dir = d;
-        self.travel = dx.abs();
-        let now = Instant::now();
-        if !strong {
-            self.flips.clear();
-            return false;
-        }
-        self.flips.push_back(now);
-        while self.flips.front().map(|t| now.duration_since(*t) > Duration::from_millis(900)).unwrap_or(false) {
-            self.flips.pop_front();
-        }
-        if self.flips.len() >= 4 && self.fired.map(|f| f.elapsed() > Duration::from_secs(2)).unwrap_or(true) {
-            self.fired = Some(now);
-            self.flips.clear();
-            return true;
-        }
-        false
-    }
-}
-
 /// How long the pointer rests against a screen edge before hopping (so it
 /// doesn't hop by accident), and corners that never hop.
 const EDGE_DWELL: Duration = Duration::from_millis(70);
@@ -1012,7 +972,6 @@ struct Server {
     edge_wait: Option<(Side, Instant)>,
     /// How far the pointer has pushed past another screen's edge.
     push: i32,
-    shake: Shake,
     last_local: (i32, i32),
     /// Arranging the screens by moving the mouse toward each of these in turn.
     learning: Vec<String>,
@@ -1100,7 +1059,6 @@ impl Server {
             pinned: false,
             edge_wait: None,
             push: 0,
-            shake: Shake::default(),
             last_local: (0, 0),
             learning: vec![],
         };
@@ -1474,9 +1432,6 @@ impl Server {
         }
         match (ev, self.active) {
             (InputEvent::LocalMove { x, y }, None) => {
-                if self.shake.feed(x - self.last_local.0) {
-                    self.ctx.hub.find_pointer();
-                }
                 self.last_local = (x, y);
                 let screen = self.capture.screen();
                 let Some(side) = touching_edge(&screen, x, y) else {
@@ -1527,9 +1482,6 @@ impl Server {
                 }
             }
             (InputEvent::Delta { dx, dy }, Some((id, x, y))) => {
-                if self.shake.feed(dx) {
-                    self.ctx.hub.find_pointer();
-                }
                 let Some(p) = self.peers.get(&id) else { return };
                 let (w, h, pname) = (p.screen.w, p.screen.h, p.name.clone());
                 match apply_delta(w, h, x, y, dx, dy) {
@@ -2036,9 +1988,6 @@ impl Server {
         let from_os = self.peers.get(&c).map(|p| p.os).unwrap_or(Os::Other);
         match ev {
             DriveEv::Delta { dx, dy } => {
-                if self.shake.feed(dx) {
-                    self.ctx.hub.find_pointer();
-                }
                 let (w, h, name) = if a == THIS {
                     let r = self.capture.screen();
                     (r.w, r.h, SERVER.to_string())
@@ -2536,7 +2485,6 @@ struct Client {
     pinned: bool,
     /// Resting against the screen edge since.
     edge_wait: Option<(Side, Instant)>,
-    shake: Shake,
     last_local: (i32, i32),
     /// When this computer's own mouse last reported the edge / its position.
     edge_sent: Instant,
@@ -2603,7 +2551,6 @@ impl Client {
             placed: Placed::default(),
             pinned: false,
             edge_wait: None,
-            shake: Shake::default(),
             last_local: (0, 0),
             edge_sent: Instant::now(),
             pos_sent: Instant::now(),
@@ -3198,9 +3145,6 @@ impl Client {
                 }
                 // This computer's own mouse or touchpad: the pointer is here.
                 self.ctx.hub.set_pointer_here(true);
-                if self.shake.feed(x - self.last_local.0) {
-                    self.ctx.hub.find_pointer();
-                }
                 self.last_local = (x, y);
                 if self.here {
                     // The touchpad moved the pointer while the server's mouse

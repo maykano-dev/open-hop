@@ -4,7 +4,7 @@
 use crate::layout::{Layout, Side};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -294,6 +294,8 @@ pub struct WinInfo {
     pub app: String,
     pub w: i32,
     pub h: i32,
+    /// The process that owns it (0: unknown).
+    pub pid: u32,
 }
 
 /// Input aimed at a live window, in the streamed picture's pixels.
@@ -451,6 +453,27 @@ pub enum Ext {
     ShelfRemove {
         id: u64,
     },
+    /// What's playing on the sender (None: nothing).
+    Media {
+        now: Option<crate::extras::media::NowPlaying>,
+    },
+    /// Play/pause, skip… what's playing on your computer.
+    MediaCmd {
+        cmd: crate::extras::media::MediaCmd,
+    },
+    /// The apps running on the sender.
+    Tasks {
+        list: Vec<RunningApp>,
+    },
+    /// Quit one of your running apps (`force`: without asking it).
+    Quit {
+        pids: Vec<u32>,
+        force: bool,
+    },
+    /// Bring one of your windows to the front.
+    Raise {
+        window: u64,
+    },
 }
 
 /// An app that can be opened from the launcher.
@@ -458,6 +481,22 @@ pub enum Ext {
 pub struct AppEntry {
     pub id: String,
     pub name: String,
+    /// The program it runs, lower case without extension ("code", "spotify").
+    pub exe: String,
+}
+
+/// An app running on a computer (the Open tab's task list).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunningApp {
+    pub name: String,
+    /// Its main processes (to quit it).
+    pub pids: Vec<u32>,
+    /// Windows it has open (0: running in the background).
+    pub windows: Vec<u64>,
+    /// Memory in use by it and its helpers (bytes).
+    pub memory: u64,
+    /// The launcher entry it belongs to.
+    pub app_id: Option<String>,
 }
 
 /// Files kept on the shelf: reachable from every computer.

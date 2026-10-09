@@ -144,6 +144,40 @@ fn linux_fullscreen() -> Option<bool> {
 
 // ------------------------------------------------------------- battery, storage
 
+/// The main screen's camera notch on a MacBook: (width, height) in points.
+/// Must be called on the main thread.
+#[cfg(target_os = "macos")]
+pub fn notch() -> Option<(f64, f64)> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSScreen;
+    let mtm = MainThreadMarker::new()?;
+    // The built-in screen is the one with the menu bar when it's the only
+    // one; with others, the notch is on whichever has a top safe area.
+    for screen in NSScreen::screens(mtm).iter() {
+        #[allow(unused_unsafe)]
+        let (insets, left, right, frame) = unsafe { (screen.safeAreaInsets(), screen.auxiliaryTopLeftArea(), screen.auxiliaryTopRightArea(), screen.frame()) };
+        if insets.top > 0.0 && left.size.width > 0.0 && right.size.width > 0.0 {
+            let w = frame.size.width - left.size.width - right.size.width;
+            if w > 0.0 {
+                return Some((w, insets.top));
+            }
+        }
+    }
+    None
+}
+
+/// The height of the menu bar on the main screen (points).
+#[cfg(target_os = "macos")]
+pub fn menu_bar_height() -> Option<f64> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSScreen;
+    let mtm = MainThreadMarker::new()?;
+    let s = NSScreen::mainScreen(mtm)?;
+    let (f, v) = (s.frame(), s.visibleFrame());
+    let h = (f.origin.y + f.size.height) - (v.origin.y + v.size.height);
+    (h > 0.0).then_some(h)
+}
+
 /// (percent, charging or plugged in) if this computer has a battery.
 pub fn battery() -> Option<(u8, bool)> {
     #[cfg(target_os = "linux")]

@@ -116,6 +116,63 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
     None
 }
 
+/// Reads the pointer position and whether the main button is held, many
+/// times a second (keeps its connection open).
+#[derive(Default)]
+pub struct PointerProbe {
+    #[cfg(target_os = "linux")]
+    x: Option<(x11rb::rust_connection::RustConnection, u32)>,
+}
+
+impl PointerProbe {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// (x, y, main button down). macOS: in points, not pixels.
+    pub fn read(&mut self) -> Option<(i32, i32, bool)> {
+        #[cfg(target_os = "linux")]
+        {
+            use x11rb::connection::Connection;
+            use x11rb::protocol::xproto::{ConnectionExt as _, KeyButMask};
+            if self.x.is_none() {
+                let (conn, n) = x11rb::connect(None).ok()?;
+                let root = conn.setup().roots[n].root;
+                self.x = Some((conn, root));
+            }
+            let (conn, root) = self.x.as_ref()?;
+            let p = match conn.query_pointer(*root).ok().and_then(|c| c.reply().ok()) {
+                Some(p) => p,
+                None => {
+                    self.x = None;
+                    return None;
+                }
+            };
+            return Some((p.root_x as i32, p.root_y as i32, p.mask.contains(KeyButMask::BUTTON1)));
+        }
+        #[cfg(windows)]
+        {
+            use ::windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+            let (x, y) = cursor_pos()?;
+            let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } as u16 & 0x8000 != 0;
+            return Some((x, y, down));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            #[link(name = "CoreGraphics", kind = "framework")]
+            extern "C" {
+                fn CGEventSourceButtonState(state: i32, button: u32) -> bool;
+            }
+            let (x, y) = cursor_pos()?;
+            // kCGEventSourceStateCombinedSessionState, left button.
+            let down = unsafe { CGEventSourceButtonState(0, 0) };
+            return Some((x, y, down));
+        }
+        #[allow(unreachable_code)]
+        None
+    }
+}
+
 /// Client-side synthetic input.
 pub trait Injector: Send {
     /// Absolute position in native desktop coordinates.

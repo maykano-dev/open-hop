@@ -225,7 +225,9 @@ fn apply_login(handle: &AppHandle, on: bool) {
     use tauri_plugin_autostart::ManagerExt;
     let al = handle.autolaunch();
     let now = al.is_enabled().unwrap_or(false);
-    if on && !now {
+    if on {
+        // Always written again: the entry must point at this copy of the app
+        // (an update or a moved AppImage would leave it pointing elsewhere).
         if let Err(e) = al.enable() {
             log::warn!("couldn't turn on open at login: {e}");
         }
@@ -492,8 +494,51 @@ fn clipboard_report() {
     }
 }
 
+/// Log to the terminal and to a file people can send when something's wrong
+/// (`openhop.log` next to the settings).
+fn init_log() {
+    struct Tee(Option<std::fs::File>);
+    impl std::io::Write for Tee {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            let _ = std::io::stderr().write_all(b);
+            if let Some(f) = &mut self.0 {
+                let _ = f.write_all(b);
+            }
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            if let Some(f) = &mut self.0 {
+                let _ = f.flush();
+            }
+            Ok(())
+        }
+    }
+    let path = Config::default_path().with_file_name("openhop.log");
+    if let Some(d) = path.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    // Keep it small: older lines move to openhop.old.log.
+    if std::fs::metadata(&path).map(|m| m.len() > 4 << 20).unwrap_or(false) {
+        let _ = std::fs::rename(&path, path.with_file_name("openhop.old.log"));
+    }
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .target(env_logger::Target::Pipe(Box::new(Tee(file))))
+        .format_timestamp_millis()
+        .init();
+    log::info!("OpenHop {} on {} ({})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::var("XDG_SESSION_TYPE").unwrap_or_default());
+}
+
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    init_log();
+    // Wayland doesn't let apps place their windows, so the island would land
+    // in the middle of the screen. Run through XWayland, where they can.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("DISPLAY").is_some() && std::env::var_os("GDK_BACKEND").is_none() {
+        std::env::set_var("GDK_BACKEND", "x11");
+        // Not for the apps OpenHop opens.
+        std::env::set_var("OPENHOP_SET_GDK_BACKEND", "1");
+    }
     if std::env::args().any(|a| a == "--clipboard") {
         clipboard_report();
         return;
@@ -534,14 +579,13 @@ fn main() {
                     let engine = engine.engine.lock();
                     use openhop_core::layout::Side;
                     match shortcut.key {
+                        // With Shift: keep the pointer on this screen.
+                        Code::Space if shortcut.mods.contains(tauri_plugin_global_shortcut::Modifiers::SHIFT) => engine.as_ref().map(|e| e.pin()).unwrap_or(()),
                         Code::Space => island::toggle(app),
                         Code::ArrowLeft => engine.as_ref().map(|e| e.jump(Side::Left)).unwrap_or(()),
                         Code::ArrowRight => engine.as_ref().map(|e| e.jump(Side::Right)).unwrap_or(()),
                         Code::ArrowUp => engine.as_ref().map(|e| e.jump(Side::Top)).unwrap_or(()),
                         Code::ArrowDown => engine.as_ref().map(|e| e.jump(Side::Bottom)).unwrap_or(()),
-                        Code::KeyL => engine.as_ref().map(|e| e.pin()).unwrap_or(()),
-                        Code::KeyV => island::show_tab(app, "clips"),
-                        Code::KeyO => island::show_tab(app, "open"),
                         _ => {}
                     }
                 })
@@ -582,6 +626,7 @@ fn main() {
             island::island_sleep_all,
             island::island_find_pointer,
             island::island_open_app,
+            island::media_cmd,
             island::overview,
             live::viewer_log,
             live::viewer_fit,
@@ -596,19 +641,22 @@ fn main() {
             tools::app_launch,
             tools::go_to,
             tools::send_paths,
-            tools::learn_layout
+            tools::learn_layout,
+            tools::task_quit,
+            tools::task_raise
         ])
         .setup(move |app| {
             // Keep sharing in the background: closing the window hides it to the tray.
             let show = MenuItem::with_id(app, "show", "Open OpenHop", true, None::<&str>)?;
             let dock = MenuItem::with_id(app, "dock", "Control Center (Ctrl+Alt+Space)", true, None::<&str>)?;
+            let clips = MenuItem::with_id(app, "clips", "Clipboard History", true, None::<&str>)?;
+            let apps = MenuItem::with_id(app, "apps", "Apps on Every Computer", true, None::<&str>)?;
             let focus = MenuItem::with_id(app, "focus", "Focus on All Computers", true, None::<&str>)?;
-            let find = MenuItem::with_id(app, "find", "Find My Pointer", true, None::<&str>)?;
             let lock = MenuItem::with_id(app, "lock", "Lock All Computers", true, None::<&str>)?;
             let on = app.state::<App>().config.lock().enabled;
             let toggle = MenuItem::with_id(app, "toggle", if on { "Turn OpenHop Off" } else { "Turn OpenHop On" }, true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit (starts again at login)", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &dock, &focus, &find, &lock, &toggle, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &dock, &clips, &apps, &focus, &lock, &toggle, &quit])?;
             app.manage(TrayToggle(toggle.clone()));
             TrayIconBuilder::with_id("tray")
                 .icon(app.default_window_icon().cloned().expect("icon"))
@@ -622,12 +670,13 @@ fn main() {
                         }
                     }
                     "dock" => island::toggle(app),
-                    "focus" | "find" | "lock" => {
+                    "clips" => island::show_tab(app, "clips"),
+                    "apps" => island::show_tab(app, "open"),
+                    "focus" | "lock" => {
                         if let Some(e) = app.state::<App>().engine.lock().as_ref() {
                             let hub = e.hub();
                             match ev.id().as_ref() {
                                 "focus" => hub.set_focus(!hub.focus()),
-                                "find" => hub.find_pointer(),
                                 _ => hub.lock_all(),
                             }
                         }
@@ -663,9 +712,9 @@ fn main() {
                     Shortcut::new(Some(all), Code::ArrowRight),
                     Shortcut::new(Some(all), Code::ArrowUp),
                     Shortcut::new(Some(all), Code::ArrowDown),
-                    Shortcut::new(Some(all), Code::KeyL),
-                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyV),
-                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyO),
+                    // No letters: with Ctrl+Alt they're AltGr characters on many
+                    // keyboards (ó, ł…) and other apps' shortcuts (Paste Special).
+                    Shortcut::new(Some(all), Code::Space),
                 ];
                 for sc in keys {
                     if let Err(e) = app.global_shortcut().register(sc) {
@@ -732,7 +781,18 @@ fn main() {
                 let mut lonely = 0;
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(4));
-                    elect(&handle.state::<App>(), &mut lonely);
+                    let state = handle.state::<App>();
+                    // On but not running (it failed to start, e.g. right after
+                    // the computer started, before the network or the desktop
+                    // was ready): keep trying.
+                    let enabled = state.config.lock().enabled;
+                    if enabled && state.engine.lock().is_none() && state.last_error.lock().is_some() {
+                        match start_engine(&state) {
+                            Ok(()) => log::info!("started after an earlier failure"),
+                            Err(e) => log::info!("still can't start: {e}"),
+                        }
+                    }
+                    elect(&state, &mut lonely);
                 }
             });
             // We're the one running copy now (single-instance passed); clear out older versions.

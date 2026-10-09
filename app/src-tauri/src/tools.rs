@@ -17,6 +17,8 @@ pub struct Tools {
     shelf: Vec<ShelfEntry>,
     apps: Vec<AppsOf>,
     computers: Vec<String>,
+    /// Running apps on every computer: (computer, apps).
+    tasks: Vec<(String, Vec<openhop_core::protocol::RunningApp>)>,
 }
 
 /// Everything the island's Clipboard, Shelf and Open tabs show.
@@ -26,9 +28,9 @@ pub fn tools_state(app: State<App>) -> Tools {
         let hub = e.hub();
         let me = e.status().name;
         let computers = hub.computers().into_iter().filter(|c| !c.this).map(|c| c.name).collect();
-        Tools { me, clips: hub.clip_history(), shelf: hub.shelf(), apps: hub.apps(), computers }
+        Tools { me, clips: hub.clip_history(), shelf: hub.shelf(), apps: hub.apps(), computers, tasks: hub.tasks() }
     })
-    .unwrap_or_else(|| Tools { me: app.config.lock().name.clone(), clips: vec![], shelf: vec![], apps: vec![], computers: vec![] })
+    .unwrap_or_else(|| Tools { me: app.config.lock().name.clone(), clips: vec![], shelf: vec![], apps: vec![], computers: vec![], tasks: vec![] })
 }
 
 #[tauri::command]
@@ -100,4 +102,22 @@ pub fn learn_layout(app: State<App>) -> Result<(), String> {
         Ok(())
     })
     .unwrap_or_else(|| Err("Turn OpenHop on first.".into()))
+}
+
+/// Quit an app on a computer (`force`: without letting it ask to save).
+#[tauri::command]
+pub fn task_quit(app: State<App>, on: String, pids: Vec<u32>, force: bool) {
+    with_engine(&app, |e| e.hub().quit(&on, pids, force));
+}
+
+/// Switch to an app's window: on another computer the pointer goes there too.
+#[tauri::command]
+pub fn task_raise(app: State<App>, on: String, window: u64) {
+    with_engine(&app, |e| {
+        let me = e.status().name;
+        e.hub().raise(&on, window);
+        if on != me {
+            e.go_to(on);
+        }
+    });
 }

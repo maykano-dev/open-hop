@@ -294,7 +294,8 @@ pub fn list() -> Vec<WinInfo> {
         .filter(|&w| x.is_listed(w))
         .filter_map(|w| {
             let r = x.full_rect(w)?;
-            Some(WinInfo { id: w as u64, title: x.title(w), app: x.app(w), w: r.w, h: r.h })
+            let pid = x.prop32(w, "_NET_WM_PID", AtomEnum::CARDINAL).first().copied().unwrap_or(0);
+            Some(WinInfo { id: w as u64, title: x.title(w), app: x.app(w), w: r.w, h: r.h, pid })
         })
         .filter(|w| !w.title.is_empty())
         .collect();

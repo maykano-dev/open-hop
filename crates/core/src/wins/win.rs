@@ -88,7 +88,9 @@ pub fn list() -> Vec<WinInfo> {
     hs.into_iter()
         .filter_map(|h| {
             let r = geometry(h.0 as usize as u64)?;
-            Some(WinInfo { id: h.0 as usize as u64, title: title(h), app: app_name(h), w: r.w, h: r.h })
+            let mut pid = 0u32;
+            unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
+            Some(WinInfo { id: h.0 as usize as u64, title: title(h), app: app_name(h), w: r.w, h: r.h, pid })
         })
         .collect()
 }
