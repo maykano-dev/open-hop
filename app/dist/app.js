@@ -746,15 +746,18 @@ function mockInvoke() {
   };
 }
 
-// AirDrop (Linux, through omdrop).
+// AirDrop (Linux; Windows with a USB adapter).
 const airdropRow = document.getElementById("airdropRow");
 async function renderAirDrop() {
   if (!airdropRow) return;
   let s;
   try { s = await invoke("airdrop_state"); } catch (_) { return; }
-  if (!s || !s.possible) { airdropRow.hidden = true; return; }
+  const always = document.getElementById("airdropAlwaysRow");
+  if (!s || !s.possible) { airdropRow.hidden = true; always.hidden = true; return; }
   airdropRow.hidden = false;
   const sub = document.getElementById("airdropSub"), btn = document.getElementById("airdropBtn");
+  btn.hidden = false;
+  always.hidden = !s.installed;
   if (!s.installed) {
     if (s.windows) {
       sub.textContent = "Swap files with iPhones and Macs. Needs a MediaTek MT7612U USB Wi‑Fi adapter (about $20) and a one-time set-up that runs in its own window (20–40 minutes).";
@@ -767,17 +770,19 @@ async function renderAirDrop() {
     }
     return;
   }
+  // Set up: sending is in the menus and the island; receiving is the switch
+  // below (or, where being visible takes the computer off Wi‑Fi, a while at a time).
   const st = s.status || {};
-  const left = st.remaining ? Math.ceil(st.remaining / 60) : 0;
-  if (st.receiving) {
-    sub.textContent = left ? `iPhones and Macs nearby can send here for ${left} more min.` : "iPhones and Macs nearby can send here.";
-    btn.textContent = "Stop";
-    btn.onclick = () => invoke("airdrop_receive", { minutes: 0 }).finally(renderAirDrop);
-  } else {
-    sub.textContent = st.reason ? st.reason : "Send to iPhones and Macs from the Send with OpenHop menu.";
-    btn.textContent = "Let iPhones Send Here";
-    btn.onclick = () => { btn.textContent = "Turning on…"; invoke("airdrop_receive", { minutes: 10 }).catch((e) => { sub.textContent = String(e); }).finally(() => setTimeout(renderAirDrop, 400)); };
+  always.hidden = s.costs_wifi;
+  btn.hidden = !s.costs_wifi;
+  if (s.costs_wifi) {
+    btn.textContent = st.receiving ? "Stop" : "Let iPhones Send Here";
+    btn.onclick = () => { btn.textContent = st.receiving ? "Stopping…" : "Turning on…"; invoke("airdrop_receive", { minutes: st.receiving ? 0 : 10 }).catch((e) => { sub.textContent = String(e); }).finally(() => setTimeout(renderAirDrop, 400)); };
+    if (!st.receiving) { sub.textContent = "This Wi‑Fi card can't stay on Wi‑Fi while visible, so it's visible 10 minutes at a time. To send: drop files on the island and choose AirDrop."; return; }
   }
+  sub.textContent = st.receiving
+    ? `Visible as “${st.name || "this computer"}”. To send: drop files on the island and choose AirDrop, or right-click › Send with OpenHop › AirDrop.`
+    : st.reason ? st.reason : "To send: drop files on the island and choose AirDrop, or right-click › Send with OpenHop › AirDrop.";
 }
 renderAirDrop();
 setInterval(() => { if (!document.hidden) renderAirDrop(); }, 30000);

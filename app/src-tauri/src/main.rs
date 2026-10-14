@@ -223,6 +223,7 @@ fn update_prefs(handle: AppHandle, app: State<App>, prefs: serde_json::Value) ->
                 "mirror_notifications",
                 "shared_folder_on",
                 "audio_here",
+                "airdrop_always",
             ] {
                 if let Some(x) = p.get(k) {
                     obj.insert(k.into(), x.clone());
@@ -639,6 +640,8 @@ fn main() {
             airdrop::airdrop_state,
             airdrop::airdrop_receive,
             airdrop::airdrop_setup,
+            airdrop::airdrop_ready,
+            airdrop::airdrop_send,
             save_config,
             start,
             stop,
@@ -786,6 +789,7 @@ fn main() {
             let cwd = std::env::current_dir().unwrap_or_default();
             let sending = send::queue(app.handle(), &args, &cwd);
             send::start(app.handle().clone());
+            airdrop::keep_on(app.handle().clone());
             // GNOME on Wayland: OpenHop's small Shell helper shows it windows
             // and the pointer. Say once when a new login is needed.
             #[cfg(target_os = "linux")]

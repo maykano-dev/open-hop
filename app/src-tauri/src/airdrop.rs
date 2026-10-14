@@ -107,6 +107,8 @@ pub struct AirDropState {
     /// Windows (set up by OpenHop itself).
     windows: bool,
     installed: bool,
+    /// Being visible turns this computer's Wi‑Fi off (so not always on).
+    costs_wifi: bool,
     status: Option<airdrop::Status>,
     url: &'static str,
 }
@@ -119,12 +121,13 @@ pub async fn airdrop_state() -> AirDropState {
             possible: airdrop::possible(),
             windows: cfg!(windows),
             installed,
+            costs_wifi: installed && airdrop::costs_wifi(),
             status: if installed { airdrop::status() } else { None },
             url: airdrop::INFO_URL,
         }
     })
     .await
-    .unwrap_or(AirDropState { possible: false, windows: false, installed: false, status: None, url: airdrop::INFO_URL })
+    .unwrap_or(AirDropState { possible: false, windows: false, installed: false, costs_wifi: false, status: None, url: airdrop::INFO_URL })
 }
 
 /// Visible to Apple devices nearby for a while (0: stop).
@@ -139,4 +142,61 @@ pub async fn airdrop_receive(minutes: u32) -> Result<(), String> {
 #[tauri::command]
 pub fn airdrop_setup() -> Result<(), String> {
     airdrop::setup()
+}
+
+/// Cheap: is AirDrop set up here? (For the island's drop targets.)
+#[tauri::command]
+pub fn airdrop_ready() -> bool {
+    airdrop::available()
+}
+
+/// Files dropped on AirDrop in the island.
+#[tauri::command]
+pub fn airdrop_send(handle: AppHandle, paths: Vec<String>) {
+    send(&handle, paths.into_iter().map(PathBuf::from).collect());
+}
+
+/// AirDrop always on: while it's set up and the setting is on, keep this
+/// computer visible to iPhones and Macs nearby (checked every minute: after
+/// a restart, after Linux under WSL stopped, after the adapter came back).
+pub fn keep_on(handle: AppHandle) {
+    std::thread::spawn(move || {
+        let mut was = false;
+        let mut failed = 0u32;
+        loop {
+            let want = handle.state::<App>().config.lock().airdrop_always && !airdrop::costs_wifi();
+            if airdrop::available() {
+                if want {
+                    let on = airdrop::status().map(|s| s.receiving).unwrap_or(false);
+                    if !on {
+                        match airdrop::receive_always() {
+                            Ok(()) => {
+                                failed = 0;
+                                if !was {
+                                    log::info!("AirDrop: visible to iPhones and Macs nearby");
+                                }
+                            }
+                            Err(e) => {
+                                failed += 1;
+                                if failed == 1 || failed % 30 == 0 {
+                                    log::info!("AirDrop: couldn't switch on: {e}");
+                                }
+                            }
+                        }
+                    }
+                    was = true;
+                } else if was {
+                    let _ = airdrop::stop_receiving();
+                    was = false;
+                }
+            }
+            // Sooner after a change of the setting.
+            for _ in 0..60 {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if handle.state::<App>().config.lock().airdrop_always != want && !airdrop::costs_wifi() {
+                    break;
+                }
+            }
+        }
+    });
 }

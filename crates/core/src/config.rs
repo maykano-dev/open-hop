@@ -98,6 +98,9 @@ pub struct Config {
     /// Play the sound of the computer in use here (headphones on this one).
     #[serde(default)]
     pub audio_here: bool,
+    /// AirDrop: always visible to iPhones and Macs nearby (once set up).
+    #[serde(default = "yes")]
+    pub airdrop_always: bool,
     /// A folder kept the same on every computer.
     #[serde(default = "yes")]
     pub shared_folder_on: bool,
@@ -173,6 +176,7 @@ impl Default for Config {
             phone_app_url: None,
             mirror_notifications: true,
             audio_here: false,
+            airdrop_always: true,
             shared_folder_on: true,
             shared_folder: None,
         }

@@ -200,6 +200,51 @@ pub fn receive(minutes: u32) -> Result<(), String> {
     run(&["on", &minutes.to_string()], Duration::from_secs(30)).map(|_| ())
 }
 
+/// Linux: does being visible take this computer off Wi‑Fi? omdrop-owl runs
+/// some cards in "exclusive" mode (Intel, some Realtek, a lone MT7612U):
+/// Wi‑Fi is off while visible, so it can't stay visible all the time. (On
+/// Windows the adapter is a second one, just for AirDrop.)
+pub fn costs_wifi() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let Ok(dir) = std::fs::read_dir("/sys/class/net") else { return false };
+    let mut profiles = String::new();
+    for p in ["/etc/omdrop/owl-profiles", "/usr/lib/omdrop/owl-profiles"] {
+        profiles.push_str(&std::fs::read_to_string(p).unwrap_or_default());
+        profiles.push('\n');
+    }
+    if profiles.trim().is_empty() {
+        return false; // omdrop-awdl (Broadcom): Wi‑Fi stays on
+    }
+    for e in dir.flatten() {
+        let path = e.path();
+        if !path.join("wireless").exists() {
+            continue;
+        }
+        let driver =
+            std::fs::read_link(path.join("device/driver")).ok().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+        return profile_mode(&profiles, &driver) != "shared";
+    }
+    false
+}
+
+/// The mode omdrop-owl's profiles give a driver (its "*" line otherwise).
+pub fn profile_mode<'a>(profiles: &'a str, driver: &str) -> &'a str {
+    let rows: Vec<Vec<&str>> =
+        profiles.lines().filter(|l| !l.trim_start().starts_with('#')).map(|l| l.split_whitespace().collect::<Vec<_>>()).filter(|r| r.len() >= 3).collect();
+    rows.iter().find(|r| r[0] == driver).or_else(|| rows.iter().find(|r| r[0] == "*")).map(|r| r[2]).unwrap_or("shared")
+}
+
+/// Visible to iPhones and Macs nearby from now on (until switched off).
+pub fn receive_always() -> Result<(), String> {
+    if cfg!(windows) {
+        // Linux keeps running (and the adapter in it) as long as OpenHop does.
+        wsl::stay_up(Duration::from_secs(60 * 60 * 24 * 365));
+    }
+    run(&["on", "forever"], Duration::from_secs(40)).map(|_| ())
+}
+
 pub fn stop_receiving() -> Result<(), String> {
     run(&["off"], Duration::from_secs(20)).map(|_| ())
 }
@@ -349,6 +394,10 @@ mod tests {
         assert!(s.receiving);
         assert_eq!(s.remaining, Some(540));
         assert!(parse_peers("not json").is_empty());
+        let prof = "# c\nmt7925e tested shared station yes yes x\niwlwifi tested exclusive station no no y\n* untested shared station yes no z\n";
+        assert_eq!(profile_mode(prof, "iwlwifi"), "exclusive");
+        assert_eq!(profile_mode(prof, "mt7925e"), "shared");
+        assert_eq!(profile_mode(prof, "ath9k"), "shared");
         assert_eq!(wsl::linux_path(Path::new(r"C:\Users\Ada\Pictures\a b.png")).as_deref(), Some("/mnt/c/Users/Ada/Pictures/a b.png"));
         assert_eq!(wsl::linux_path(Path::new(r"\\server\share\x")), None);
         assert!(wsl::SETUP_PS1.contains("usbipd") && wsl::SETUP_SH.contains("MT76x2U"));

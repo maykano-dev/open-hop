@@ -21,6 +21,7 @@ window.addEventListener("error", (e) => { if (T) T.core.invoke("viewer_log", { m
 const island = $("island");
 
 const ICON = {
+  airdrop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M5.6 17.2a8.5 8.5 0 1 1 12.8 0"/><path d="M8.4 14.6a4.6 4.6 0 1 1 7.2 0"/><path d="M12 13v8.5"/><path d="M9.6 19.3 12 21.6l2.4-2.3"/></svg>',
   moon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.2 14.6A8.6 8.6 0 0 1 9.4 3.8a8.6 8.6 0 1 0 10.8 10.8z"/></svg>',
   find: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="10" rx="2.6" fill="currentColor" stroke="none"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>',
@@ -1184,11 +1185,13 @@ function landDrop(to) {
   return new Promise((r) => setTimeout(r, reduceMotion() ? 0 : 420));
 }
 function reduceMotion() { return matchMedia("(prefers-reduced-motion: reduce)").matches; }
+let airdropReady = false;
 function dropTargets() {
   const names = ((tools && tools.computers) || []);
   const v = names.map((n) => ({ to: n, label: n, icon: ICON.laptop }));
   if (names.length > 1) v.push({ to: "*", label: "All computers", icon: ICON.all });
   v.push({ to: "phone:", label: "Phone", icon: ICON.phone });
+  if (airdropReady) v.push({ to: "airdrop:", label: "AirDrop", icon: ICON.airdrop });
   v.push({ to: "", label: "Shelf", icon: ICON.tray });
   return v;
 }
@@ -1230,6 +1233,7 @@ async function onDrag(e) {
     dropping = { paths: p.paths || [], hot: null };
     $("dropTitle").textContent = dropping.paths.length ? `Send ${itemsLabel(dropping.paths)}` : "Send";
     await refreshTools();
+    try { airdropReady = !!(await invoke("airdrop_ready")); } catch (_) { airdropReady = false; }
     clearTimeout(leaveTimer);
     clearTimeout(actTimer);
     setTab("drop");
@@ -1245,7 +1249,10 @@ async function onDrag(e) {
     await landDrop(to);
     dropping = null;
     if (paths.length) {
-      if (to === "phone:") {
+      if (to === "airdrop:") {
+        invoke("airdrop_send", { paths }).catch(() => {});
+        liveFlash = { kind: "sending", label: itemsLabel(paths), to: "by AirDrop", until: Date.now() + 3200 };
+      } else if (to === "phone:") {
         let n = 0;
         try { n = await invoke("phone_send", { paths }); } catch (_) {}
         if (!phoneSnap || !phoneSnap.connected) {
