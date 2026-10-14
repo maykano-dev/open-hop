@@ -306,6 +306,7 @@ fn watch(handle: AppHandle) {
         let mut checked = std::time::Instant::now();
         let mut sure = std::time::Instant::now() - std::time::Duration::from_secs(60);
         let mut can = true;
+        let mut said = std::time::Instant::now();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(30));
             // Wayland: only with OpenHop's GNOME helper (it may start later).
@@ -384,8 +385,11 @@ fn watch(handle: AppHandle) {
                 let since = *dwell.get_or_insert_with(std::time::Instant::now);
                 since.elapsed() > std::time::Duration::from_millis(if lip { 220 } else { 90 })
             };
-            if want != hover {
+            if want != hover || (!hover && said.elapsed() > std::time::Duration::from_secs(1)) {
+                // "Not on it" again every second: a missed message can't
+                // leave the island stuck open.
                 hover = want;
+                said = std::time::Instant::now();
                 let _ = tauri::Emitter::emit_to(&win, "island", "hover", hover);
             }
             // The resting lip never takes a click (a browser tab may be
