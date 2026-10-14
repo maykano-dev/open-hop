@@ -981,6 +981,7 @@ struct Server {
     held_buttons: HashSet<MouseButton>,
     drag: Option<Drag>,
     last_wake: HashMap<String, Instant>,
+    awake_said: Instant,
     /// Window the keyboard types into directly (see update_key_pass).
     key_pass: Option<u64>,
     /// Whose keyboard and mouse are in use: None = this computer's own,
@@ -1080,6 +1081,7 @@ impl Server {
             held_buttons: HashSet::new(),
             drag: None,
             last_wake: HashMap::new(),
+            awake_said: Instant::now() - Duration::from_secs(60),
             key_pass: None,
             driver: None,
             local_inj: platform::create_injector(ctx_screen, &linux_backend).map_err(|e| log::warn!("other computers can't use this screen: {e:#}")).ok(),
@@ -1461,6 +1463,13 @@ impl Server {
     // ---------- input
 
     fn on_input(&mut self, ev: InputEvent) {
+        // This keyboard and mouse at work on another screen (or another
+        // computer's on this one): this computer must not sleep under them,
+        // or everyone it connects drops off.
+        if (self.active.is_some() || self.driver.is_some()) && self.awake_said.elapsed() > Duration::from_secs(5) {
+            self.awake_said = Instant::now();
+            self.ctx.hub.keep_awake("its keyboard and mouse are in use", Duration::from_secs(150));
+        }
         if let (Some(c), InputEvent::LocalMove { x, y }) = (self.driver, &ev) {
             // Our own moves (another computer using this screen) aren't the user's.
             if self.injected.ours((*x, *y)) {
@@ -1543,7 +1552,8 @@ impl Server {
                         if !blocked {
                             self.push = 0;
                         }
-                        let neighbor = if blocked { None } else { self.ctx.cfg.layout.neighbor(&pname, side).map(str::to_string).filter(|n| self.can_enter(None, n)) };
+                        let neighbor =
+                            if blocked { None } else { self.ctx.cfg.layout.neighbor(&pname, side).map(str::to_string).filter(|n| self.can_enter(None, n)) };
                         match neighbor.as_deref() {
                             Some(SERVER) => {
                                 self.start_remote_drag_if_any(id, &pname, SERVER);
@@ -1743,7 +1753,9 @@ impl Server {
             return;
         }
         match platform::cursor_pos() {
-            Some((x, y)) if touching_edge_mon(&self.capture.screen(), &platform::monitors(), x, y) == Some(side) => self.on_input(InputEvent::LocalMove { x, y }),
+            Some((x, y)) if touching_edge_mon(&self.capture.screen(), &platform::monitors(), x, y) == Some(side) => {
+                self.on_input(InputEvent::LocalMove { x, y })
+            }
             _ => self.edge_wait = None,
         }
     }
@@ -2540,6 +2552,8 @@ struct Client {
     pos: (i32, i32),
     /// Last keyboard or mouse input from the server.
     last_input: Instant,
+    /// When this computer last said it's in use from elsewhere.
+    awake_said: Instant,
     /// This computer's own keyboard and mouse (to drive the others), where
     /// they can be captured (not on Wayland).
     capture: Option<Arc<dyn Capture>>,
@@ -2612,6 +2626,7 @@ impl Client {
             here: false,
             pos: (0, 0),
             last_input: Instant::now(),
+            awake_said: Instant::now() - Duration::from_secs(60),
             capture: None,
             cap_rx: crossbeam_channel::never(),
             driving: false,
@@ -2957,6 +2972,12 @@ impl Client {
                 recv(awake) -> _ => {
                     if self.here && self.last_input.elapsed() < Duration::from_secs(30) {
                         link.send(Msg::Ping);
+                        // In use from another computer: stay awake (and keep
+                        // the connection) as if its keyboard were this one's.
+                        if self.awake_said.elapsed() > Duration::from_secs(5) {
+                            self.awake_said = Instant::now();
+                            self.ctx.hub.keep_awake("in use from another computer", Duration::from_secs(150));
+                        }
                     }
                     // Resting against the edge long enough: hop.
                     if let Some((side, t)) = self.edge_wait {
@@ -3007,6 +3028,8 @@ impl Client {
         let r = match m {
             Msg::Enter { x, y } => {
                 self.here = true;
+                // The screen may have gone dark: light it up for the user.
+                crate::extras::awake::nudge();
                 self.ctx.hub.set_pointer_here(true);
                 if let Some(cap) = &self.capture {
                     cap.idle_cursor(false);

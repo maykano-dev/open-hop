@@ -48,6 +48,7 @@ const ICON = {
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M8 7l4-4 4 4"/><path d="M6 11H5v10h14V11h-1"/></svg>',
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/></svg>',
+  flip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><path d="M9.5 13.5a2.5 2.5 0 0 0 4.6 1.3M14.5 12.5a2.5 2.5 0 0 0-4.6-1.3"/><path d="M14.6 15.6v-.9h-.9M9.4 10.4v.9h.9"/></svg>',
   image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m4 18 5-5 4 4 3-3 5 5"/></svg>',
 };
 function fillIcons(root = document) {
@@ -206,6 +207,16 @@ class Relays {
   req(ws, topic) {
     try { ws.send(JSON.stringify(["REQ", "oh-" + topic.slice(0, 8), { kinds: [KIND], "#t": [topic], since: Math.floor(Date.now() / 1000) - 30 }])); } catch (_) {}
   }
+  /** Wait until at least one meeting point is connected (false: none in time). */
+  ready(ms) {
+    if (this.up > 0) return Promise.resolve(true);
+    return new Promise((res) => {
+      const start = Date.now();
+      const iv = setInterval(() => {
+        if (this.up > 0 || Date.now() - start > ms) { clearInterval(iv); res(this.up > 0); }
+      }, 100);
+    });
+  }
   /** Listen to a computer's topic. */
   async watch(pc, onMsg) {
     const keys = await keysFor(pc);
@@ -279,16 +290,30 @@ class DirectLink extends Link {
     dc.bufferedAmountLowThreshold = 1 << 20;
     this.dc = dc;
     await rtc.setLocalDescription(await rtc.createOffer());
+    // The addresses to try: all of them, or enough (this network's own
+    // plus the public one STUN reports) without waiting on slow ones.
     await new Promise((res) => {
       if (rtc.iceGatheringState === "complete") return res();
       const t = setTimeout(res, 2500);
-      rtc.addEventListener("icegatheringstatechange", () => { if (rtc.iceGatheringState === "complete") { clearTimeout(t); res(); } });
+      let soon = null;
+      const done = () => { clearTimeout(t); clearTimeout(soon); res(); };
+      rtc.addEventListener("icegatheringstatechange", () => { if (rtc.iceGatheringState === "complete") done(); });
+      rtc.addEventListener("icecandidate", (e) => {
+        if (e.candidate && / typ srflx /.test(e.candidate.candidate) && !soon) soon = setTimeout(done, 300);
+      });
     });
     const nonce = rand(16), sid = hex(rand(8));
+    // A meeting point has to be up first (just opened: they take a moment),
+    // or the offer goes nowhere.
+    if (!(await this.relays.ready(8000))) throw Object.assign(new Error("offline"), { why: "offline" });
+    const offer = { t: "offer", to: this.pc.id, from: me(), sid, sdp: rtc.localDescription.sdp, n: b64url(nonce), device: DEVICE };
     const answer = await new Promise((res, rej) => {
-      const t = setTimeout(() => rej(new Error("no answer")), 12000);
-      this.pc.onSignal = (m) => { if (m.t === "answer" && m.sid === sid) { clearTimeout(t); res(m); } };
-      this.relays.send(this.pc, { t: "offer", to: this.pc.id, from: me(), sid, sdp: rtc.localDescription.sdp, n: b64url(nonce), device: DEVICE });
+      // Said again now and then (a meeting point may drop it); the
+      // computer answers the same offer only once.
+      const again = setInterval(() => this.relays.send(this.pc, { ...offer }).catch(() => {}), 2500);
+      const t = setTimeout(() => { clearInterval(again); rej(Object.assign(new Error("no answer"), { why: "silent" })); }, 14000);
+      this.pc.onSignal = (m) => { if (m.t === "answer" && m.sid === sid) { clearTimeout(t); clearInterval(again); res(m); } };
+      this.relays.send(this.pc, { ...offer }).catch(() => {});
     });
     await rtc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
     this.session = await Session.make(keys.secret, nonce, unb64url(answer.n));
@@ -448,6 +473,20 @@ function addPc(p) {
   savePcs(list);
   store.set("active", p.id);
 }
+/** The pairing as it appears in the code's link. */
+function pairText(p) {
+  const b = (t) => b64url(enc.encode(t || ""));
+  return `p=${p.id}.${p.secret}.${b(p.name)}.${b(p.lan)}` + (p.relays && p.relays.length ? `&r=${b(p.relays.join(" "))}` : "");
+}
+/** Keep the pairing in the page's address: an iPhone's Home Screen app has
+ * storage of its own (not Safari's), and starts from this address, so it
+ * comes up already paired. The part after # never leaves the phone. */
+function keepInAddress() {
+  const p = activePc();
+  if (LAN || !p || !p.secret) return;
+  const want = "#" + pairText(p);
+  if (location.hash !== want) history.replaceState(null, "", location.pathname + want);
+}
 
 // ------------------------------------------------------------------ the app
 
@@ -468,6 +507,7 @@ async function start() {
   const p = parsePair(location.hash);
   if (p && !LAN) addPc(p);
   if (!LAN && pcs().length === 0) { showWelcome(); return; }
+  keepInAddress();
   $("welcome").hidden = true;
   $("main").hidden = false;
   $("tabs").hidden = false;
@@ -517,12 +557,14 @@ async function connect() {
     if (app.link) app.link.close();
     app.link = link;
     app.tries = 0;
+    app.why = "";
     link.onPush = onPush;
     link.onClose = () => { if (app.link === link) { app.link = null; renderNotch(); setTimeout(connect, 1500); } };
     buzz(12);
     await refresh();
   } catch (e) {
     app.tries++;
+    app.why = e && e.why ? e.why : "failed";
     console.warn("connect:", e);
     const wait = Math.min(30000, 2000 * app.tries);
     setTimeout(() => { if (!app.link && !document.hidden) connect(); }, wait);
@@ -578,7 +620,11 @@ function renderNotch() {
     text.textContent = `Connecting to ${name}…`;
   } else {
     dot.className = "n-dot";
-    text.textContent = pc ? `${name} isn't reachable` : "OpenHop";
+    // Say what's wrong, plainly: no internet, or the computer isn't answering.
+    text.textContent = !pc ? "OpenHop"
+      : !navigator.onLine || app.why === "offline" ? "No internet on this phone"
+      : app.why === "silent" ? `${name} isn't answering. Is OpenHop open on it?`
+      : `${name} isn't reachable`;
   }
 }
 /** The notch grows into a live activity: a ring and two lines. */
@@ -944,10 +990,10 @@ function renderPcs() {
     r.append(ic, m);
     if (!LAN) {
       const go = el("button", "r-tail", live ? "" : "Connect");
-      if (!live) go.addEventListener("click", () => { store.set("active", p.id); if (app.link) app.link.close(); app.link = null; app.state = null; targetsKey = ""; closeSheets(); connect(); });
+      if (!live) go.addEventListener("click", () => { store.set("active", p.id); keepInAddress(); if (app.link) app.link.close(); app.link = null; app.state = null; targetsKey = ""; closeSheets(); connect(); });
       const forget = el("button", "r-tail", "Forget");
       forget.style.color = "var(--bad)";
-      forget.addEventListener("click", () => { savePcs(pcs().filter((x) => x.id !== p.id)); if (app.pc && app.pc.id === p.id && app.link) app.link.close(); renderPcs(); if (!pcs().length) location.reload(); });
+      forget.addEventListener("click", () => { savePcs(pcs().filter((x) => x.id !== p.id)); history.replaceState(null, "", location.pathname); keepInAddress(); if (app.pc && app.pc.id === p.id && app.link) app.link.close(); renderPcs(); if (!pcs().length) location.reload(); });
       r.append(go, forget);
     }
     box.append(r);
@@ -1094,6 +1140,63 @@ $("padR").addEventListener("click", () => { app.link && app.link.fire({ op: "cli
   pad.addEventListener("pointercancel", up);
 })();
 
+// ------------------------------------------------------------------ the phone as a camera
+
+const cam = { stream: null, timer: 0, facing: "user", lock: null, busy: false };
+async function camStart() {
+  if (!app.link || app.link.kind !== "direct") { toast("Connect to your computer first (not on the same-Wi‑Fi page)"); return; }
+  const r = await app.link.request({ op: "camera_start" }).catch(() => null);
+  if (!r || !r.ok) { toast((r && r.error) || "The computer can't use the camera right now"); return; }
+  try { await camOpen(); } catch (_) { toast("Allow the camera to use it"); app.link.fire({ op: "camera_stop" }); return; }
+  $("camCard").classList.add("on");
+  $("camBtn").textContent = "Stop";
+  $("camTitle").textContent = `Camera for ${app.pc.name}`;
+  $("camSub").textContent = "Pick “OpenHop Camera” in the call app on the computer.";
+  $("camFlip").hidden = false;
+  try { cam.lock = navigator.wakeLock ? await navigator.wakeLock.request("screen") : null; } catch (_) {}
+  const c = document.createElement("canvas"), g = c.getContext("2d");
+  const v = $("camPreview");
+  cam.timer = setInterval(() => {
+    const link = app.link;
+    if (!link || link.kind !== "direct" || cam.busy || !v.videoWidth || link.dc.bufferedAmount > (1 << 20)) return;
+    const w = Math.min(1280, v.videoWidth), h = Math.round((v.videoHeight / v.videoWidth) * w);
+    c.width = w; c.height = h;
+    // The front camera shows mirrored here, but goes out the right way round.
+    g.drawImage(v, 0, 0, w, h);
+    cam.busy = true;
+    c.toBlob((b) => {
+      if (!b) { cam.busy = false; return; }
+      b.arrayBuffer().then((buf) => link.frame(3, new Uint8Array(buf))).catch(() => {}).finally(() => { cam.busy = false; });
+    }, "image/jpeg", 0.72);
+  }, 1000 / 24);
+}
+async function camOpen() {
+  if (cam.stream) cam.stream.getTracks().forEach((t) => t.stop());
+  cam.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: cam.facing, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+  const v = $("camPreview");
+  v.srcObject = cam.stream;
+  v.hidden = false;
+  v.style.transform = cam.facing === "user" ? "scaleX(-1)" : "";
+  await v.play().catch(() => {});
+}
+function camStop(tell = true) {
+  clearInterval(cam.timer);
+  if (cam.stream) cam.stream.getTracks().forEach((t) => t.stop());
+  cam.stream = null;
+  if (cam.lock) cam.lock.release().catch(() => {});
+  cam.lock = null;
+  $("camPreview").hidden = true;
+  $("camCard").classList.remove("on");
+  $("camBtn").textContent = "Start";
+  $("camTitle").textContent = "Use as a camera";
+  $("camSub").textContent = "Your phone becomes the computer's webcam, for video calls.";
+  $("camFlip").hidden = true;
+  if (tell && app.link) app.link.fire({ op: "camera_stop" });
+}
+$("camBtn").addEventListener("click", () => (cam.stream ? camStop() : camStart()));
+$("camFlip").addEventListener("click", () => { cam.facing = cam.facing === "user" ? "environment" : "user"; camOpen().catch(() => {}); buzz(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden && cam.stream) camStop(); });
+
 // ------------------------------------------------------------------ pairing (welcome, scanner)
 
 function showWelcome() {
@@ -1110,7 +1213,8 @@ $("wPaste").addEventListener("click", async () => {
   const p = parsePair(t);
   if (!p) { toast("That isn't an OpenHop pairing link"); return; }
   addPc(p);
-  location.replace(location.pathname);
+  location.replace(location.pathname + "#" + pairText(p));
+  location.reload();
 });
 
 let camStream = null, scanTimer = null;
@@ -1132,7 +1236,7 @@ async function scan() {
       g.drawImage(v, 0, 0, w, h);
       const code = window.jsQR(g.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: "dontInvert" });
       const p = code && parsePair(code.data);
-      if (p) { buzz(30); stopScan(); addPc(p); location.replace(location.pathname); return; }
+      if (p) { buzz(30); stopScan(); addPc(p); location.replace(location.pathname + "#" + pairText(p)); location.reload(); return; }
     }
     scanTimer = setTimeout(tick, 120);
   };

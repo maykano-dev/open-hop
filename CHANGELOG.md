@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.13.0
+
+### New
+- **AirDrop on Linux.** With [omdrop](https://github.com/brentkearney/omdrop-plugin) and a Wi‑Fi card that can talk to iPhones ([omdrop-owl](https://github.com/t4t5/omdrop-owl) lists them), **Send with OpenHop › AirDrop** sends files to an iPhone, iPad or Mac nearby (the island asks which one when there are several), and **Settings › Sharing › AirDrop › Let iPhones Send Here** makes the computer visible to them for 10 minutes.
+- **Your phone as the computer's camera** (Linux): start it in the phone app's Remote tab and pick “OpenHop Camera” in any video call app. The first time, the computer asks for your password once to set the camera up.
+- **Sound follows you**: switch on **Sound Follows You** on the computer with your headphones or speakers, and the sound of whichever computer you're using from it plays there.
+- Code signing switches on in the release builds as soon as signing certificates are added to the project.
+
+### Fixed
+- **Computers you're using from another one no longer fall asleep or drop off.** A computer counts as in use while your keyboard and mouse are on it from elsewhere (it used to blank its screen, then sleep and disconnect), and the screen lights up when you move onto it. The computer whose keyboard you're using stays awake too, so the others stay connected.
+- **The island stuck open after the pointer left it** on some Linux computers (Wayland in particular): it now goes by the window system's own enter and leave signals, not only the page's.
+- **Phone pairing is much less fiddly:**
+  - The phone waits for a meeting point before it calls the computer, and calls again if no answer comes, so the first connection no longer fails and waits a long retry.
+  - Added to an iPhone's Home Screen, the app starts already paired (the Home Screen app has its own storage, so it used to ask for the code again).
+  - It says what's wrong: no internet on the phone, or the computer isn't answering.
+  - App updates arrive on the next launch, not the one after.
+- Update every computer to v0.13: older versions can't connect to it.
+
 ## v0.12.0
 
 ### New

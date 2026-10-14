@@ -4,7 +4,7 @@
 use crate::layout::{Layout, Side};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 pub const DEFAULT_PORT: u16 = 24850;
 pub const DISCOVERY_PORT: u16 = 24851;
 
@@ -450,6 +450,14 @@ pub enum Ext {
     Folder {
         files: Vec<FolderEntry>,
         gone: Vec<(String, u64)>,
+    },
+    /// The sender plays other computers' sound (or stopped).
+    AudioSink {
+        on: bool,
+    },
+    /// 20 ms of the sender's sound (s16le stereo 48 kHz).
+    Audio {
+        pcm: Vec<u8>,
     },
     /// A notification that popped up on the sender (for the computer in use).
     Mirror {

@@ -263,7 +263,7 @@ let pointerIn = null;
 if (T) T.event.listen("pointer_in", (e) => {
   pointerIn = !!e.payload;
   if (fit.watch) return;
-  if (pointerIn) lastInside = Date.now();
+  if (pointerIn) { lastInside = Date.now(); if (!hovering) onHover(true); }
   else if (hovering || mode === "open") { hovering = true; onHover(false); }
 });
 island.addEventListener("mouseenter", () => { if (!fit.watch) onHover(true); });

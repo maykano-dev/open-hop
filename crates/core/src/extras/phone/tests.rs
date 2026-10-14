@@ -203,7 +203,10 @@ fn direct_connection_end_to_end() {
                 }
             }
             if let Ok((n, from)) = sock.recv_from(&mut buf) {
-                let input = Input::Receive(Instant::now(), Receive { proto: str0m::net::Protocol::Udp, source: from, destination: local, contents: buf[..n].try_into().unwrap() });
+                let input = Input::Receive(
+                    Instant::now(),
+                    Receive { proto: str0m::net::Protocol::Udp, source: from, destination: local, contents: buf[..n].try_into().unwrap() },
+                );
                 rtc.handle_input(input).unwrap();
             }
             rtc.handle_input(Input::Timeout(Instant::now())).unwrap();

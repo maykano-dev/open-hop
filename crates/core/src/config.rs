@@ -95,6 +95,9 @@ pub struct Config {
     /// Notifications from the other computers show on the one you're using.
     #[serde(default = "yes")]
     pub mirror_notifications: bool,
+    /// Play the sound of the computer in use here (headphones on this one).
+    #[serde(default)]
+    pub audio_here: bool,
     /// A folder kept the same on every computer.
     #[serde(default = "yes")]
     pub shared_folder_on: bool,
@@ -169,6 +172,7 @@ impl Default for Config {
             phone_relays: vec![],
             phone_app_url: None,
             mirror_notifications: true,
+            audio_here: false,
             shared_folder_on: true,
             shared_folder: None,
         }

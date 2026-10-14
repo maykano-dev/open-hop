@@ -746,6 +746,36 @@ function mockInvoke() {
   };
 }
 
+// AirDrop (Linux, through omdrop).
+const airdropRow = document.getElementById("airdropRow");
+async function renderAirDrop() {
+  if (!airdropRow) return;
+  let s;
+  try { s = await invoke("airdrop_state"); } catch (_) { return; }
+  if (!s || !s.possible) { airdropRow.hidden = true; return; }
+  airdropRow.hidden = false;
+  const sub = document.getElementById("airdropSub"), btn = document.getElementById("airdropBtn");
+  if (!s.installed) {
+    sub.textContent = "Swap files with iPhones and Macs. Needs omdrop and a Wi‑Fi card that supports it.";
+    btn.textContent = "Learn How";
+    btn.onclick = () => invoke("note_action", { kind: "open_url", target: s.url }).catch(() => {});
+    return;
+  }
+  const st = s.status || {};
+  const left = st.remaining ? Math.ceil(st.remaining / 60) : 0;
+  if (st.receiving) {
+    sub.textContent = left ? `iPhones and Macs nearby can send here for ${left} more min.` : "iPhones and Macs nearby can send here.";
+    btn.textContent = "Stop";
+    btn.onclick = () => invoke("airdrop_receive", { minutes: 0 }).finally(renderAirDrop);
+  } else {
+    sub.textContent = st.reason ? st.reason : "Send to iPhones and Macs from the Send with OpenHop menu.";
+    btn.textContent = "Let iPhones Send Here";
+    btn.onclick = () => { btn.textContent = "Turning on…"; invoke("airdrop_receive", { minutes: 10 }).catch((e) => { sub.textContent = String(e); }).finally(() => setTimeout(renderAirDrop, 400)); };
+  }
+}
+renderAirDrop();
+setInterval(() => { if (!document.hidden) renderAirDrop(); }, 30000);
+
 // The shared folder.
 const openShared = document.getElementById("openShared");
 if (openShared) openShared.addEventListener("click", () => invoke("open_shared_folder").catch(() => {}));

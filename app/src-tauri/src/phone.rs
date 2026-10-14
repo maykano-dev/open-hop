@@ -94,6 +94,24 @@ impl PhoneHost for Host {
                 },
             ),
             PhoneEvent::Disconnected { .. } => poke(handle),
+            PhoneEvent::Camera { device, on } => push(
+                handle,
+                Activity {
+                    title: if on { format!("Your {device} is the camera") } else { format!("{device} camera off") },
+                    body: if on { "Pick “OpenHop Camera” in your video call app.".into() } else { String::new() },
+                    icon: "phone".into(),
+                    short: !on,
+                },
+            ),
+            PhoneEvent::CameraSetup { device } => {
+                handle.state::<App>().toasts.lock().push_back(Note {
+                    id: NOTE_ID.fetch_add(1, Ordering::Relaxed),
+                    title: format!("Use your {device} as a camera?"),
+                    body: "This computer needs a one-time set-up for that (it asks for your password).".into(),
+                    actions: vec![NoteAction { label: "Set Up".into(), kind: "camera_setup".into(), target: String::new() }],
+                });
+                poke(handle);
+            }
             PhoneEvent::Battery { device, level, charging } => {
                 // Low battery, like the computers': at 20%, 10% and 5%.
                 let mut warned = self.warned.lock();
@@ -189,7 +207,7 @@ pub fn phone_renew(handle: AppHandle) -> PhoneState {
 }
 
 /// A long file name with its start and end (and extension) kept.
-fn short(name: &str) -> String {
+pub fn short(name: &str) -> String {
     let chars: Vec<char> = name.chars().collect();
     if chars.len() <= 28 {
         return name.to_string();
@@ -199,4 +217,16 @@ fn short(name: &str) -> String {
     let head: String = chars[..keep * 7 / 10].iter().collect();
     let tail: String = chars[chars.len() - ext_len - (keep - keep * 7 / 10)..].iter().collect();
     format!("{head}…{tail}")
+}
+
+/// Set the phone camera up (once), in the background, and say how it went.
+pub fn camera_setup(handle: &AppHandle) {
+    let h = handle.clone();
+    std::thread::spawn(move || {
+        let (title, body) = match openhop_core::extras::phone::camera::setup() {
+            Ok(()) => ("Phone camera ready".to_string(), "Tap Use as Camera on the phone again.".to_string()),
+            Err(e) => ("Couldn't set up the phone camera".to_string(), e),
+        };
+        push(&h, Activity { title, body, icon: "phone".into(), short: false });
+    });
 }

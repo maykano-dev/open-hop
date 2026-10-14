@@ -40,6 +40,38 @@ impl KeepAwake {
     }
 }
 
+/// Count as the user's activity right now: turns a dark screen back on and
+/// restarts the idle clock (input from another computer doesn't always).
+/// Runs in the background, never blocks.
+pub fn nudge() {
+    std::thread::spawn(|| {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(c) = zbus::blocking::Connection::session() {
+                for (dest, path, iface) in [
+                    ("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver"),
+                    ("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver"),
+                ] {
+                    let _ = c.call_method(Some(dest), path, Some(iface), "SimulateUserActivity", &());
+                }
+            }
+            if std::env::var_os("DISPLAY").is_some() {
+                let _ = std::process::Command::new("xset").args(["dpms", "force", "on"]).stderr(std::process::Stdio::null()).status();
+                let _ = std::process::Command::new("xset").args(["s", "reset"]).stderr(std::process::Stdio::null()).status();
+            }
+        }
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::System::Power::{SetThreadExecutionState, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED};
+            SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("/usr/bin/caffeinate").args(["-u", "-t", "2"]).status();
+        }
+    });
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use zbus::blocking::Connection;
@@ -55,14 +87,26 @@ mod imp {
     impl Hold {
         pub fn take(why: &str) -> Option<Hold> {
             let fd = Connection::system().ok().and_then(|c| {
-                c.call_method(Some("org.freedesktop.login1"), "/org/freedesktop/login1", Some("org.freedesktop.login1.Manager"), "Inhibit", &("sleep:idle", "OpenHop", why, "block"))
-                    .ok()
-                    .and_then(|r| r.body().deserialize::<OwnedFd>().ok())
+                c.call_method(
+                    Some("org.freedesktop.login1"),
+                    "/org/freedesktop/login1",
+                    Some("org.freedesktop.login1.Manager"),
+                    "Inhibit",
+                    &("sleep:idle", "OpenHop", why, "block"),
+                )
+                .ok()
+                .and_then(|r| r.body().deserialize::<OwnedFd>().ok())
             });
             // GNOME (and others implementing it) blank the screen on their own clock.
             let gnome = Connection::session().ok().and_then(|c| {
                 let r = c
-                    .call_method(Some("org.gnome.SessionManager"), "/org/gnome/SessionManager", Some("org.gnome.SessionManager"), "Inhibit", &("openhop", 0u32, why, 4u32 | 8u32))
+                    .call_method(
+                        Some("org.gnome.SessionManager"),
+                        "/org/gnome/SessionManager",
+                        Some("org.gnome.SessionManager"),
+                        "Inhibit",
+                        &("openhop", 0u32, why, 4u32 | 8u32),
+                    )
                     .ok()?;
                 let cookie: u32 = r.body().deserialize().ok()?;
                 Some((c, cookie))
@@ -71,7 +115,14 @@ mod imp {
             // the connection stays open).
             let portal = if gnome.is_none() {
                 Connection::session().ok().filter(|c| {
-                    c.call_method(Some("org.freedesktop.ScreenSaver"), "/org/freedesktop/ScreenSaver", Some("org.freedesktop.ScreenSaver"), "Inhibit", &("OpenHop", why)).is_ok()
+                    c.call_method(
+                        Some("org.freedesktop.ScreenSaver"),
+                        "/org/freedesktop/ScreenSaver",
+                        Some("org.freedesktop.ScreenSaver"),
+                        "Inhibit",
+                        &("OpenHop", why),
+                    )
+                    .is_ok()
                 })
             } else {
                 None
@@ -86,7 +137,8 @@ mod imp {
     impl Drop for Hold {
         fn drop(&mut self) {
             if let Some((c, cookie)) = &self.gnome {
-                let _ = c.call_method(Some("org.gnome.SessionManager"), "/org/gnome/SessionManager", Some("org.gnome.SessionManager"), "Uninhibit", &(*cookie,));
+                let _ =
+                    c.call_method(Some("org.gnome.SessionManager"), "/org/gnome/SessionManager", Some("org.gnome.SessionManager"), "Uninhibit", &(*cookie,));
             }
             let _ = &self.portal;
         }

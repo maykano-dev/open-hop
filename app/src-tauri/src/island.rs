@@ -431,6 +431,8 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     let _ = win.show();
     #[cfg(target_os = "macos")]
     above_menu_bar(&win);
+    #[cfg(target_os = "linux")]
+    crossings(&win, app.handle().clone());
     let _ = win;
     // Linux: the window's input shape is the island itself, so the page's own
     // pointer events are exact (and work on Wayland too). Elsewhere OpenHop
@@ -464,12 +466,53 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Linux: the window system's own word on the pointer entering and leaving
+/// the island (its input shape is the island). WebKitGTK's page events miss
+/// a leave now and then (a quick flick out of the window, mostly on
+/// Wayland), which left the island stuck open; GTK's crossing events don't.
+#[cfg(target_os = "linux")]
+fn crossings(win: &tauri::WebviewWindow, handle: AppHandle) {
+    use gtk::gdk::{CrossingMode, EventMask, NotifyType};
+    use gtk::prelude::*;
+    fn tell(h: &AppHandle, inside: bool) {
+        if let Some(w) = h.get_webview_window("island") {
+            let _ = tauri::Emitter::emit_to(&w, "island", "pointer_in", inside);
+        }
+    }
+    fn hook<W: IsA<gtk::Widget>>(w: &W, handle: &AppHandle) {
+        w.add_events(EventMask::ENTER_NOTIFY_MASK | EventMask::LEAVE_NOTIFY_MASK);
+        let h = handle.clone();
+        w.connect_enter_notify_event(move |_, e| {
+            if e.mode() == CrossingMode::Normal {
+                tell(&h, true);
+            }
+            gtk::glib::Propagation::Proceed
+        });
+        let h = handle.clone();
+        w.connect_leave_notify_event(move |_, e| {
+            // Into a part of its own window isn't leaving.
+            if e.mode() == CrossingMode::Normal && e.detail() != NotifyType::Inferior {
+                tell(&h, false);
+            }
+            gtk::glib::Propagation::Proceed
+        });
+    }
+    if let Ok(g) = win.gtk_window() {
+        hook(&g, &handle);
+    }
+    let h = handle.clone();
+    let _ = win.with_webview(move |wv| hook(&wv.inner(), &h));
+}
+
 /// Linux: the page sees the pointer come and go itself, but some systems
 /// don't tell it when the pointer leaves (it stayed open). Where OpenHop can
 /// see the pointer reliably (X11, or GNOME's helper on Wayland), it says
 /// whether the pointer is on the island, as a second opinion.
 #[cfg(target_os = "linux")]
 fn backstop(handle: AppHandle) {
+    if std::env::var_os("OPENHOP_NO_BACKSTOP").is_some() {
+        return;
+    }
     std::thread::spawn(move || {
         let mut probe = openhop_core::platform::PointerProbe::new();
         let mut last: Option<bool> = None;
@@ -496,7 +539,13 @@ fn backstop(handle: AppHandle) {
             let inside = (px as f64) >= left - m && (px as f64) <= left + vw + m && (py as f64) >= g.y as f64 - m - 40.0 && (py as f64) <= g.y as f64 + vh + m;
             // Out twice in a row (a quick wobble at the edge isn't leaving).
             out_count = if inside { 0 } else { out_count + 1 };
-            let now = if inside { Some(true) } else if out_count >= 2 { Some(false) } else { last };
+            let now = if inside {
+                Some(true)
+            } else if out_count >= 2 {
+                Some(false)
+            } else {
+                last
+            };
             if now != last {
                 last = now;
                 if let (Some(v), Some(w)) = (now, handle.get_webview_window("island")) {

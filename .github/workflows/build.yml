@@ -84,11 +84,42 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      # Code signing switches on by itself once the certificates are added as
+      # repository secrets (Settings > Secrets and variables > Actions):
+      #   macOS: APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD,
+      #          APPLE_SIGNING_IDENTITY, and for notarising APPLE_ID,
+      #          APPLE_PASSWORD (app-specific password), APPLE_TEAM_ID.
+      #   Windows: WINDOWS_CERTIFICATE (base64 .pfx), WINDOWS_CERTIFICATE_PASSWORD.
+      - name: Signing (when certificates are set up)
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ] && [ -n "$APPLE_CERTIFICATE" ]; then
+            for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              [ -n "${!v}" ] && { echo "$v<<EOF"; echo "${!v}"; echo "EOF"; } >> "$GITHUB_ENV"
+            done
+            echo "Signing the macOS app"
+          fi
+          if [ "$RUNNER_OS" = "Windows" ] && [ -n "$WINDOWS_CERTIFICATE" ]; then
+            echo "$WINDOWS_CERTIFICATE" | base64 -d > "$RUNNER_TEMP/openhop.pfx"
+            cmd="signtool sign /fd sha256 /f $(cygpath -w "$RUNNER_TEMP/openhop.pfx") /p $WINDOWS_CERTIFICATE_PASSWORD /tr http://timestamp.digicert.com /td sha256 %1"
+            echo "SIGN_CONFIG={\"bundle\":{\"windows\":{\"signCommand\":\"$(echo "$cmd" | sed 's/\\/\\\\/g')\"}}}" >> "$GITHUB_ENV"
+            echo "Signing the Windows installers"
+          fi
       - name: Build installers
         working-directory: app
+        shell: bash
         run: |
           npm ci
-          npx tauri build ${{ matrix.args }}
+          if [ -n "$SIGN_CONFIG" ]; then npx tauri build ${{ matrix.args }} --config "$SIGN_CONFIG"; else npx tauri build ${{ matrix.args }}; fi
       - uses: actions/upload-artifact@v4
         with:
           name: OpenHop-${{ matrix.name }}

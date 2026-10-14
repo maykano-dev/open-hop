@@ -92,6 +92,14 @@
           <button id="pNext" aria-label="Next" data-icon="next"></button>
         </div>
       </div>
+      <div class="camcard" id="camCard">
+        <video id="camPreview" playsinline muted hidden></video>
+        <div class="cam-row">
+          <div class="cam-meta"><b id="camTitle">Use as a camera</b><span id="camSub">Your phone becomes the computer's webcam, for video calls.</span></div>
+          <button class="cam-flip" id="camFlip" hidden aria-label="Switch camera" data-icon="flip"></button>
+          <button class="pill" id="camBtn">Start</button>
+        </div>
+      </div>
       <div class="pad-wrap">
         <div class="pad" id="pad" aria-label="Trackpad"><span id="padHint">Trackpad for <b id="padPc"></b><br>Tap to click · two fingers to scroll or right-click</span></div>
         <div class="pad-btns"><button id="padL">Click</button><button id="padR">Right-click</button></div>

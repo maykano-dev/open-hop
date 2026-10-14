@@ -213,3 +213,14 @@ h2 { font-size: 20px; letter-spacing: -.015em; margin: 0; }
 .hop b { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hop span { color: var(--soft); flex: none; }
 .hop .ring { width: 22px; height: 22px; flex: none; }
+
+/* The phone as the computer's camera. */
+.camcard { background: var(--card); border-radius: 22px; box-shadow: var(--shadow); overflow: hidden; margin-bottom: 14px; }
+.camcard video { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #000; display: block; }
+.cam-row { display: flex; align-items: center; gap: 12px; padding: 14px 14px 14px 16px; }
+.cam-meta { flex: 1; min-width: 0; }
+.cam-meta b { display: block; font-weight: 650; }
+.cam-meta span { color: var(--soft); font-size: 13.5px; }
+.cam-flip { width: 36px; height: 36px; border-radius: 50%; background: var(--fill); color: var(--accent); display: grid; place-items: center; }
+.cam-flip svg { width: 20px; height: 20px; }
+.camcard.on .pill { background: var(--bad); }

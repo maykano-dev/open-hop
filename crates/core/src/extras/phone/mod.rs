@@ -14,6 +14,7 @@
 //! computer, all of them or the shelf; clipboard history; the shelf; music;
 //! a trackpad; Focus, Lock All, Sleep All.
 
+pub mod camera;
 pub mod crypto;
 pub mod http;
 pub mod rtc;
@@ -57,15 +58,46 @@ pub trait PhoneHost: Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub enum PhoneEvent {
     /// A file arrived from the phone (and was passed on to `to`, if any).
-    Received { name: String, path: PathBuf, size: u64, device: String, to: String },
+    Received {
+        name: String,
+        path: PathBuf,
+        size: u64,
+        device: String,
+        to: String,
+    },
     /// Text from the phone, now on the clipboard.
-    Text { text: String, device: String },
+    Text {
+        text: String,
+        device: String,
+    },
     /// The phone has a file.
-    Sent { name: String, device: String },
-    Connected { device: String, how: &'static str },
-    Disconnected { device: String },
+    Sent {
+        name: String,
+        device: String,
+    },
+    Connected {
+        device: String,
+        how: &'static str,
+    },
+    Disconnected {
+        device: String,
+    },
+    /// The phone started or stopped being this computer's camera.
+    Camera {
+        device: String,
+        on: bool,
+    },
+    /// The phone wants to be the camera, and this computer needs a one-time
+    /// set-up for that.
+    CameraSetup {
+        device: String,
+    },
     /// The phone's battery (percent, charging).
-    Battery { device: String, level: u8, charging: bool },
+    Battery {
+        device: String,
+        level: u8,
+        charging: bool,
+    },
     /// Something is moving (the island shows it).
     Progress,
 }
@@ -147,9 +179,15 @@ pub struct Phone {
     conns: Mutex<Vec<Arc<Conn>>>,
     /// Connections being set up: WebRTC connection → the phone's values.
     pending: Mutex<HashMap<u64, Pending>>,
+    /// Offers already answered (the phone repeats one until it hears back):
+    /// the same answer again, not a second connection.
+    answered: Mutex<HashMap<String, (Value, Instant)>>,
     offered: Mutex<Vec<Offered>>,
     transfers: Mutex<Vec<TransferInfo>>,
     battery: Mutex<Option<(u8, bool)>>,
+    /// Pictures from the phone's camera, to the camera thread (the newest
+    /// only: a busy computer skips pictures rather than falling behind).
+    camera: Mutex<Option<crossbeam_channel::Sender<Vec<u8>>>>,
     next: AtomicU64,
     loopback: bool,
 }
@@ -176,9 +214,11 @@ impl Phone {
             lan: Mutex::new(None),
             conns: Mutex::new(vec![]),
             pending: Mutex::new(HashMap::new()),
+            answered: Mutex::new(HashMap::new()),
             offered: Mutex::new(vec![]),
             transfers: Mutex::new(vec![]),
             battery: Mutex::new(None),
+            camera: Mutex::new(None),
             next: AtomicU64::new(1),
             loopback,
         });
@@ -280,7 +320,16 @@ impl Phone {
 
     fn xfer_start(&self, label: &str, device: &str, incoming: bool, total: u64) -> u64 {
         let id = (1 << 50) | self.next.fetch_add(1, Ordering::Relaxed);
-        self.transfers.lock().push(TransferInfo { offer: id, label: label.into(), peer: device.into(), incoming, done: 0, total, finished: false, error: None });
+        self.transfers.lock().push(TransferInfo {
+            offer: id,
+            label: label.into(),
+            peer: device.into(),
+            incoming,
+            done: 0,
+            total,
+            finished: false,
+            error: None,
+        });
         self.host.event(PhoneEvent::Progress);
         id
     }
@@ -381,12 +430,25 @@ impl Phone {
                 let (Some(sdp), Some(from), Some(sid)) = (m.get("sdp").and_then(|v| v.as_str()), m.get("from").and_then(|v| v.as_str()), m.get("sid")) else {
                     return;
                 };
+                let key = format!("{from}/{sid}");
+                {
+                    let mut done = self.answered.lock();
+                    done.retain(|_, (_, t)| t.elapsed() < Duration::from_secs(60));
+                    if let Some((again, _)) = done.get(&key) {
+                        if let Some(s) = self.signal.lock().clone() {
+                            s.send(again.clone());
+                        }
+                        return;
+                    }
+                }
                 let Some(phone_nonce) = m.get("n").and_then(|v| v.as_str()).and_then(crypto::b64url_decode) else { return };
                 let device = m.get("device").and_then(|v| v.as_str()).unwrap_or("Phone").chars().take(40).collect::<String>();
                 match self.answer_offer(sdp, &phone_nonce, &device) {
                     Ok((answer, pc_nonce)) => {
+                        let reply = json!({ "t": "answer", "to": from, "pc": my_id, "sid": sid, "sdp": answer, "n": crypto::b64url(&pc_nonce) });
+                        self.answered.lock().insert(key, (reply.clone(), Instant::now()));
                         if let Some(s) = self.signal.lock().clone() {
-                            s.send(json!({ "t": "answer", "to": from, "pc": my_id, "sid": sid, "sdp": answer, "n": crypto::b64url(&pc_nonce) }));
+                            s.send(reply);
                         }
                     }
                     Err(e) => log::info!("phone: couldn't answer: {e}"),
@@ -448,6 +510,9 @@ impl Phone {
                     *conns = keep;
                     gone
                 };
+                if !gone.is_empty() {
+                    *self.camera.lock() = None;
+                }
                 for c in gone {
                     for (_, u) in c.uploads.lock().drain() {
                         let _ = std::fs::remove_file(&u.tmp);
@@ -500,6 +565,12 @@ impl Phone {
             Some(2) if m.len() >= 5 => {
                 let x = u32::from_be_bytes([m[1], m[2], m[3], m[4]]);
                 self.upload_bytes(c, x, &m[5..]);
+            }
+            // A picture from the phone's camera.
+            Some(3) => {
+                if let Some(tx) = self.camera.lock().as_ref() {
+                    let _ = tx.try_send(m[1..].to_vec());
+                }
             }
             _ => {}
         }
@@ -773,6 +844,32 @@ impl Phone {
                 self.host.event(PhoneEvent::Battery { device: c.device.lock().clone(), level, charging });
                 json!({ "ok": true })
             }
+            "camera_start" => match camera::Camera::ready() {
+                Ok(()) => {
+                    let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(1);
+                    *self.camera.lock() = Some(tx);
+                    let _ = std::thread::Builder::new().name("phone-camera".into()).spawn(move || {
+                        let mut cam = camera::Camera::new();
+                        while let Ok(jpeg) = rx.recv() {
+                            if let Err(e) = cam.push_jpeg(&jpeg) {
+                                log::info!("phone camera: {e:?}");
+                            }
+                        }
+                    });
+                    self.host.event(PhoneEvent::Camera { device: c.device.lock().clone(), on: true });
+                    json!({ "ok": true, "name": camera::LABEL })
+                }
+                Err(camera::CamError::NeedSetup) => {
+                    self.host.event(PhoneEvent::CameraSetup { device: c.device.lock().clone() });
+                    json!({ "ok": false, "setup": true, "error": "Your computer needs a one-time set-up: look at its island." })
+                }
+                Err(_) => json!({ "ok": false, "error": "On this computer the phone can't be a camera yet (Linux only for now)." }),
+            },
+            "camera_stop" => {
+                *self.camera.lock() = None;
+                self.host.event(PhoneEvent::Camera { device: c.device.lock().clone(), on: false });
+                json!({ "ok": true })
+            }
             "ping" => json!({ "ok": true }),
             _ => json!({ "ok": false, "error": "unknown request" }),
         }
@@ -786,8 +883,13 @@ impl Phone {
         let me = self.clone();
         let root = self.dir.clone();
         let _ = std::thread::spawn(move || {
-            let tops: Vec<String> =
-                item.files.iter().filter_map(|f| f.path.split(['/', '\\']).next().map(str::to_string)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+            let tops: Vec<String> = item
+                .files
+                .iter()
+                .filter_map(|f| f.path.split(['/', '\\']).next().map(str::to_string))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
             let started = std::time::SystemTime::now();
             for _ in 0..240 {
                 std::thread::sleep(Duration::from_millis(500));

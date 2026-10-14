@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod airdrop;
 mod island;
 mod live;
 mod phone;
@@ -212,7 +213,17 @@ fn update_prefs(handle: AppHandle, app: State<App>, prefs: serde_json::Value) ->
         let mut cfg = app.config.lock();
         let mut v = serde_json::to_value(&*cfg).map_err(|e| e.to_string())?;
         if let (Some(obj), Some(p)) = (v.as_object_mut(), prefs.as_object()) {
-            for k in ["ui_accent", "allow_control", "share_input", "allow_focus", "allow_lock", "allow_sleep", "mirror_notifications", "shared_folder_on"] {
+            for k in [
+                "ui_accent",
+                "allow_control",
+                "share_input",
+                "allow_focus",
+                "allow_lock",
+                "allow_sleep",
+                "mirror_notifications",
+                "shared_folder_on",
+                "audio_here",
+            ] {
                 if let Some(x) = p.get(k) {
                     obj.insert(k.into(), x.clone());
                 }
@@ -398,6 +409,14 @@ fn toast_layout(handle: AppHandle, height: f64) {
 fn note_action(handle: AppHandle, kind: String, target: String) -> Result<(), String> {
     if kind == "install_update" {
         return update_install(handle);
+    }
+    if kind == "airdrop_to" {
+        airdrop::picked(&handle, &target);
+        return Ok(());
+    }
+    if kind == "camera_setup" {
+        phone::camera_setup(&handle);
+        return Ok(());
     }
     if kind == "help_accept" || kind == "help_decline" {
         let hub = handle.state::<App>().engine.lock().as_ref().map(|e| e.hub()).ok_or("OpenHop isn't running")?;
@@ -614,8 +633,11 @@ fn main() {
         .manage(island::Island::default())
         .manage(send::Outgoing::default())
         .manage(phone::Phone::default())
+        .manage(airdrop::Waiting::default())
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            airdrop::airdrop_state,
+            airdrop::airdrop_receive,
             save_config,
             start,
             stop,

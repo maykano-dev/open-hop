@@ -5,16 +5,18 @@
 //! The [`Hub`] lives next to the engine. It talks to other computers with
 //! [`Ext`] messages addressed by computer name (the server forwards them).
 
+pub mod airdrop;
 pub mod apps;
+pub mod audio;
 pub mod awake;
 pub mod folder;
-pub mod notify;
 pub mod gnome_ext;
 pub mod icons;
 pub mod lane;
 pub mod media;
-pub mod phone;
 pub mod menus;
+pub mod notify;
+pub mod phone;
 pub mod system;
 pub mod tasks;
 
@@ -165,6 +167,7 @@ pub struct Settings {
     pub allow_lock: bool,
     pub allow_sleep: bool,
     pub mirror: bool,
+    pub audio_here: bool,
 }
 
 impl Settings {
@@ -181,6 +184,7 @@ impl Settings {
             allow_lock: c.allow_lock,
             allow_sleep: c.allow_sleep,
             mirror: c.mirror_notifications,
+            audio_here: c.audio_here,
         }
     }
 }
@@ -270,6 +274,10 @@ pub struct Hub {
     folder: Mutex<Option<folder::Shared>>,
     outbox: Mutex<Option<crate::files::Outbox>>,
     folder_fetch: Mutex<Option<Box<dyn Fn(Vec<folder::Fetch>) + Send>>>,
+    /// Audio follows you: who plays the sound, our recording, our player.
+    audio_sink: Mutex<Option<(String, Instant)>>,
+    audio_rec: Mutex<Option<audio::Capture>>,
+    audio_play: Mutex<Option<audio::Player>>,
     /// Kept awake while used from elsewhere, until when (by reason).
     awake_for: Mutex<HashMap<String, Instant>>,
     quiet_from: Mutex<BTreeSet<String>>,
@@ -365,6 +373,9 @@ impl Hub {
             folder: Mutex::new(None),
             outbox: Mutex::new(None),
             folder_fetch: Mutex::new(None),
+            audio_sink: Mutex::new(None),
+            audio_rec: Mutex::new(None),
+            audio_play: Mutex::new(None),
             quiet_from: Mutex::new(BTreeSet::new()),
             dnd_before: Mutex::new(None),
             theme_expect: Mutex::new(None),
@@ -469,7 +480,10 @@ impl Hub {
         } else {
             self.send(&from, Ext::WinClose { stream: id });
             let me = self.me.clone();
-            self.send(&from, Ext::Notice { title: format!("{me} said no"), body: "They didn't want to share their screen right now.".into(), icon: "info".into() });
+            self.send(
+                &from,
+                Ext::Notice { title: format!("{me} said no"), body: "They didn't want to share their screen right now.".into(), icon: "info".into() },
+            );
         }
     }
 
@@ -518,6 +532,46 @@ impl Hub {
     pub fn folder_landed(&self, offer: u64, tops: &[std::path::PathBuf], ok: bool) {
         if let Some(f) = self.folder.lock().as_mut() {
             f.landed(offer, tops, ok);
+        }
+    }
+
+    /// Audio follows you: say whether this computer plays the others' sound,
+    /// and record ours while it's the one in use (and another plays it).
+    fn audio_tick(&self, connected: bool, tick: u64, was_sink: &mut bool) {
+        let here = self.settings.read().audio_here;
+        if connected && (here && tick.is_multiple_of(10) || here != *was_sink) {
+            self.send("*", Ext::AudioSink { on: here });
+        }
+        if !here && *was_sink {
+            *self.audio_play.lock() = None;
+        }
+        *was_sink = here;
+        let sink = self.audio_sink.lock().clone().filter(|(n, at)| at.elapsed() < Duration::from_secs(20) && *n != self.me).map(|(n, _)| n);
+        let want = connected && !here && self.pointer_here() && sink.is_some();
+        let mut rec = self.audio_rec.lock();
+        if want && rec.is_none() {
+            let to = sink.unwrap_or_default();
+            let me = self.this.clone();
+            match audio::capture(move |pcm| {
+                if audio::silent(&pcm) {
+                    return;
+                }
+                if let Some(h) = me.upgrade() {
+                    h.send(&to, Ext::Audio { pcm });
+                }
+            }) {
+                Ok(c) => {
+                    log::info!("sound of this computer goes to the one with the headphones");
+                    *rec = Some(c);
+                }
+                Err(e) => {
+                    if tick.is_multiple_of(120) {
+                        log::info!("can't send this computer's sound: {e}");
+                    }
+                }
+            }
+        } else if !want && rec.is_some() {
+            *rec = None;
         }
     }
 
@@ -1349,6 +1403,31 @@ impl Hub {
 
     pub fn handle(self: &Arc<Self>, from: &str, ext: Ext) {
         match ext {
+            Ext::AudioSink { on } => {
+                let mut s = self.audio_sink.lock();
+                if on {
+                    *s = Some((from.to_string(), Instant::now()));
+                } else if s.as_ref().map(|x| x.0 == from).unwrap_or(false) {
+                    *s = None;
+                }
+            }
+            Ext::Audio { pcm } => {
+                if self.settings.read().audio_here {
+                    let mut p = self.audio_play.lock();
+                    if p.is_none() {
+                        match audio::Player::start() {
+                            Ok(pl) => {
+                                log::info!("playing other computers' sound here");
+                                *p = Some(pl);
+                            }
+                            Err(e) => log::warn!("can't play other computers' sound: {e}"),
+                        }
+                    }
+                    if let Some(pl) = p.as_ref() {
+                        pl.feed(from, &pcm);
+                    }
+                }
+            }
             Ext::Mirror { app, title, body } => {
                 if self.settings.read().mirror && !self.focus() {
                     let b = if body.is_empty() { format!("{app} on {from}") } else { format!("{app} on {from} · {body}") };
@@ -1933,6 +2012,7 @@ impl Hub {
         let mut last_dnd = system::dnd();
         let mut awake = awake::KeepAwake::new();
         let mut folder_sent = Instant::now() - Duration::from_secs(60);
+        let mut was_sink = false;
         while !self.stop.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(500));
             tick += 1;
@@ -1953,6 +2033,7 @@ impl Hub {
                 awake.set(why.is_some(), why.as_deref().unwrap_or(""));
             }
             let connected = self.out.read().is_some();
+            self.audio_tick(connected, tick, &mut was_sink);
             // Window list: every second, sent when it changes (and now and then).
             if tick.is_multiple_of(2) {
                 let list = wins::list();

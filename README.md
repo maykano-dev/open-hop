@@ -91,6 +91,9 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 🖥 **Whole screen and remote help** | See and use another computer's whole screen in a window. On a computer that doesn't let others in, its owner is asked each time, sees a red frame while someone helps, and can stop it any time. |
 | 📂 **Shared folder** | “OpenHop Shared” in your home folder stays the same on every computer. |
 | 🔔 **Notifications in one place** | Notifications from your Linux computers show on the computer you're using. |
+| 🍏 **AirDrop on Linux** | With [omdrop](https://github.com/brentkearney/omdrop-plugin) and a supported Wi‑Fi card ([omdrop-owl](https://github.com/t4t5/omdrop-owl)), send to iPhones and Macs from **Send with OpenHop › AirDrop**, and let them send to you. |
+| 📷 **Phone as webcam** | Use your phone's camera in any video call on a Linux computer (“OpenHop Camera”). |
+| 🎧 **Sound follows you** | The sound of the computer you're using plays on the one with your headphones. |
 | 🏫 **Choose what's shared** | For schools, offices and shared computers: switch off being controlled, sharing this keyboard and mouse, or Focus, Lock All and Sleep All for this computer. Switched-off actions leave the island, and it shows what's off. |
 | 🎵 **Media controls** | What's playing on any computer (Spotify, a video in the browser, a music app), with cover art, a progress bar, play/pause, skip and shuffle, from any computer. |
 | 📤 **Send with OpenHop** | Right-click files in Explorer, Finder, Files, Dolphin, Nemo, Thunar or Caja and choose **Send with OpenHop** › a computer (or all of them, or the shelf). OpenHop doesn't need to be open. On Windows it's also in **Send to**; on a Mac it's a Quick Action. |
@@ -564,6 +567,8 @@ open-hop/
 
 ## Roadmap
 
+**Done in v0.13:** AirDrop on Linux (through omdrop), the phone as a webcam (Linux), sound follows you, computers in use from elsewhere stay awake, easier phone pairing, signing-ready release builds.
+
 **Done in v0.12:** whole-screen view and remote help with consent, crossing from any monitor's edge, keep awake while in use, a shared folder, notifications in one place, the website.
 
 **Done in v0.11:** the phone app (any network, end-to-end encrypted, installable), sending to any computer, all of them or the shelf from the phone, the shelf, clipboard and a remote on the phone.
@@ -592,8 +597,8 @@ open-hop/
 
 - [ ] **Wayland as server** via the XDG InputCapture portal (GNOME 45+, KDE 6+), plus drag-out from Wayland apps
 - [ ] **Built-in wireless link** without any network: Wi-Fi Direct (Windows and Linux have APIs, macOS doesn't) or a Bluetooth RFCOMM/L2CAP transport (needs a separate implementation for each OS's Bluetooth stack)
-- [ ] **Audio follows you**, and the **phone's camera as a webcam** for the computer
-- [ ] **Quick Share** with Android phones directly (no page), answering phone calls on the computer, and AirDrop on Linux with a compatible Wi‑Fi adapter
+- [ ] The **phone's camera as a webcam** on Windows (virtual camera API) and macOS (Camera Extension)
+- [ ] **Quick Share** with Android phones directly (no page), and answering phone calls on the computer
 - [ ] Code-signed and notarised builds (needs paid Apple and Windows signing certificates)
 
 **Phase 2: window streaming**

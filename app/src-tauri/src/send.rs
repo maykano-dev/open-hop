@@ -16,6 +16,8 @@ pub enum Dest {
     Computer(String),
     Shelf,
     Phone,
+    /// Apple devices nearby (Linux, through omdrop).
+    AirDrop,
 }
 
 /// Requests waiting to go out. Explorer opens OpenHop once per selected
@@ -28,10 +30,11 @@ pub struct Outgoing {
 /// `--send NAME FILES…` or `--shelf FILES…` in a command line (relative
 /// file names are in `cwd`).
 pub fn parse(args: &[String], cwd: &Path) -> Option<(Dest, Vec<String>)> {
-    let i = args.iter().position(|a| a == "--send" || a == "--shelf" || a == "--phone")?;
+    let i = args.iter().position(|a| a == "--send" || a == "--shelf" || a == "--phone" || a == "--airdrop")?;
     let (dest, rest) = match args[i].as_str() {
         "--shelf" => (Dest::Shelf, &args[i + 1..]),
         "--phone" => (Dest::Phone, &args[i + 1..]),
+        "--airdrop" => (Dest::AirDrop, &args[i + 1..]),
         _ => (Dest::Computer(args.get(i + 1)?.clone()), args.get(i + 2..).unwrap_or(&[])),
     };
     let files: Vec<String> = rest
@@ -99,11 +102,15 @@ fn flush(handle: &AppHandle) {
     }
     // Phones don't need OpenHop's connections.
     q.retain(|(dest, files, at)| {
-        if *dest != Dest::Phone || at.elapsed() < Duration::from_millis(350) {
+        if !matches!(dest, Dest::Phone | Dest::AirDrop) || at.elapsed() < Duration::from_millis(350) {
             return true;
         }
         let paths: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
-        crate::phone::link(handle).offer(&paths);
+        if *dest == Dest::AirDrop {
+            crate::airdrop::send(handle, paths);
+        } else {
+            crate::phone::link(handle).offer(&paths);
+        }
         false
     });
     let engine = app.engine.lock();
@@ -123,7 +130,7 @@ fn flush(handle: &AppHandle) {
             return true;
         }
         match dest {
-            Dest::Phone => false,
+            Dest::Phone | Dest::AirDrop => false,
             Dest::Shelf => {
                 e.shelf_add(files.clone());
                 false
@@ -148,7 +155,7 @@ fn known_path() -> PathBuf {
 
 /// Keep the right-click menu listing the computers (ones seen before stay,
 /// so the menu doesn't change while one is asleep).
-fn refresh_menu(handle: &AppHandle, installed: &mut Option<(Vec<String>, bool)>) {
+fn refresh_menu(handle: &AppHandle, installed: &mut Option<(Vec<String>, bool, bool)>) {
     let Some(exe) = menus::exe() else { return };
     let app = handle.state::<App>();
     let (me, now): (String, Vec<String>) = match app.engine.lock().as_ref() {
@@ -164,9 +171,10 @@ fn refresh_menu(handle: &AppHandle, installed: &mut Option<(Vec<String>, bool)>)
     }
     let names: Vec<String> = all.into_iter().collect();
     let phone = app.path.parent().map(|d| d.join("phone.json").is_file()).unwrap_or(false);
-    let want = (names, phone);
+    let airdrop = openhop_core::extras::airdrop::available();
+    let want = (names, phone, airdrop);
     if installed.as_ref() != Some(&want) {
-        menus::install(&exe, &want.0, want.1);
+        menus::install(&exe, &want.0, want.1, want.2);
         *installed = Some(want);
     }
 }
@@ -205,6 +213,7 @@ mod tests {
         );
         assert_eq!(parse(&a(&["x", "--shelf", "file:///tmp/a%20b.txt"]), cwd), Some((Dest::Shelf, vec!["/tmp/a b.txt".into()])));
         assert_eq!(parse(&a(&["x", "--phone", "c.pdf"]), cwd), Some((Dest::Phone, vec!["/home/me/Pictures/c.pdf".into()])));
+        assert_eq!(parse(&a(&["x", "--airdrop", "d.mov"]), cwd), Some((Dest::AirDrop, vec!["/home/me/Pictures/d.mov".into()])));
         assert_eq!(parse(&a(&["x", "--hidden"]), cwd), None);
         assert_eq!(parse(&a(&["x", "--send"]), cwd), None);
     }
