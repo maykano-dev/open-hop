@@ -180,7 +180,15 @@ pub fn keep_on(handle: AppHandle) {
         let mut was = false;
         let mut failed = 0u32;
         loop {
-            let want = handle.state::<App>().config.lock().airdrop_always && !airdrop::costs_wifi();
+            let costs = airdrop::costs_wifi();
+            let want = handle.state::<App>().config.lock().airdrop_always && !costs;
+            if airdrop::available() && costs && airdrop::status().map(|s| s.receiving && s.mode.as_deref() == Some("forever")).unwrap_or(false) {
+                // Visible for good on a card that's off Wi‑Fi while visible
+                // (set by an earlier version): give the computer its Wi‑Fi back.
+                log::warn!("AirDrop: this Wi‑Fi card is off the internet while visible; switching AirDrop off");
+                let _ = airdrop::stop_receiving_force();
+                was = false;
+            }
             if airdrop::available() {
                 if want {
                     let on = airdrop::status().map(|s| s.receiving).unwrap_or(false);
@@ -209,7 +217,7 @@ pub fn keep_on(handle: AppHandle) {
             // Sooner after a change of the setting.
             for _ in 0..60 {
                 std::thread::sleep(std::time::Duration::from_secs(1));
-                if handle.state::<App>().config.lock().airdrop_always != want && !airdrop::costs_wifi() {
+                if handle.state::<App>().config.lock().airdrop_always != want && !costs {
                     break;
                 }
             }

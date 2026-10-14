@@ -70,6 +70,7 @@ if [ "$untested" = untested ]; then
   echo "This card isn't on omdrop-owl's tested list yet: it may or may not work."
 fi
 "$HOME/.local/bin/omdrop" doctor || true
-"$HOME/.local/bin/omdrop" on forever || true
+# OpenHop decides when to be visible: all the time only on an adapter just
+# for AirDrop (or a card that stays on Wi-Fi); otherwise 10 minutes at a time.
 trap - ERR
-done_ "AirDrop is set up. iPhones and Macs nearby (AirDrop set to Everyone) see this computer; drop files on the island's AirDrop to send."
+done_ "AirDrop is set up. OpenHop makes this computer visible to iPhones and Macs (set to Everyone); drop files on the island's AirDrop to send."

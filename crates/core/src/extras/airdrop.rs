@@ -47,6 +47,9 @@ pub struct Status {
     pub dir: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    /// "forever", "timed", "once" or "off".
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 /// omdrop's command, if it's installed (Linux).
@@ -219,10 +222,27 @@ pub fn costs_wifi() -> bool {
     // The card omdrop-owl uses: the one set for it, or the first.
     let forced = std::fs::read_to_string("/etc/omdrop/infra-iface").unwrap_or_default().trim().to_string();
     let card = cards().into_iter().find(|c| forced.is_empty() || c.iface == forced);
+    let all = cards();
+    let wired = std::fs::read_dir("/sys/class/net")
+        .map(|d| {
+            d.flatten().any(|e| {
+                let p = e.path();
+                let n = e.file_name().to_string_lossy().into_owned();
+                n != "lo" && p.join("device").exists() && !p.join("phy80211").exists() && !p.join("wireless").exists()
+            })
+        })
+        .unwrap_or(false);
     match card {
-        // A card just for AirDrop (not the one with the internet) costs nothing.
-        Some(c) => c.online && profile_mode(&profiles, &c.driver) != "shared",
-        None => false,
+        // Only two cases are safe to keep visible all the time: an adapter
+        // just for AirDrop (the computer has another way online), or a card
+        // tested to stay on Wi‑Fi while visible. Whether it's online right now
+        // says nothing: an exclusive card is offline *because* it's visible.
+        Some(c) => {
+            let dedicated = c.usb && (wired || all.iter().any(|o| o.iface != c.iface));
+            let tested_shared = KNOWN.iter().any(|(d, tested, mode)| *d == c.driver && *tested && *mode == "shared");
+            !(dedicated || (tested_shared && profile_mode(&profiles, &c.driver) == "shared"))
+        }
+        None => true,
     }
 }
 
@@ -367,6 +387,11 @@ pub fn receive_always() -> Result<(), String> {
         wsl::stay_up(Duration::from_secs(60 * 60 * 24 * 365));
     }
     run(&["on", "forever"], Duration::from_secs(40)).map(|_| ())
+}
+
+/// Off even if a send is running.
+pub fn stop_receiving_force() -> Result<(), String> {
+    run(&["off", "--force"], Duration::from_secs(30)).map(|_| ())
 }
 
 pub fn stop_receiving() -> Result<(), String> {

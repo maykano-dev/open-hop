@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.1.3
+
+### Fixed
+- **AirDrop could take a Linux computer off Wi‑Fi for good.** Many Wi‑Fi cards (Intel ones, for example) can only be visible to iPhones by leaving the Wi‑Fi network, and "always visible" kept them that way. Now AirDrop stays visible all the time only on a USB adapter used just for AirDrop, or on a card known to stay on Wi‑Fi; on any other card it's 10 minutes at a time, after which Wi‑Fi comes back. A computer left in that state gets its Wi‑Fi back as soon as this version starts. The set-up no longer switches AirDrop on by itself.
+
 ## v2.1.2
 
 ### New
