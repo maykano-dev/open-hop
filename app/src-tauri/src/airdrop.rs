@@ -109,6 +109,10 @@ pub struct AirDropState {
     installed: bool,
     /// Being visible turns this computer's Wi‑Fi off (so not always on).
     costs_wifi: bool,
+    /// Linux, not set up: what this computer's Wi‑Fi can do.
+    advice: Option<String>,
+    /// Set up but not visible: what stands in the way (omdrop's doctor).
+    missing: Vec<String>,
     status: Option<airdrop::Status>,
     url: &'static str,
 }
@@ -117,17 +121,29 @@ pub struct AirDropState {
 pub async fn airdrop_state() -> AirDropState {
     tauri::async_runtime::spawn_blocking(|| {
         let installed = airdrop::available();
+        let status = if installed { airdrop::status() } else { None };
         AirDropState {
             possible: airdrop::possible(),
             windows: cfg!(windows),
             installed,
             costs_wifi: installed && airdrop::costs_wifi(),
-            status: if installed { airdrop::status() } else { None },
+            advice: (!installed && cfg!(target_os = "linux")).then(|| airdrop::verdict().3),
+            missing: if installed && !status.as_ref().map(|s| s.receiving).unwrap_or(false) { airdrop::missing() } else { vec![] },
+            status,
             url: airdrop::INFO_URL,
         }
     })
     .await
-    .unwrap_or(AirDropState { possible: false, windows: false, installed: false, costs_wifi: false, status: None, url: airdrop::INFO_URL })
+    .unwrap_or(AirDropState {
+        possible: false,
+        windows: false,
+        installed: false,
+        costs_wifi: false,
+        advice: None,
+        missing: vec![],
+        status: None,
+        url: airdrop::INFO_URL,
+    })
 }
 
 /// Visible to Apple devices nearby for a while (0: stop).

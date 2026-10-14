@@ -98,7 +98,7 @@ pub fn needs() -> &'static str {
     if cfg!(windows) {
         "AirDrop on Windows needs a MediaTek MT7612U USB Wi‑Fi adapter (about $20, any brand) and a one-time set-up from Settings › Sharing › AirDrop."
     } else {
-        "AirDrop on Linux needs omdrop, and a Wi‑Fi card that can talk to iPhones (omdrop-owl lists them)."
+        "AirDrop isn't set up on this computer yet: Settings › Sharing › AirDrop › Set Up."
     }
 }
 
@@ -208,7 +208,6 @@ pub fn costs_wifi() -> bool {
     if !cfg!(target_os = "linux") {
         return false;
     }
-    let Ok(dir) = std::fs::read_dir("/sys/class/net") else { return false };
     let mut profiles = String::new();
     for p in ["/etc/omdrop/owl-profiles", "/usr/lib/omdrop/owl-profiles"] {
         profiles.push_str(&std::fs::read_to_string(p).unwrap_or_default());
@@ -217,16 +216,141 @@ pub fn costs_wifi() -> bool {
     if profiles.trim().is_empty() {
         return false; // omdrop-awdl (Broadcom): Wi‑Fi stays on
     }
+    // The card omdrop-owl uses: the one set for it, or the first.
+    let forced = std::fs::read_to_string("/etc/omdrop/infra-iface").unwrap_or_default().trim().to_string();
+    let card = cards().into_iter().find(|c| forced.is_empty() || c.iface == forced);
+    match card {
+        // A card just for AirDrop (not the one with the internet) costs nothing.
+        Some(c) => c.online && profile_mode(&profiles, &c.driver) != "shared",
+        None => false,
+    }
+}
+
+/// A Wi‑Fi card on this computer (Linux).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Card {
+    pub iface: String,
+    pub driver: String,
+    pub usb: bool,
+    /// It carries this computer's internet connection.
+    pub online: bool,
+}
+
+pub fn cards() -> Vec<Card> {
+    let mut v = vec![];
+    let route = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
+    let Ok(dir) = std::fs::read_dir("/sys/class/net") else { return v };
     for e in dir.flatten() {
         let path = e.path();
-        if !path.join("wireless").exists() {
+        if !path.join("phy80211").exists() && !path.join("wireless").exists() {
             continue;
         }
+        let iface = e.file_name().to_string_lossy().into_owned();
+        if iface.starts_with("awdl") || iface.starts_with("mon") {
+            continue;
+        }
+        let dev = std::fs::canonicalize(path.join("device")).unwrap_or_default();
         let driver =
             std::fs::read_link(path.join("device/driver")).ok().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
-        return profile_mode(&profiles, &driver) != "shared";
+        let online = route.lines().skip(1).any(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            f.len() > 2 && f[0] == iface && f[1] == "00000000"
+        });
+        v.push(Card { iface, driver, usb: dev.to_string_lossy().contains("/usb"), online });
     }
-    false
+    v.sort_by_key(|c| c.iface.clone());
+    v
+}
+
+/// What omdrop-owl's README says about each driver: (tested, mode).
+const KNOWN: &[(&str, bool, &str)] = &[
+    ("mt7925e", true, "shared"),
+    ("mt76x2u", true, "active-monitor"),
+    ("iwlwifi", true, "exclusive"),
+    ("rtw88_8822be", true, "exclusive"),
+    ("mt7921e", false, "active-monitor"),
+    ("rtw89_8852ae", false, "shared"),
+    ("rtw89_8852ce", false, "shared"),
+    ("rtw89_8852be", false, "shared"),
+    ("ath12k", false, "shared"),
+    ("ath12k_pci", false, "shared"),
+];
+
+/// Cards that can't do it (driver, what to say).
+const CANT: &[(&str, &str)] = &[
+    ("wl", "Broadcom's own driver (wl) can't do AirDrop's Wi‑Fi link"),
+    ("b43", "this Broadcom card can't do AirDrop's Wi‑Fi link"),
+    ("bcma-pci-bridge", "this Broadcom card can't do AirDrop's Wi‑Fi link"),
+    ("ath11k_pci", "this Qualcomm card doesn't work with AirDrop yet"),
+    ("mt7925e_7927", "this MediaTek card doesn't work with AirDrop yet"),
+];
+
+/// Linux, before set-up: can this computer AirDrop, with which card, and
+/// what to tell the person. (card to use ("" = let omdrop pick), untested,
+/// ok, sentence)
+pub fn verdict() -> (String, bool, bool, String) {
+    let cards = cards();
+    // A USB MT7612U wins: just for AirDrop, the computer's Wi‑Fi stays.
+    if let Some(c) = cards.iter().find(|c| c.driver == "mt76x2u") {
+        return (
+            c.iface.clone(),
+            false,
+            true,
+            "The MT7612U USB adapter is plugged in. Set Up makes it this computer's AirDrop (your Wi‑Fi stays as it is).".into(),
+        );
+    }
+    let brcm_mac = cards.iter().any(|c| c.driver == "brcmfmac") && cfg!(target_arch = "aarch64");
+    if brcm_mac {
+        return (String::new(), false, true, "This Mac's Broadcom Wi‑Fi can do AirDrop (through omdrop-awdl). Set Up installs it.".into());
+    }
+    let main = cards.iter().find(|c| c.online).or(cards.first());
+    let Some(c) = main else {
+        return (String::new(), false, false, "This computer has no Wi‑Fi card. Plug in a MediaTek MT7612U USB Wi‑Fi adapter (about $20), then Set Up.".into());
+    };
+    if let Some((_, why)) = CANT.iter().find(|(d, _)| *d == c.driver) {
+        return (
+            String::new(),
+            false,
+            false,
+            format!("This computer's Wi‑Fi ({}): {why}. Plug in a MediaTek MT7612U USB Wi‑Fi adapter (about $20), then Set Up.", c.driver),
+        );
+    }
+    if c.driver == "brcmfmac" {
+        return (String::new(), false, false, "This computer's Broadcom Wi‑Fi can't do AirDrop from Linux on an Intel Mac. Plug in a MediaTek MT7612U USB Wi‑Fi adapter (about $20), then Set Up.".into());
+    }
+    match KNOWN.iter().find(|(d, ..)| *d == c.driver) {
+        Some((_, true, "shared")) => (String::new(), false, true, format!("This computer's Wi‑Fi ({}) works with AirDrop and stays connected. Set Up installs what's needed (a few minutes).", c.driver)),
+        Some((_, true, _)) => (String::new(), false, true, format!("This computer's Wi‑Fi ({}) works with AirDrop, but is off the internet while visible (or add a MT7612U USB adapter for that). Set Up installs what's needed.", c.driver)),
+        Some((_, false, _)) | None => (String::new(), true, true, format!("This computer's Wi‑Fi ({}) isn't tested with AirDrop yet: it may work. Set Up tries it; a MediaTek MT7612U USB adapter (about $20) is the sure way.", if c.driver.is_empty() { "unknown" } else { &c.driver })),
+    }
+}
+
+pub const SETUP_LINUX: &str = include_str!("airdrop_setup_linux.sh");
+
+/// Linux: run the set-up in a terminal the person watches (it asks for the
+/// password to install).
+fn setup_linux() -> Result<(), String> {
+    let (iface, untested, _, _) = verdict();
+    let dir = dirs::cache_dir().ok_or("no cache folder")?.join("openhop");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let script = dir.join("airdrop-setup.sh");
+    std::fs::write(&script, SETUP_LINUX).map_err(|e| e.to_string())?;
+    let s = script.to_string_lossy().into_owned();
+    let un = if untested { "untested" } else { "" };
+    let tries: [(&str, Vec<&str>); 6] = [
+        ("gnome-terminal", vec!["--title=OpenHop: AirDrop set-up", "--", "bash", &s, &iface, un]),
+        ("kgx", vec!["-e", "bash", &s, &iface, un]),
+        ("konsole", vec!["-e", "bash", &s, &iface, un]),
+        ("xfce4-terminal", vec!["-x", "bash", &s, &iface, un]),
+        ("x-terminal-emulator", vec!["-e", "bash", &s, &iface, un]),
+        ("xterm", vec!["-e", "bash", &s, &iface, un]),
+    ];
+    for (exe, args) in tries {
+        if Command::new(exe).args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok() {
+            return Ok(());
+        }
+    }
+    Err(format!("No terminal found. Run this yourself: bash {s} '{iface}' {un}"))
 }
 
 /// The mode omdrop-owl's profiles give a driver (its "*" line otherwise).
@@ -375,6 +499,8 @@ pub mod wsl {
 pub fn setup() -> Result<(), String> {
     if cfg!(windows) {
         wsl::setup()
+    } else if cfg!(target_os = "linux") {
+        setup_linux()
     } else {
         Err(needs().into())
     }

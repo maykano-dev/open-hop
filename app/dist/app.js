@@ -764,9 +764,9 @@ async function renderAirDrop() {
       btn.textContent = "Set Up";
       btn.onclick = () => { btn.textContent = "Opening…"; invoke("airdrop_setup").catch((e) => { sub.textContent = String(e); }).finally(() => setTimeout(renderAirDrop, 3000)); };
     } else {
-      sub.textContent = "Swap files with iPhones and Macs. Needs omdrop and a Wi‑Fi card that supports it.";
-      btn.textContent = "Learn How";
-      btn.onclick = () => invoke("note_action", { kind: "open_url", target: s.url }).catch(() => {});
+      sub.textContent = s.advice || "Swap files with iPhones and Macs.";
+      btn.textContent = "Set Up";
+      btn.onclick = () => { btn.textContent = "Opening…"; invoke("airdrop_setup").catch((e) => { sub.textContent = String(e); }).finally(() => setTimeout(renderAirDrop, 5000)); };
     }
     return;
   }
@@ -782,6 +782,7 @@ async function renderAirDrop() {
   }
   sub.textContent = st.receiving
     ? `Visible as “${st.name || "this computer"}”. To send: drop files on the island and choose AirDrop, or right-click › Send with OpenHop › AirDrop.`
+    : (s.missing && s.missing.length) ? "Not visible yet: " + s.missing[0]
     : st.reason ? st.reason : "To send: drop files on the island and choose AirDrop, or right-click › Send with OpenHop › AirDrop.";
 }
 renderAirDrop();

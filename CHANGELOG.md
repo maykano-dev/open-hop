@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.1.2
+
+### New
+- **AirDrop set-up on Linux in one click.** Settings › Sharing › AirDrop now says whether this computer's Wi‑Fi card can do AirDrop (and if not, that a MediaTek MT7612U USB adapter will), and **Set Up** installs everything in a terminal you watch: omdrop-owl, omdrop, and the card to use. A USB adapter becomes the computer's AirDrop card on its own, so its Wi‑Fi stays as it is.
+- When AirDrop is set up but not visible, Settings says why.
+
 ## v2.1.1
 
 ### New
