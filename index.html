@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenHop — every computer, one flow</title>
+<meta name="description" content="Share one mouse, keyboard, clipboard and files across Windows, macOS and Linux, with a Dynamic Island–style control center and a phone app that works on any network. Free and open source.">
+<meta name="theme-color" content="#000000">
+<meta property="og:title" content="OpenHop — every computer, one flow">
+<meta property="og:description" content="One mouse and keyboard, one clipboard, files anywhere, your phone included. Windows, macOS and Linux. Free and open source.">
+<meta property="og:image" content="img/island-home.png">
+<link rel="icon" href="phone/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+
+<header class="nav" id="nav">
+  <a class="brand" href="#top" aria-label="OpenHop home"><span class="brand-mark" aria-hidden="true"><i></i></span>OpenHop</a>
+  <nav class="links" aria-label="Sections">
+    <a href="#island">Island</a>
+    <a href="#phone">Phone</a>
+    <a href="#security">Security</a>
+    <a href="#teams">Schools &amp; teams</a>
+  </nav>
+  <a class="nav-cta" href="#download">Download</a>
+</header>
+
+<main id="top">
+  <!-- Hero: two screens, one pointer. -->
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="kicker">Free and open source · Windows, macOS, Linux</p>
+      <h1>Every computer.<br>One flow.</h1>
+      <p class="lede">Move one mouse and keyboard across all your computers, copy on one and paste on another, drag files between screens, and bring your phone along. OpenHop makes your desk feel like a single machine.</p>
+      <div class="ctas">
+        <a class="btn primary" href="#download" id="heroDownload">Download for free</a>
+        <a class="btn ghost" href="https://github.com/maykano-dev/open-hop">View the code</a>
+      </div>
+    </div>
+
+    <div class="desk" aria-hidden="true">
+      <div class="screen left">
+        <div class="wall a"></div>
+        <div class="isl" id="islA"><span class="isl-dot"></span><span class="isl-t">desk</span></div>
+        <div class="win w1"><b></b><i></i><i></i><i class="s"></i></div>
+        <div class="win w2"><b></b><i></i><i class="s"></i></div>
+        <div class="file f1"><span>PDF</span></div>
+      </div>
+      <div class="gap"></div>
+      <div class="screen right">
+        <div class="wall b"></div>
+        <div class="isl" id="islB"><span class="isl-dot"></span><span class="isl-t">laptop</span><span class="isl-ring"></span></div>
+        <div class="win w3"><b></b><i></i><i></i><i class="s"></i></div>
+        <div class="file f2"><span>PDF</span></div>
+      </div>
+      <svg class="cursor" viewBox="0 0 24 24"><path d="M4 2.5 19.5 13l-7 1.4L9 21.3z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>
+    </div>
+    <p class="caption">Push the pointer off the edge of one screen and it’s on the next, with the file you were dragging.</p>
+  </section>
+
+  <!-- The island -->
+  <section class="island-sec" id="island">
+    <div class="sec-head">
+      <h2>The island. Your desk at a glance.</h2>
+      <p>A slim black pill at the top of every screen. Rest the pointer on it and it opens into a control center: music, every computer’s battery and storage, their open apps, your clipboard history and the shelf. It wraps a MacBook’s notch and gets its own lane everywhere else, so it never covers a tab.</p>
+    </div>
+    <div class="pills" aria-hidden="true">
+      <div class="pill p-rest"><span class="dot g"></span>laptop</div>
+      <div class="pill p-music"><span class="art"></span>In the Flat Field<span class="wave"><i></i><i></i><i></i><i></i><i></i></span></div>
+      <div class="pill p-file"><span class="ico"></span>holiday.mp4 <small>to macbook</small><span class="ring"></span></div>
+      <div class="pill p-done"><span class="ico ok"></span>Copied <small>on every computer</small></div>
+    </div>
+    <div class="shots">
+      <figure class="shot tall">
+        <img src="img/island-open.png" alt="The island open on its Open tab: every computer's apps, open and in the background, with memory use." loading="lazy">
+        <figcaption><b>A task manager for every computer.</b> What’s open, what runs in the background, and every app. Switch to it, open it or quit it, wherever it lives.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="img/island-home.png" alt="The island's Home: the song playing, Focus, Lock all and Sleep all, every computer's battery and storage." loading="lazy">
+        <figcaption><b>Home.</b> The song playing on any computer, Focus, Lock All and Sleep All, and each computer’s battery and disk.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="img/island-phone.png" alt="The island's phone view with a QR code to scan." loading="lazy">
+        <figcaption><b>Your phone, one scan away.</b> Point the camera at the code once. That’s the whole setup.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- Bento of everything else -->
+  <section class="bento-sec">
+    <div class="sec-head">
+      <h2>Everything moves with you.</h2>
+    </div>
+    <div class="bento">
+      <article class="b big mouse">
+        <h3>One mouse. One keyboard.</h3>
+        <p>Arrange your screens the way they sit on your desk, then just move. Keys type wherever the pointer is, and ⌘ and Ctrl swap for you between a Mac and a PC.</p>
+        <div class="viz arrange" aria-hidden="true"><span>desk</span><span class="on">laptop</span><span>mac</span></div>
+      </article>
+      <article class="b clip">
+        <h3>Copy here, paste there</h3>
+        <p>Text, images, whole folders. Everything you copy is in a searchable history on every computer.</p>
+      </article>
+      <article class="b drag">
+        <h3>Drag files across screens</h3>
+        <p>Drop them into a folder or an app on the other computer, like a local drag.</p>
+      </article>
+      <article class="b live">
+        <h3>Any window, live, anywhere</h3>
+        <p>Open a window from another computer on this screen and use it. Or see its whole screen.</p>
+      </article>
+      <article class="b folder">
+        <h3>A shared folder</h3>
+        <p>“OpenHop Shared” stays the same on every computer. The newest change wins.</p>
+      </article>
+      <article class="b notify">
+        <h3>Notifications in one place</h3>
+        <p>What pops up on the others shows on the computer you’re using.</p>
+      </article>
+      <article class="b wide awake">
+        <h3>Smart about sleep</h3>
+        <p>A computer you’re using from elsewhere stays awake while it’s busy for you. When it’s idle it sleeps on its own, and the others don’t follow it to bed. Sleep All when you’re done for the day.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- Phone -->
+  <section class="phone-sec" id="phone">
+    <div class="sec-head light">
+      <h2>Your phone, on any network.</h2>
+      <p>Scan the code in the island and the OpenHop app goes on your iPhone or Android home screen. No app store. Send photos, videos and files to any computer, to all of them, or to the shelf. Get files back with one tap to save. Use it as a trackpad, a keyboard and a presenter remote.</p>
+    </div>
+    <div class="phones" aria-hidden="true">
+      <div class="device d1"><img src="img/phone-send.png" alt=""><span class="fly"></span></div>
+      <div class="device d2"><img src="img/phone-remote.png" alt=""></div>
+      <div class="device d3"><img src="img/phone-clips.png" alt=""></div>
+    </div>
+    <ul class="ticks">
+      <li>Works at home, at work, on mobile data</li>
+      <li>Files fly straight into the computer’s island</li>
+      <li>Shelf and clipboard history on the phone</li>
+      <li>Low phone battery? Your computer tells you</li>
+    </ul>
+  </section>
+
+  <!-- Security -->
+  <section class="sec-sec" id="security">
+    <div class="sec-head">
+      <h2>Private by design.</h2>
+      <p>No account, no cloud, no tracking. Your computers talk to each other directly, and everything is encrypted end to end.</p>
+    </div>
+    <div class="layers">
+      <div class="layer">
+        <h3>Between computers</h3>
+        <p>Every keystroke, pointer move and file goes through the Noise protocol: X25519, ChaCha20-Poly1305, BLAKE2s. There is no unencrypted mode. Pair once with a six-digit code.</p>
+      </div>
+      <div class="layer">
+        <h3>With your phone</h3>
+        <p>The QR code carries a 256-bit secret that never leaves your devices. Connections are set up through public relays that only ever see sealed data, then run directly over WebRTC with a second layer of AES-256-GCM inside.</p>
+      </div>
+      <div class="layer">
+        <h3>Open source</h3>
+        <p>Every line is on GitHub under the MIT license. Read it, build it yourself, or run your own relay.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Teams -->
+  <section class="teams-sec" id="teams">
+    <div class="teams">
+      <div>
+        <h2>Ready for schools and offices.</h2>
+        <p>Decide what each computer allows: being controlled, sharing its keyboard and mouse, Focus, Lock All, Sleep All. Whatever is off disappears from the island. Need to fix something on a locked-down computer? Ask to help: its owner sees the request, says yes, and a red frame stays on their screen the whole time, with Stop one click away.</p>
+      </div>
+      <div class="toggles" aria-hidden="true">
+        <div class="tg"><span>Let others use this computer</span><i></i></div>
+        <div class="tg on"><span>Use other computers from here</span><i></i></div>
+        <div class="tg on"><span>Shared folder</span><i></i></div>
+        <div class="tg"><span>Sleep together</span><i></i></div>
+        <div class="ask"><b>desk asks to use your screen</b><span><em>Let them in</em><em class="no">Not now</em></span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Download -->
+  <section class="dl-sec" id="download">
+    <div class="sec-head">
+      <h2>Get OpenHop.</h2>
+      <p>Install it on every computer you use. It’s free, it updates itself, and it keeps running quietly in the background.</p>
+    </div>
+    <div class="dls">
+      <a class="dl" data-os="windows" href="https://github.com/maykano-dev/open-hop/releases/latest">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 5.5 10.5 4.5v7H3zM11.5 4.3 21 3v8.5h-9.5zM3 12.5h7.5v7L3 18.5zM11.5 12.5H21V21l-9.5-1.3z"/></svg>
+        <b>Windows</b><span>Windows 10 and 11</span><em>Download</em>
+      </a>
+      <a class="dl" data-os="mac" href="https://github.com/maykano-dev/open-hop/releases/latest">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.4 12.7c0-2.4 2-3.6 2.1-3.7-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9s-1.9-.9-3.2-.8c-1.6 0-3.1 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8s1.9.8 3.2.8c1.3 0 2.2-1.2 3-2.4.9-1.3 1.3-2.7 1.3-2.8 0 0-2.5-1-2.5-3.9zM14 5.6c.7-.8 1.1-1.9 1-3-1 0-2.1.7-2.8 1.5-.6.7-1.1 1.8-1 2.9 1.1.1 2.1-.6 2.8-1.4z"/></svg>
+        <b>macOS</b><span>Apple silicon and Intel</span><em>Download</em>
+      </a>
+      <a class="dl" data-os="linux" href="https://github.com/maykano-dev/open-hop/releases/latest">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c-2.2 0-3.4 1.9-3.4 4.4 0 1.3.3 2.3-.5 3.6-.9 1.4-2.7 3.4-2.7 6 0 1 .3 1.8.8 2.4-.6.4-1.7.8-1.7 1.6 0 1 1.5 1.3 3.3 1.6 1.2.2 2.4.4 4.2.4s3-.2 4.2-.4c1.8-.3 3.3-.6 3.3-1.6 0-.8-1.1-1.2-1.7-1.6.5-.6.8-1.4.8-2.4 0-2.6-1.8-4.6-2.7-6-.8-1.3-.5-2.3-.5-3.6C15.4 3.9 14.2 2 12 2zm-1.3 3.6c.4 0 .7.5.7 1.1s-.3 1.1-.7 1.1-.7-.5-.7-1.1.3-1.1.7-1.1zm2.6 0c.4 0 .7.5.7 1.1s-.3 1.1-.7 1.1-.7-.5-.7-1.1.3-1.1.7-1.1z"/></svg>
+        <b>Linux</b><span>AppImage, .deb and .rpm</span><em>Download</em>
+      </a>
+    </div>
+    <p class="fine">Then open the island on your computer, tap the phone button and scan the code to add your phone.</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <span class="brand small"><span class="brand-mark" aria-hidden="true"><i></i></span>OpenHop</span>
+  <span>MIT license · <a href="https://github.com/maykano-dev/open-hop">GitHub</a> · <a href="https://github.com/maykano-dev/open-hop/releases">Releases</a> · <a href="phone/">Phone app</a></span>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>
