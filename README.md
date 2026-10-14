@@ -91,7 +91,7 @@ Then follow [Set up your computers](#set-up-your-computers).
 | 🖥 **Whole screen and remote help** | See and use another computer's whole screen in a window. On a computer that doesn't let others in, its owner is asked each time, sees a red frame while someone helps, and can stop it any time. |
 | 📂 **Shared folder** | “OpenHop Shared” in your home folder stays the same on every computer. |
 | 🔔 **Notifications in one place** | Notifications from your Linux computers show on the computer you're using. |
-| 🍏 **AirDrop on Linux** | With [omdrop](https://github.com/brentkearney/omdrop-plugin) and a supported Wi‑Fi card ([omdrop-owl](https://github.com/t4t5/omdrop-owl)), send to iPhones and Macs from **Send with OpenHop › AirDrop**, and let them send to you. |
+| 🍏 **AirDrop on Linux and Windows** | Send to iPhones and Macs from **Send with OpenHop › AirDrop**, and let them send to you. Linux: [omdrop](https://github.com/brentkearney/omdrop-plugin) and a supported Wi‑Fi card ([omdrop-owl](https://github.com/t4t5/omdrop-owl)). Windows (experimental): a MediaTek MT7612U USB Wi‑Fi adapter and **Settings › Sharing › AirDrop › Set Up**, which runs the same thing in Linux under WSL2. |
 | 📷 **Phone as webcam** | Use your phone's camera in any video call on a Linux computer (“OpenHop Camera”). |
 | 🎧 **Sound follows you** | The sound of the computer you're using plays on the one with your headphones. |
 | 🏫 **Choose what's shared** | For schools, offices and shared computers: switch off being controlled, sharing this keyboard and mouse, or Focus, Lock All and Sleep All for this computer. Switched-off actions leave the island, and it shows what's off. |
@@ -567,7 +567,7 @@ open-hop/
 
 ## Roadmap
 
-**Done in v0.13:** AirDrop on Linux (through omdrop), the phone as a webcam (Linux), sound follows you, computers in use from elsewhere stay awake, easier phone pairing, signing-ready release builds.
+**Done in v2.1:** AirDrop on Linux (through omdrop) and Windows (WSL2 and a USB adapter), the phone as a webcam (Linux), sound follows you, computers in use from elsewhere stay awake, easier phone pairing, signing-ready release builds.
 
 **Done in v0.12:** whole-screen view and remote help with consent, crossing from any monitor's edge, keep awake while in use, a shared folder, notifications in one place, the website.
 

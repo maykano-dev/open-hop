@@ -756,9 +756,15 @@ async function renderAirDrop() {
   airdropRow.hidden = false;
   const sub = document.getElementById("airdropSub"), btn = document.getElementById("airdropBtn");
   if (!s.installed) {
-    sub.textContent = "Swap files with iPhones and Macs. Needs omdrop and a Wi‑Fi card that supports it.";
-    btn.textContent = "Learn How";
-    btn.onclick = () => invoke("note_action", { kind: "open_url", target: s.url }).catch(() => {});
+    if (s.windows) {
+      sub.textContent = "Swap files with iPhones and Macs. Needs a MediaTek MT7612U USB Wi‑Fi adapter (about $20) and a one-time set-up that runs in its own window (20–40 minutes).";
+      btn.textContent = "Set Up";
+      btn.onclick = () => { btn.textContent = "Opening…"; invoke("airdrop_setup").catch((e) => { sub.textContent = String(e); }).finally(() => setTimeout(renderAirDrop, 3000)); };
+    } else {
+      sub.textContent = "Swap files with iPhones and Macs. Needs omdrop and a Wi‑Fi card that supports it.";
+      btn.textContent = "Learn How";
+      btn.onclick = () => invoke("note_action", { kind: "open_url", target: s.url }).catch(() => {});
+    }
     return;
   }
   const st = s.status || {};

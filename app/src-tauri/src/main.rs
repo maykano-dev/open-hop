@@ -638,6 +638,7 @@ fn main() {
             snapshot,
             airdrop::airdrop_state,
             airdrop::airdrop_receive,
+            airdrop::airdrop_setup,
             save_config,
             start,
             stop,

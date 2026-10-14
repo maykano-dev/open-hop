@@ -1,8 +1,11 @@
 # Changelog
 
-## v0.13.0
+## v2.1.0
+
+OpenHop moves from 0.x to 2.1: the same app, with version numbers that say how far it has come.
 
 ### New
+- **AirDrop on Windows too**, with a MediaTek MT7612U USB Wi‑Fi adapter (about $20, any brand using that chip; Windows keeps its own Wi‑Fi). **Settings › Sharing › AirDrop › Set Up** does the rest in a window you can watch (20–40 minutes, once): it sets up Linux under WSL2, hands the adapter to it with usbipd-win, builds a Linux kernel with the adapter's driver, and installs omdrop and omdrop-owl. Then **Send with OpenHop › AirDrop** and **Let iPhones Send Here** work as on Linux, and received files land in Downloads. Experimental: it depends on community projects that are still young.
 - **AirDrop on Linux.** With [omdrop](https://github.com/brentkearney/omdrop-plugin) and a Wi‑Fi card that can talk to iPhones ([omdrop-owl](https://github.com/t4t5/omdrop-owl) lists them), **Send with OpenHop › AirDrop** sends files to an iPhone, iPad or Mac nearby (the island asks which one when there are several), and **Settings › Sharing › AirDrop › Let iPhones Send Here** makes the computer visible to them for 10 minutes.
 - **Your phone as the computer's camera** (Linux): start it in the phone app's Remote tab and pick “OpenHop Camera” in any video call app. The first time, the computer asks for your password once to set the camera up.
 - **Sound follows you**: switch on **Sound Follows You** on the computer with your headphones or speakers, and the sound of whichever computer you're using from it plays there.
@@ -16,7 +19,7 @@
   - Added to an iPhone's Home Screen, the app starts already paired (the Home Screen app has its own storage, so it used to ask for the code again).
   - It says what's wrong: no internet on the phone, or the computer isn't answering.
   - App updates arrive on the next launch, not the one after.
-- Update every computer to v0.13: older versions can't connect to it.
+- Update every computer to v2.1: older versions can't connect to it.
 
 ## v0.12.0
 

@@ -39,7 +39,7 @@ pub fn send(handle: &AppHandle, files: Vec<PathBuf>) {
             note(
                 &handle,
                 "AirDrop isn't set up on this computer".into(),
-                "It needs omdrop, and a Wi‑Fi card that can talk to iPhones (omdrop-owl lists them).".into(),
+                airdrop::needs().into(),
                 vec![NoteAction { label: "Learn How".into(), kind: "open_url".into(), target: airdrop::INFO_URL.into() }],
             );
             return;
@@ -102,8 +102,10 @@ fn deliver(handle: &AppHandle, files: Vec<PathBuf>, to: String) {
 
 #[derive(serde::Serialize)]
 pub struct AirDropState {
-    /// This kind of computer could (Linux).
+    /// This kind of computer could (Linux, Windows).
     possible: bool,
+    /// Windows (set up by OpenHop itself).
+    windows: bool,
     installed: bool,
     status: Option<airdrop::Status>,
     url: &'static str,
@@ -113,10 +115,16 @@ pub struct AirDropState {
 pub async fn airdrop_state() -> AirDropState {
     tauri::async_runtime::spawn_blocking(|| {
         let installed = airdrop::available();
-        AirDropState { possible: cfg!(target_os = "linux"), installed, status: if installed { airdrop::status() } else { None }, url: airdrop::INFO_URL }
+        AirDropState {
+            possible: airdrop::possible(),
+            windows: cfg!(windows),
+            installed,
+            status: if installed { airdrop::status() } else { None },
+            url: airdrop::INFO_URL,
+        }
     })
     .await
-    .unwrap_or(AirDropState { possible: false, installed: false, status: None, url: airdrop::INFO_URL })
+    .unwrap_or(AirDropState { possible: false, windows: false, installed: false, status: None, url: airdrop::INFO_URL })
 }
 
 /// Visible to Apple devices nearby for a while (0: stop).
@@ -125,4 +133,10 @@ pub async fn airdrop_receive(minutes: u32) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || if minutes == 0 { airdrop::stop_receiving() } else { airdrop::receive(minutes) })
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Windows: start the guided set-up (a window that asks as administrator).
+#[tauri::command]
+pub fn airdrop_setup() -> Result<(), String> {
+    airdrop::setup()
 }
