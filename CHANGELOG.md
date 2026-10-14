@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.1.1
+
+### New
+- **AirDrop is always on.** Once it's set up, this computer stays visible to iPhones and Macs nearby, all the time, and comes back by itself after a restart (switch it off under Settings › Sharing › **Always Visible to iPhones and Macs**). On a Linux computer whose Wi‑Fi card can't stay on Wi‑Fi while visible, it's 10 minutes at a time instead, so you never lose your internet.
+- **AirDrop in the island**: drag files onto the island and drop them on **AirDrop**.
+
 ## v2.1.0
 
 OpenHop moves from 0.x to 2.1: the same app, with version numbers that say how far it has come.
